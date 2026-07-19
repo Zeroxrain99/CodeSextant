@@ -61,7 +61,7 @@ def annotate(nodes, fp_by, shape_cnt, dead_keys, key_of):
         n["dead"] = key in dead_keys
 
     clone_pairs = []
-    for shape, idxs in shape_to_idx.items():
+    for _shape, idxs in shape_to_idx.items():
         idxs.sort()
         for j in idxs[1:]:
             clone_pairs.append([idxs[0], j])

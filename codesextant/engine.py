@@ -121,12 +121,10 @@ def _infer_project_language(root: str, *, sample_cap: int | None = None) -> str 
 
     from collections import Counter
     counts: Counter[str] = Counter()
-    seen = 0
-    for fp in _iter_source_files(root):
+    for seen, fp in enumerate(_iter_source_files(root), start=1):
         lang = symbols.language_for_file(fp)
         if lang:
             counts[lang] += 1
-        seen += 1
         if sample_cap > 0 and seen >= sample_cap:
             break
     total = sum(counts.values())
@@ -1192,8 +1190,10 @@ def get_comment_overview(path: str, *, scope_file: str | None = None) -> dict:
             sl_q = "SELECT COALESCE(SUM(end_line-line+1),0) AS n FROM symbols WHERE scope=''"
             cl_p, sl_p = [], []
             if target:
-                cl_q += " WHERE path=?"; cl_p.append(target)
-                sl_q += " AND path=?"; sl_p.append(target)
+                cl_q += " WHERE path=?"
+                cl_p.append(target)
+                sl_q += " AND path=?"
+                sl_p.append(target)
             comment_lines = conn.execute(cl_q, cl_p).fetchone()["n"]
             code_lines = conn.execute(sl_q, sl_p).fetchone()["n"]
             denom = code_lines or 1
@@ -1268,13 +1268,16 @@ def get_comments(path: str, file: str | None = None, *, scope: str | None = None
              "FROM comments WHERE 1=1")
         p: list = []
         if target:
-            q += " AND path=?"; p.append(target)
+            q += " AND path=?"
+            p.append(target)
         if doc_only:
             q += " AND is_doc=1"
         if tag:
-            q += " AND tag=?"; p.append(tag.upper())
+            q += " AND tag=?"
+            p.append(tag.upper())
         if scope is not None:
-            q += " AND scope=?"; p.append(scope)
+            q += " AND scope=?"
+            p.append(scope)
         q += " ORDER BY path,line"
         rows = [dict(r) for r in store.conn.execute(q, p).fetchall()]
         return {"project_key": store.project_key, "file": target,

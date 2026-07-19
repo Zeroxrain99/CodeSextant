@@ -112,7 +112,10 @@ class _InterprocessFileLock:
 
     def acquire(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = open(self.path, "a+b")
+        # ⛔ 這裡不能用 with：檔案握把「就是鎖本身」，必須活到 release() 才關。
+        # 套 context manager 會在離開這個函式時立刻關檔＝鎖當場失效，多個 daemon
+        # 會同時起來搶同一個埠。linter 的 SIM115 在這個情境是誤報。
+        self._fh = open(self.path, "a+b")  # noqa: SIM115
         self._fh.seek(0, os.SEEK_END)
         if self._fh.tell() == 0:
             self._fh.write(b"\0")
@@ -743,6 +746,19 @@ def _execute_route(path: str, handler, parsed, body: dict | None):
         raise _HttpError(503, str(exc)) from exc
 
 
+def _method_hint(path: str, routes: dict) -> str | None:
+    """路徑存在但方法用錯時，回一句該用哪個方法的提示；否則 None。
+
+    只回「未知端點」會讓人以為這個端點根本不存在，跑去別的地方找原因——
+    2026-07-19 就有人（我）因此繞了很久。路徑明明在另一張路由表裡，直接講。
+    """
+    if routes is _ROUTES_GET and path in _ROUTES_POST:
+        return "此端點存在，但要用 POST，且參數放 JSON body（不是網址查詢字串）"
+    if routes is _ROUTES_POST and path in _ROUTES_GET:
+        return "此端點存在，但要用 GET，參數放網址查詢字串"
+    return None
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "codesextant-daemon/0.1"
 
@@ -819,8 +835,12 @@ class _Handler(BaseHTTPRequestHandler):
         lg = get_logger()
         if handler is None:
             lg.info("端點未命中 %s %s → 404", self.command, parsed.path)
-            self._send_json(404, {"error": f"未知端點 {self.command} {parsed.path}",
-                                  "service": SERVICE_NAME})
+            payload = {"error": f"未知端點 {self.command} {parsed.path}",
+                       "service": SERVICE_NAME}
+            hint = _method_hint(parsed.path, routes)
+            if hint:
+                payload["hint"] = hint
+            self._send_json(404, payload)
             return
         t0 = time.perf_counter()
         try:

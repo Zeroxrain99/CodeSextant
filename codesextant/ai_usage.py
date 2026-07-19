@@ -37,10 +37,7 @@ def _host_of(url: str) -> str:
     """從 base_url 取 host[:port]（帶 scheme 才 urlparse，裸 host 直接切）。"""
     u = url.strip()
     try:
-        if "://" in u:
-            net = urlparse(u).netloc
-        else:
-            net = u.split("/", 1)[0]
+        net = urlparse(u).netloc if "://" in u else u.split("/", 1)[0]
     except Exception:
         net = u
     return net.lower()
