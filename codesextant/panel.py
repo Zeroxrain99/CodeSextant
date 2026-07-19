@@ -336,8 +336,8 @@ async function loadLinks() {
     const oRows = Object.entries(orph).map(([ns, lst]) =>
       `<div class="row"><span class="rk">[${esc(ns)}]${(ns === "skill" || ns === "cbua") ? "（多屬正常）" : "（★該進索引？）"}</span><span class="muted">${lst.slice(0, 14).map(esc).join("、")}${lst.length > 14 ? " …+" + (lst.length - 14) : ""}</span></div>`).join("");
     const disc = d.discipline_tail === null
-      ? `<div class="row"><span class="rk">紀律源</span><span class="muted">無契約（wiredo_discipline.jsonl 空·可選源）</span></div>`
-      : `<div class="row"><span class="rk">紀律源 tail</span><span class="muted">${(d.discipline_tail || []).length} 筆 · ~/.concinno/audit/wiredo_discipline.jsonl</span></div>`;
+      ? `<div class="row"><span class="rk">紀律源</span><span class="muted">未設定（可選源·設環境變數 CODESEXTANT_DISCIPLINE_LOG 指向逐行 JSON 稽核檔）</span></div>`
+      : `<div class="row"><span class="rk">紀律源 tail</span><span class="muted">${(d.discipline_tail || []).length} 筆 · ${esc(d.discipline_source || "來源未回報")}</span></div>`;
     box.innerHTML = `<div class="detail">
       <div class="row"><span class="rk">🔗 dangling 死連結</span><span>${dang.length ? dang.length + " 條（該修）" : "0（乾淨 ✓）"}</span></div>${dRows}
       <div class="row"><span class="rk">🟡 orphans 孤兒</span><span class="muted">advisory·⛔只列不刪</span></div>${oRows}

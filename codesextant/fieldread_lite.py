@@ -1,16 +1,19 @@
-"""FieldRead-lite — CodeSextant 輸出壓縮層（借 user 自創 FieldRead 精髓的 MIT 零依賴版）。
+"""FieldRead-lite — CodeSextant 的輸出壓縮層（MIT、零依賴自持實作）。
 
 緣起：CodeSextant 的長輸出（callgraph 傳遞鏈／impact 一堆 caller／map 一堆符號）會吃 token。
-user 自創的 **FieldRead**（aiking-core，5 語意命名空間壓縮、專利驗證新穎）精髓＝
-「按語意命名空間分比例預算 + 超預算用麵包屑（breadcrumb）省略、可按需展開」。
+採用的壓縮思路來自 **FieldRead**：「按語意命名空間分比例配預算 ＋ 超預算的部分用
+麵包屑（breadcrumb，只留一行路徑摘要）省略、需要時再展開」。
 
-為何不直接 import aiking-core 的 FieldRead（方案 A 否決，2026-06-19 user 拍板 B）：
-  - aiking-core 是 **AGPL-3.0**（強傳染式開源授權）→ 會把 CodeSextant 從 MIT 傳染成 AGPL，
-    直接打臉「任何 agent 都能用的工具」定位（AGPL 商用/閉源整合卡）。
-  - 依賴爆肥：aiking-core Requires anthropic/openai/concinno/starlette/uvicorn——一個代碼地圖
-    工具不該綁兩家 LLM SDK + web 框架。
-  - FieldRead 核心演算法本身很簡單（純字串/條目處理），自己做一份 MIT 零依賴版即可保住定位
-    又得精髓，A 的好處全拿、A 的兩個壞處全避。
+為何自己實作一份，而不是相依於既有的 FieldRead 套件（2026-06-19 定案）：
+  - 授權會傳染：該套件是 **AGPL-3.0**（強傳染式開源授權），相依會把 CodeSextant
+    從 MIT 一路傳染成 AGPL，直接打死「任何人／任何 agent 都能拿去用」的定位——
+    AGPL 會卡住商用與閉源整合。
+  - 依賴會爆肥：它連帶要求兩家 LLM SDK ＋ 一整套 web 框架。一個代碼地圖工具
+    不該為了「把輸出變短」而扛這些。
+  - 演算法本身很簡單（純字串／條目處理），自持一份的成本遠低於上面兩個代價。
+
+⛔ 這裡的取捨對後人的一般化教訓：借「想法」不會傳染授權，借「程式碼」會。
+   工具型專案想保持任何人都能用，相依清單就是它的定位聲明。
 
 ⛔ 不抄 aider TreeContext（只壓代碼顯示）；用 FieldRead 的「語意分區」思路，但分區是**代碼語意**
 （high 信心／low／test／prod／entrypoint／UNKNOWN）。純顯示層壓縮——engine 仍回完整 dict，

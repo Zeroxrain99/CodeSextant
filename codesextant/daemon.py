@@ -651,6 +651,9 @@ def _ep_links(parsed, body):
     # 指路徑（env CODESEXTANT_DISCIPLINE_LOG，任何逐行 JSON 的稽核檔都吃）。
     # 沒設 = 這塊不顯示，不是錯誤。
     dj = os.environ.get("CODESEXTANT_DISCIPLINE_LOG", "")
+    # 一併回傳實際來源路徑：面板顯示「資料哪來的」要講真話，寫死一個猜測的
+    # 路徑等於在騙讀的人——他會照著去找一個根本不存在的檔。
+    data["discipline_source"] = dj or None
     try:
         if dj and os.path.exists(dj) and os.path.getsize(dj) > 0:
             with open(dj, encoding="utf-8", errors="replace") as f:
