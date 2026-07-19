@@ -1348,6 +1348,225 @@ def get_health(path: str) -> dict:
     return {"root": abs_path, "symbols": nodes, "summary": summary}
 
 
+def _merge_summary(summary: dict, delta: dict) -> None:
+    """把某階段回報的計數增量併回總表（各階段只回自己數到的，不碰別人的欄位）。"""
+    for key, value in delta.items():
+        summary[key] = summary.get(key, 0) + value
+
+
+def _dup_stage1_one_shape(members: list, *, min_node: int, in_scope) -> tuple[list, dict, set]:
+    """單一 shape_hash 群 → (輸出群, summary 增量, 已歸群成員鍵)。
+
+    群內再按 raw_token 二次分簇：逐字相同的各自成 EXACT_DUP，跨簇代表湊成 RENAMED_DUP
+    （紅隊 L1-MEDIUM：兩者並存、不互相吃掉——f1/f2 逐字得 EXACT、f1/f3 改名得 RENAMED）。
+    """
+    if len(members) < 2:
+        return [], {}, set()
+    # 紅隊 L1-HIGH：結構顯著性＝has_control_flow + node_count（⛔不加 nstmts 門檻——Go 的
+    # body=block>statement_list 多一層、且「單一大 switch/if dispatch」top-level nstmts=1 會
+    # 被誤殺；node_count 是更好的複雜度指標、與 winnow gate 對齊）。
+    sig = [m for m in members if m["has_control_flow"] and m["node_count"] >= min_node]
+    if len(sig) < 2:
+        # 同形但都是樣板/太小 → 壓制（只在 scope 內才計數，否則數字會灌水）
+        return [], ({"boilerplate_suppressed_groups": 1} if in_scope(members) else {}), set()
+
+    from collections import defaultdict
+    by_raw: dict[str, list] = defaultdict(list)
+    for m in sig:
+        by_raw[m["raw_token_hash"]].append(m)
+
+    groups: list[dict] = []
+    delta: dict = {}
+    keys: set = set()
+    reps: list[dict] = []   # 跨 raw 代表（每 raw 子簇第一個），給 RENAMED 群
+    for cluster in by_raw.values():
+        cluster.sort(key=lambda m: (m["path"], m["line"]))
+        if len(cluster) >= 2 and in_scope(cluster):
+            groups.append(_make_dup_group(
+                "EXACT_DUP", cluster, 1.0,
+                "逐字相同（shape+raw_token 皆同）。結構相同≠語義相同，合併前讀碼 + CI。"))
+            delta["exact"] = delta.get("exact", 0) + 1
+            keys.update((m["path"], m["line"]) for m in cluster)
+        reps.append(cluster[0])
+
+    if len(by_raw) > 1 and len(reps) >= 2:   # 有改名變體 → RENAMED（跨 raw 代表）
+        reps.sort(key=lambda m: (m["path"], m["line"]))
+        if in_scope(reps):
+            groups.append(_make_dup_group(
+                "RENAMED_DUP", reps, None,
+                f"結構相同、識別字/常數不同（{len(by_raw)} 種變體）。可能只是同類樣板，合併前必讀業務語義。"))
+            delta["renamed"] = delta.get("renamed", 0) + 1
+            keys.update((m["path"], m["line"]) for m in reps)
+    return groups, delta, keys
+
+
+def _dup_stage1(rows: list, *, min_node: int, in_scope) -> tuple[list, dict, set]:
+    """stage-1：shape_hash 分群 → EXACT_DUP（逐字）/ RENAMED_DUP（同形改名）。
+
+    ⚠ 紅隊 L5-HIGH：永遠對全 repo fingerprints 跑、不套 scope 過濾——否則 scope_file 模式下
+    會退化成只比同一個檔案內部，跨檔的逐字重複整批漏掉、信心序顛倒。scope 只決定「輸出
+    哪些群」，偵測範圍始終是全 repo。
+    """
+    from collections import defaultdict
+    by_shape: dict[str, list] = defaultdict(list)
+    for r in rows:
+        by_shape[r["shape_hash"]].append(r)
+
+    groups: list[dict] = []
+    delta: dict = {}
+    member_key: set = set()
+    for members in by_shape.values():
+        g, d, keys = _dup_stage1_one_shape(members, min_node=min_node, in_scope=in_scope)
+        groups.extend(g)
+        _merge_summary(delta, d)
+        member_key |= keys
+    return groups, delta, member_key
+
+
+def _dup_flood_fingerprints(conn, df_cap: int) -> set:
+    """閘1：排掉「到處都有」的氾濫指紋。
+
+    ⚠ 紅隊 L4-HIGH：用 DISTINCT(path,line,fp_value) 數**真 document frequency**（出現在幾個
+    不同函數），不是 fingerprint_index 的總行數——否則單一函數內同一指紋重複出現會把自己
+    灌爆 df_cap、把真指紋誤剔掉。
+    """
+    return {r[0] for r in conn.execute(
+        "SELECT fp_value FROM (SELECT DISTINCT path,line,fp_value FROM fingerprint_index) "
+        "GROUP BY fp_value HAVING COUNT(*)>?", (df_cap,)).fetchall()}
+
+
+def _dup_load_fingerprint_rows(conn, target: str | None, flood: set) -> list:
+    """載入要比對的指紋列。
+
+    ⚠ 紅隊 L2-MEDIUM：scope_file 模式只載「跟目標檔指紋有交集」的單元、不全表載入，讓單檔
+    查重的成本與整個 repo 的規模脫鉤；near_global 才全載入。
+    """
+    if not target:
+        return conn.execute("SELECT path,line,fp_value FROM fingerprint_index").fetchall()
+    seed = {r[0] for r in conn.execute(
+        "SELECT DISTINCT fp_value FROM fingerprint_index WHERE path=?", (target,)
+    ).fetchall()} - flood
+    rows_fp: list = []
+    seed_list = list(seed)
+    for i in range(0, len(seed_list), 900):   # SQLite IN 子句上限保護、分批查
+        chunk = seed_list[i:i + 900]
+        ph = ",".join("?" * len(chunk))
+        rows_fp.extend(conn.execute(
+            f"SELECT path,line,fp_value FROM fingerprint_index WHERE fp_value IN ({ph})",
+            tuple(chunk)).fetchall())
+    return rows_fp
+
+
+def _dup_stage2_pair(ka, kb, shared, *, body_fps, meta, member_key, seen_pairs,
+                     in_scope, min_shared: int, sim_thresh: float) -> dict | None:
+    """單一候選配對過閘 → STRUCTURAL_NEAR 群；沒過就 None。"""
+    if shared < min_shared:                     # 閘2：共享指紋數的候選門檻
+        return None
+    pair = tuple(sorted([ka, kb]))
+    if pair in seen_pairs:
+        return None
+    seen_pairs.add(pair)
+    if pair[0] in member_key and pair[1] in member_key:
+        return None                             # 已在 stage-1 同群、不重複報
+    union = len(body_fps[ka] | body_fps[kb])
+    sim = shared / union if union else 0.0
+    if sim < sim_thresh:                        # 閘3：精確 Jaccard 相似度門檻
+        return None
+    ma, mb = meta.get(pair[0]), meta.get(pair[1])
+    if not ma or not mb:
+        return None
+    # 紅隊 L2-LOW：同形歸 stage-1 的 EXACT/RENAMED 管，stage-2 只報「非同形」的近似，
+    # 免得出現 STRUCTURAL_NEAR 卻相似度 1.0 這種自相矛盾的結果。
+    if ma["shape_hash"] == mb["shape_hash"]:
+        return None
+    if not in_scope([ma, mb]):
+        return None
+    pair_members = sorted([ma, mb], key=lambda m: (m["path"], m["line"]))
+    return _make_dup_group(
+        "STRUCTURAL_NEAR", pair_members, round(sim, 3),
+        f"winnow 近似相似度 {round(sim, 3)}（非逐字、非同形）；務必讀碼確認是否真重複。")
+
+
+def _dup_stage2(conn, *, target, meta, member_key, in_scope,
+                df_cap: int, min_shared: int, sim_thresh: float) -> tuple[list, dict]:
+    """stage-2/3：winnowing 近似比對（三道閘：氾濫指紋 → 共享數 → Jaccard 門檻）。"""
+    from collections import defaultdict
+    flood = _dup_flood_fingerprints(conn, df_cap)
+    rows_fp = _dup_load_fingerprint_rows(conn, target, flood)
+
+    body_fps: dict[tuple, set] = defaultdict(set)
+    for r in rows_fp:
+        if r["fp_value"] not in flood:
+            body_fps[(r["path"], r["line"])].add(r["fp_value"])
+    inv: dict[int, list] = defaultdict(list)
+    for k, fps in body_fps.items():
+        for v in fps:
+            inv[v].append(k)
+
+    groups: list[dict] = []
+    delta: dict = {}
+    seen_pairs: set = set()
+    scope_keys = [k for k in body_fps if (not target or k[0] == target)]
+    for ka in scope_keys:
+        cand: dict[tuple, int] = defaultdict(int)
+        for v in body_fps[ka]:
+            for kb in inv[v]:
+                if kb != ka:
+                    cand[kb] += 1
+        for kb, shared in cand.items():
+            group = _dup_stage2_pair(
+                ka, kb, shared, body_fps=body_fps, meta=meta, member_key=member_key,
+                seen_pairs=seen_pairs, in_scope=in_scope,
+                min_shared=min_shared, sim_thresh=sim_thresh)
+            if group is not None:
+                groups.append(group)
+                delta["structural_near"] = delta.get("structural_near", 0) + 1
+    return groups, delta
+
+
+def _dup_stage_call_pattern(rows: list, *, min_node: int, in_scope) -> tuple[list, dict]:
+    """call_pattern（要 opt-in、最低信心🟦）：呼叫名集合相同但結構不同才報。"""
+    from collections import defaultdict
+    by_call: dict[str, list] = defaultdict(list)
+    for r in rows:
+        if r["call_hash"] and r["has_control_flow"] and r["node_count"] >= min_node:
+            by_call[r["call_hash"]].append(r)
+
+    groups: list[dict] = []
+    delta: dict = {}
+    for members in by_call.values():
+        shapes = {m["shape_hash"] for m in members}
+        if len(members) < 2 or len(shapes) == 1:
+            continue   # 同 call 又同 shape 已被 stage-1 涵蓋；要 shape 不同才是正交線索
+        if not in_scope(members):
+            continue
+        members.sort(key=lambda m: (m["path"], m["line"]))
+        groups.append(_make_dup_group(
+            "CALL_PATTERN_SIM", members, None,
+            "呼叫名集合完全相同、結構不同（正交線索、最低信心）；可能碰巧用同組 helper，務必讀碼。"))
+        delta["call_pattern"] = delta.get("call_pattern", 0) + 1
+    return groups, delta
+
+
+def _dup_advisory(summary: dict, target: str | None) -> list[str]:
+    """把數字翻成「你接下來該去確認什麼」——⛔永不出「應刪/應合併」的決策。"""
+    advisory: list[str] = []
+    if summary["exact"]:
+        advisory.append(f"{summary['exact']} 群逐字相同（高信心 Type-1）——仍可能是不同模組的合理相同樣板，"
+                        "🟥 只說「逐字相同」不說「該合併」。")
+    if summary["renamed"] + summary["structural_near"]:
+        advisory.append(f"{summary['renamed'] + summary['structural_near']} 群是改名/近似——結構像≠語義同"
+                        "（兩段長得一樣的 if-return 可能業務無關），務必讀碼判定是否真重複。")
+    if not summary["stage2_ran"]:
+        advisory.append("未跑全域近似（stage-2/3）：只給逐字/同形重複。要找 Type-3 近似請帶 scope_file 或 near_global。")
+    if target:
+        advisory.append("scope 模式：stage-1（逐字/同形）仍對全 repo 跨檔偵測、只輸出含此檔成員的群；"
+                        "stage-2 近似只比與此檔有指紋交集者。total_units_scanned 是全 repo 數。")
+    if not advisory:
+        advisory.append("未發現結構相同群（名稱級結構層面）；Type-4 語義克隆本工具誠實偵測不到。")
+    return advisory
+
+
 def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bool = False,
                     min_similarity: float | None = None,
                     include_call_pattern: bool = False) -> dict:
@@ -1379,7 +1598,6 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
         raise RuntimeError(
             f"find_duplicates：專案尚未索引（無 {db_file}）。請先呼叫 index_project。")
 
-    from collections import defaultdict
     min_node = clones._env_int("CODESEXTANT_DEDUP_MIN_NODE_COUNT", 15)
     sim_thresh = (min_similarity if min_similarity is not None
                   else clones._env_float("CODESEXTANT_DEDUP_SIMILARITY_THRESHOLD", 0.8))
@@ -1412,152 +1630,28 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
             """scope_file 模式：群至少含一個 target 檔成員才輸出（None=不限、全輸出）。"""
             return (not target) or any(os.path.abspath(m["path"]) == target for m in members)
 
-        # ── stage-1：shape_hash GROUP BY，群內按 raw_token 二次分簇（紅隊 L1-MEDIUM：EXACT 子簇與
-        #    RENAMED 變體並存、不互相吃掉，f1/f2 逐字得 EXACT、f1/f3 改名得 RENAMED）──
-        by_shape: dict[str, list] = defaultdict(list)
-        for r in rows:
-            by_shape[r["shape_hash"]].append(r)
-        for _shape, members in by_shape.items():
-            if len(members) < 2:
-                continue
-            # 紅隊 L1-HIGH 收尾：結構顯著性 = has_control_flow + node_count（去掉 nstmts 門檻——Go 的
-            # body=block>statement_list 多一層、且「單一大 switch/if dispatch」top-level nstmts=1 會被
-            # 誤殺；node_count 是更好的複雜度指標、has_cf 已要求控制流，nstmts 冗餘且誤傷、與 winnow gate 對齊）。
-            sig = [m for m in members if m["has_control_flow"]
-                   and m["node_count"] >= min_node]
-            if len(sig) < 2:
-                if _in_scope(members):
-                    summary["boilerplate_suppressed_groups"] += 1   # 同形但都樣板/太小 → 壓制
-                continue
-            by_raw: dict[str, list] = defaultdict(list)
-            for m in sig:
-                by_raw[m["raw_token_hash"]].append(m)
-            reps: list[dict] = []   # 跨 raw 代表（每 raw 子簇第一個），給 RENAMED 群
-            for cluster in by_raw.values():
-                cluster.sort(key=lambda m: (m["path"], m["line"]))
-                if len(cluster) >= 2 and _in_scope(cluster):
-                    groups.append(_make_dup_group(
-                        "EXACT_DUP", cluster, 1.0,
-                        "逐字相同（shape+raw_token 皆同）。結構相同≠語義相同，合併前讀碼 + CI。"))
-                    summary["exact"] += 1
-                    for m in cluster:
-                        member_key.add((m["path"], m["line"]))
-                reps.append(cluster[0])
-            if len(by_raw) > 1 and len(reps) >= 2:   # 有改名變體 → RENAMED（跨 raw 代表）
-                reps.sort(key=lambda m: (m["path"], m["line"]))
-                if _in_scope(reps):
-                    groups.append(_make_dup_group(
-                        "RENAMED_DUP", reps, None,
-                        f"結構相同、識別字/常數不同（{len(by_raw)} 種變體）。可能只是同類樣板，合併前必讀業務語義。"))
-                    summary["renamed"] += 1
-                    for m in reps:
-                        member_key.add((m["path"], m["line"]))
+        stage_groups, delta, member_key = _dup_stage1(
+            rows, min_node=min_node, in_scope=_in_scope)
+        groups.extend(stage_groups)
+        _merge_summary(summary, delta)
 
-        # ── stage-2/3：winnowing 近似（DF-cap 三道閘；scope_file 或 near_global 才跑）──
         if summary["stage2_ran"]:
-            # 閘1：DF-cap 排氾濫指紋。⚠ 紅隊 L4-HIGH：用 DISTINCT(path,line,fp_value) 數**真 document
-            # frequency**（出現在幾個不同函數），而非 fingerprint_index 總行數——否則單函數內 winnow 同 fp
-            # 多次出現會把自己灌爆 df_cap、誤剔真指紋（winnow 落盤已 set 去重，這裡 DISTINCT 雙保險）。
-            flood = {r[0] for r in conn.execute(
-                "SELECT fp_value FROM (SELECT DISTINCT path,line,fp_value FROM fingerprint_index) "
-                "GROUP BY fp_value HAVING COUNT(*)>?", (df_cap,)).fetchall()}
-            # ⚠ 紅隊 L2-MEDIUM：scope_file 模式只載「跟 target 檔 fp 有交集」的單元（不全表載入），
-            # 讓單檔查重成本與全 repo 規模脫鉤；near_global 才全載入。
-            if target:
-                seed = {r[0] for r in conn.execute(
-                    "SELECT DISTINCT fp_value FROM fingerprint_index WHERE path=?", (target,)
-                ).fetchall()} - flood
-                rows_fp: list = []
-                seed_list = list(seed)
-                for i in range(0, len(seed_list), 900):   # SQLite IN 上限保護、分批
-                    chunk = seed_list[i:i + 900]
-                    ph = ",".join("?" * len(chunk))
-                    rows_fp.extend(conn.execute(
-                        f"SELECT path,line,fp_value FROM fingerprint_index WHERE fp_value IN ({ph})",
-                        tuple(chunk)).fetchall())
-            else:
-                rows_fp = conn.execute(
-                    "SELECT path,line,fp_value FROM fingerprint_index").fetchall()
-            body_fps: dict[tuple, set] = defaultdict(set)
-            for r in rows_fp:
-                if r["fp_value"] in flood:
-                    continue
-                body_fps[(r["path"], r["line"])].add(r["fp_value"])
-            inv: dict[int, list] = defaultdict(list)
-            for k, fps in body_fps.items():
-                for v in fps:
-                    inv[v].append(k)
-            scope_keys = [k for k in body_fps if (not target or k[0] == target)]
-            seen_pairs: set = set()
-            for ka in scope_keys:
-                cand: dict[tuple, int] = defaultdict(int)
-                for v in body_fps[ka]:
-                    for kb in inv[v]:
-                        if kb != ka:
-                            cand[kb] += 1
-                for kb, shared in cand.items():
-                    if shared < min_shared:                     # 閘2：min_shared_fp 候選門檻
-                        continue
-                    pair = tuple(sorted([ka, kb]))
-                    if pair in seen_pairs:
-                        continue
-                    seen_pairs.add(pair)
-                    if pair[0] in member_key and pair[1] in member_key:
-                        continue                                # 已在 stage-1 同群、不重報
-                    union = len(body_fps[ka] | body_fps[kb])
-                    sim = shared / union if union else 0.0
-                    if sim < sim_thresh:                        # 閘3：精確 Jaccard 門檻
-                        continue
-                    ma, mb = meta.get(pair[0]), meta.get(pair[1])
-                    if not ma or not mb:
-                        continue
-                    # 紅隊 L2-LOW：shape_hash 相同屬 stage-1 EXACT/RENAMED 職責，stage-2 只報「非同形」
-                    # 的 Type-3 近似（避免 STRUCTURAL_NEAR 出 sim=1.0 的語義矛盾）。
-                    if ma["shape_hash"] == mb["shape_hash"]:
-                        continue
-                    if not _in_scope([ma, mb]):
-                        continue
-                    pair_members = sorted([ma, mb], key=lambda m: (m["path"], m["line"]))
-                    groups.append(_make_dup_group(
-                        "STRUCTURAL_NEAR", pair_members, round(sim, 3),
-                        f"winnow 近似相似度 {round(sim, 3)}（非逐字、非同形）；務必讀碼確認是否真重複。"))
-                    summary["structural_near"] += 1
+            stage_groups, delta = _dup_stage2(
+                conn, target=target, meta=meta, member_key=member_key, in_scope=_in_scope,
+                df_cap=df_cap, min_shared=min_shared, sim_thresh=sim_thresh)
+            groups.extend(stage_groups)
+            _merge_summary(summary, delta)
 
-        # ── call_pattern（opt-in、最低信心🟦）：call_hash 同、shape 不同 ──
         if include_call_pattern:
-            by_call: dict[str, list] = defaultdict(list)
-            for r in rows:
-                if r["call_hash"] and r["has_control_flow"] and r["node_count"] >= min_node:
-                    by_call[r["call_hash"]].append(r)
-            for _ch, members in by_call.items():
-                shapes = {m["shape_hash"] for m in members}
-                if len(members) < 2 or len(shapes) == 1:
-                    continue   # 同 call 又同 shape 已被 stage-1 涵蓋；要 shape 不同才是正交線索
-                if not _in_scope(members):
-                    continue
-                members.sort(key=lambda m: (m["path"], m["line"]))
-                groups.append(_make_dup_group(
-                    "CALL_PATTERN_SIM", members, None,
-                    "呼叫名集合完全相同、結構不同（正交線索、最低信心）；可能碰巧用同組 helper，務必讀碼。"))
-                summary["call_pattern"] += 1
+            stage_groups, delta = _dup_stage_call_pattern(
+                rows, min_node=min_node, in_scope=_in_scope)
+            groups.extend(stage_groups)
+            _merge_summary(summary, delta)
 
     summary["high_conf_typed_count"] = summary["exact"]
     summary["needs_human_judge_count"] = summary["renamed"] + summary["structural_near"] \
         + summary["call_pattern"]
-    advisory: list[str] = []
-    if summary["exact"]:
-        advisory.append(f"{summary['exact']} 群逐字相同（高信心 Type-1）——仍可能是不同模組的合理相同樣板，"
-                        "🟥 只說「逐字相同」不說「該合併」。")
-    if summary["renamed"] + summary["structural_near"]:
-        advisory.append(f"{summary['renamed'] + summary['structural_near']} 群是改名/近似——結構像≠語義同"
-                        "（兩段長得一樣的 if-return 可能業務無關），務必讀碼判定是否真重複。")
-    if not summary["stage2_ran"]:
-        advisory.append("未跑全域近似（stage-2/3）：只給逐字/同形重複。要找 Type-3 近似請帶 scope_file 或 near_global。")
-    if target:
-        advisory.append("scope 模式：stage-1（逐字/同形）仍對全 repo 跨檔偵測、只輸出含此檔成員的群；"
-                        "stage-2 近似只比與此檔有指紋交集者。total_units_scanned 是全 repo 數。")
-    if not advisory:
-        advisory.append("未發現結構相同群（名稱級結構層面）；Type-4 語義克隆本工具誠實偵測不到。")
+    advisory = _dup_advisory(summary, target)
     return {
         "root": abs_path, "scope_file": target, "groups": groups, "summary": summary,
         "verification_reminder": (
