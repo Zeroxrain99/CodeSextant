@@ -1,0 +1,33 @@
+{
+  "deadcode": [],
+  "find_unwired": [
+    "_poc_graph_c/graph-common.js::::buildBuffers",
+    "_poc_graph_c/graph-common.js::::loadGraph",
+    "codesextant/clones.py::::extract_fingerprints",
+    "codesextant/comments.py::::extract_comments",
+    "codesextant/complexity.py::::_BLOCK_TYPES",
+    "codesextant/ranking.py::::_line_of",
+    "codesextant/references.py::::goto_definition"
+  ],
+  "find_duplicates": [
+    "EXACT_DUP|_poc_graph_c/build_repo_graph.py::community_of+_poc_graph_c/export_graph.py::community_of",
+    "EXACT_DUP|_poc_graph_c/group_in_box.py::apd+_poc_graph_c/group_in_box_v2.py::apd+_poc_graph_c/group_in_box_v3.py::apd+_poc_graph_c/louvain_recolor.py::apd",
+    "EXACT_DUP|codesextant/clones.py::_env_int+codesextant/namegraph.py::_env_int",
+    "EXACT_DUP|codesextant/storage.py::_env_flag+codesextant/work_coordinator.py::_env_flag",
+    "EXACT_DUP|tests/test_clones.py::_write+tests/test_comments.py::_write+tests/test_namegraph.py::_write",
+    "EXACT_DUP|tests/test_complexity.py::rec+tools/_smoke_p5.py::rec",
+    "EXACT_DUP|tests/test_heavy_sharding.py::job+tests/test_sharded_wiring.py::job",
+    "RENAMED_DUP|_poc_graph_c/build_repo_graph.py::read_snippet+_poc_graph_c/export_graph.py::read_snippet",
+    "RENAMED_DUP|_poc_graph_c/build_repo_graph.py::src_node+_poc_graph_c/export_graph.py::src_node",
+    "RENAMED_DUP|_poc_graph_c/plot_clusters.py::col+_poc_graph_c/plot_health.py::comm_color",
+    "RENAMED_DUP|codesextant/engine.py::_iter_source_files+codesextant/references.py::_iter_files_by_ext",
+    "RENAMED_DUP|codesextant/ranking.py::_env_float+codesextant/ranking.py::_env_int",
+    "RENAMED_DUP|tests/test_ai_usage.py::test_bad_path_raises+tests/test_deadcode.py::test_bad_path_raises",
+    "RENAMED_DUP|tests/test_daemon_reliability.py::outer+tests/test_daemon_reliability.py::outer",
+    "RENAMED_DUP|tests/test_daemon_reliability.py::test_heavy_work_coordinator_different_key_reentry_fails_fast+tests/test_daemon_reliability.py::test_heavy_work_coordinator_same_key_reentry_fails_fast",
+    "RENAMED_DUP|tests/test_heavy_sharding.py::job+tests/test_heavy_sharding.py::job"
+  ],
+  "_說明": "已知並接受的既有技術債基線，不是目標值。棘輪：現況必須是本清單的子集，新長出來的才 FAIL。⛔ 放寬只能手動編輯本檔，改動會在 git diff 被看見；⛔ 別寫自動重生腳本＝每次把新債默默收進來，棘輪就廢了。",
+  "_已知誤報": "work_coordinator.py::SHARED_COORDINATOR 是模組級單例，動態存取，名稱級靜態掃描看不到用處＝CodeSextant 自己 verification_reminder 講明的誤報類型。收進基線是正解，⛔不要去「修」這個沒壞的東西。",
+  "_基線來源": "engine.index_project 直接重掃後產生（⛔別用 daemon 快取狀態建基線，會建在舊資料上）"
+}
