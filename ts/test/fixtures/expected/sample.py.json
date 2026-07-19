@@ -1,0 +1,51 @@
+[
+  {
+    "kind": "class",
+    "name": "Animal",
+    "line": 1,
+    "end_line": 8,
+    "scope": ""
+  },
+  {
+    "kind": "function",
+    "name": "speak",
+    "line": 2,
+    "end_line": 3,
+    "scope": "Animal"
+  },
+  {
+    "kind": "function",
+    "name": "nested_owner",
+    "line": 5,
+    "end_line": 8,
+    "scope": "Animal"
+  },
+  {
+    "kind": "function",
+    "name": "inner",
+    "line": 6,
+    "end_line": 7,
+    "scope": "Animal.nested_owner"
+  },
+  {
+    "kind": "function",
+    "name": "top_level",
+    "line": 11,
+    "end_line": 12,
+    "scope": ""
+  },
+  {
+    "kind": "variable",
+    "name": "CONST_X",
+    "line": 15,
+    "end_line": 15,
+    "scope": ""
+  },
+  {
+    "kind": "variable",
+    "name": "config",
+    "line": 16,
+    "end_line": 16,
+    "scope": ""
+  }
+]

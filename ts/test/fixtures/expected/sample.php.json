@@ -1,0 +1,58 @@
+[
+  {
+    "kind": "interface",
+    "name": "Shape",
+    "line": 3,
+    "end_line": 5,
+    "scope": ""
+  },
+  {
+    "kind": "method",
+    "name": "area",
+    "line": 4,
+    "end_line": 4,
+    "scope": "Shape"
+  },
+  {
+    "kind": "trait",
+    "name": "Loggable",
+    "line": 7,
+    "end_line": 9,
+    "scope": ""
+  },
+  {
+    "kind": "method",
+    "name": "log",
+    "line": 8,
+    "end_line": 8,
+    "scope": "Loggable"
+  },
+  {
+    "kind": "enum",
+    "name": "Status",
+    "line": 11,
+    "end_line": 13,
+    "scope": ""
+  },
+  {
+    "kind": "class",
+    "name": "Service",
+    "line": 15,
+    "end_line": 17,
+    "scope": ""
+  },
+  {
+    "kind": "method",
+    "name": "run",
+    "line": 16,
+    "end_line": 16,
+    "scope": "Service"
+  },
+  {
+    "kind": "function",
+    "name": "topLevel",
+    "line": 19,
+    "end_line": 19,
+    "scope": ""
+  }
+]

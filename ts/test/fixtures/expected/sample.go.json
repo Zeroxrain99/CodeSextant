@@ -1,0 +1,37 @@
+[
+  {
+    "kind": "function",
+    "name": "Hello",
+    "line": 3,
+    "end_line": 3,
+    "scope": ""
+  },
+  {
+    "kind": "type",
+    "name": "T",
+    "line": 5,
+    "end_line": 7,
+    "scope": ""
+  },
+  {
+    "kind": "method",
+    "name": "Method",
+    "line": 9,
+    "end_line": 9,
+    "scope": ""
+  },
+  {
+    "kind": "variable",
+    "name": "GlobalVar",
+    "line": 11,
+    "end_line": 11,
+    "scope": ""
+  },
+  {
+    "kind": "variable",
+    "name": "GlobalConst",
+    "line": 13,
+    "end_line": 13,
+    "scope": ""
+  }
+]

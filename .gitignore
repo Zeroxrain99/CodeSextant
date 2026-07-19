@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# 打包產物（python -m build）
+build/
+dist/
+*.egg
+
+# SQLite 索引庫（執行期產物；預設在 ~/.codesextant，測試/本地可能落這）
+*.db
+_db/
+
+# ts_bridge Node 依賴（14.5MB，首次 `npm install` 重建，不進版控）
+ts_bridge/node_modules/
+
+# 本地驗證/暫存殘留
+tools/__pycache__/
+.ruff_cache/
+.venv/
+.hypothesis/
+
+# SQLite 的 WAL 邊車檔（跟 *.db 同生命週期）
+*.db-wal
+*.db-shm
+
+# PoC 合成資料（2.2MB，可由 _poc_graph_c/export_graph.py 重跑產出）
+_poc_graph_c/graph_synth.json
+_poc_graph_c/graph_real.json

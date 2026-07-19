@@ -1,0 +1,58 @@
+[
+  {
+    "kind": "class",
+    "name": "Service",
+    "line": 1,
+    "end_line": 5,
+    "scope": ""
+  },
+  {
+    "kind": "constructor",
+    "name": "Service",
+    "line": 2,
+    "end_line": 2,
+    "scope": "Service"
+  },
+  {
+    "kind": "method",
+    "name": "run",
+    "line": 4,
+    "end_line": 4,
+    "scope": "Service"
+  },
+  {
+    "kind": "interface",
+    "name": "Shape",
+    "line": 7,
+    "end_line": 9,
+    "scope": ""
+  },
+  {
+    "kind": "method",
+    "name": "area",
+    "line": 8,
+    "end_line": 8,
+    "scope": "Shape"
+  },
+  {
+    "kind": "enum",
+    "name": "Color",
+    "line": 11,
+    "end_line": 11,
+    "scope": ""
+  },
+  {
+    "kind": "interface",
+    "name": "MyAnno",
+    "line": 13,
+    "end_line": 13,
+    "scope": ""
+  },
+  {
+    "kind": "class",
+    "name": "Person",
+    "line": 15,
+    "end_line": 15,
+    "scope": ""
+  }
+]

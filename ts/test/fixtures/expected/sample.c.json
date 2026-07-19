@@ -1,0 +1,30 @@
+[
+  {
+    "kind": "struct",
+    "name": "Point",
+    "line": 1,
+    "end_line": 3,
+    "scope": ""
+  },
+  {
+    "kind": "enum",
+    "name": "Color",
+    "line": 5,
+    "end_line": 5,
+    "scope": ""
+  },
+  {
+    "kind": "struct",
+    "name": "Data",
+    "line": 7,
+    "end_line": 9,
+    "scope": ""
+  },
+  {
+    "kind": "function",
+    "name": "add",
+    "line": 11,
+    "end_line": 13,
+    "scope": ""
+  }
+]

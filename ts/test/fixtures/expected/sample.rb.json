@@ -1,0 +1,30 @@
+[
+  {
+    "kind": "module",
+    "name": "MyModule",
+    "line": 1,
+    "end_line": 9,
+    "scope": ""
+  },
+  {
+    "kind": "class",
+    "name": "MyClass",
+    "line": 2,
+    "end_line": 8,
+    "scope": "MyModule"
+  },
+  {
+    "kind": "method",
+    "name": "instance_method",
+    "line": 3,
+    "end_line": 4,
+    "scope": "MyModule.MyClass"
+  },
+  {
+    "kind": "method",
+    "name": "class_method",
+    "line": 6,
+    "end_line": 7,
+    "scope": "MyModule.MyClass"
+  }
+]

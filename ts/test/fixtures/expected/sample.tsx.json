@@ -1,0 +1,23 @@
+[
+  {
+    "kind": "function",
+    "name": "App",
+    "line": 3,
+    "end_line": 5,
+    "scope": ""
+  },
+  {
+    "kind": "interface",
+    "name": "Props",
+    "line": 7,
+    "end_line": 9,
+    "scope": ""
+  },
+  {
+    "kind": "variable",
+    "name": "title",
+    "line": 11,
+    "end_line": 11,
+    "scope": ""
+  }
+]

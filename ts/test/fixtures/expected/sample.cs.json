@@ -1,0 +1,72 @@
+[
+  {
+    "kind": "type",
+    "name": "Handler",
+    "line": 5,
+    "end_line": 5,
+    "scope": ""
+  },
+  {
+    "kind": "interface",
+    "name": "IShape",
+    "line": 7,
+    "end_line": 10,
+    "scope": ""
+  },
+  {
+    "kind": "method",
+    "name": "Area",
+    "line": 9,
+    "end_line": 9,
+    "scope": "IShape"
+  },
+  {
+    "kind": "enum",
+    "name": "Color",
+    "line": 12,
+    "end_line": 12,
+    "scope": ""
+  },
+  {
+    "kind": "struct",
+    "name": "Point",
+    "line": 14,
+    "end_line": 17,
+    "scope": ""
+  },
+  {
+    "kind": "class",
+    "name": "Person",
+    "line": 19,
+    "end_line": 19,
+    "scope": ""
+  },
+  {
+    "kind": "class",
+    "name": "Service",
+    "line": 21,
+    "end_line": 28,
+    "scope": ""
+  },
+  {
+    "kind": "constructor",
+    "name": "Service",
+    "line": 23,
+    "end_line": 23,
+    "scope": "Service"
+  },
+  {
+    "kind": "property",
+    "name": "Value",
+    "line": 25,
+    "end_line": 25,
+    "scope": "Service"
+  },
+  {
+    "kind": "method",
+    "name": "Run",
+    "line": 27,
+    "end_line": 27,
+    "scope": "Service"
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "kind": "function",
+    "name": "helper",
+    "line": 1,
+    "end_line": 3,
+    "scope": ""
+  },
+  {
+    "kind": "class",
+    "name": "Service",
+    "line": 5,
+    "end_line": 9,
+    "scope": ""
+  },
+  {
+    "kind": "method",
+    "name": "run",
+    "line": 6,
+    "end_line": 8,
+    "scope": "Service"
+  },
+  {
+    "kind": "variable",
+    "name": "value",
+    "line": 11,
+    "end_line": 11,
+    "scope": ""
+  }
+]

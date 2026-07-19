@@ -1,0 +1,30 @@
+{
+  "platform": "win32",
+  "project_key": {
+    "E:\\ai-king\\項目資料\\CodeSextant": "a92a335f32edd44a1374346220786029f3706123",
+    "E:\\Ai-King\\Foo": "97785cd6a93244635078d2bf0105a2340e9c61c7",
+    "C:\\Users\\zerox": "fed19953c619994a83ce77f4944f45dfb6c810da",
+    "E:/ai-king/foo": "97785cd6a93244635078d2bf0105a2340e9c61c7",
+    "E:\\foo.\\bar": "01fe4c7bceae19d89e3ca12bad32620e4420f2f8",
+    "E:\\a b ": "b7e993293cff65ef78fe47af0d79526bacb04882",
+    "E:\\專案 \\Foo.": "c6abfc78de7c5e7d37f0e77c14c1dccd1f1f6580"
+  },
+  "file_content_hash": {
+    "sample.c": "d690514bc05da5746657b22bd5c2ce500a5a72eae2aa8fc21fb272c41c9be96e",
+    "sample.cpp": "325c40021215526191cb53fe40ce66850ae2588680366d31f4011ff81f1f6402",
+    "sample.cs": "2eae2a9fa2b5552096483d34c6d99001f7fdb4e7c39a3fa85507303c8a2c7bec",
+    "sample.go": "af011e3d3ddd7e3756f1c3cb9b65026bc843720e2173f63213e9014ffec85fb7",
+    "sample.java": "c7b2faa4559fa8e3a5fd82d41db2b2698ad8b9dc6171f31a5a8a96388973dcb7",
+    "sample.js": "79f87ae915d4cfe43e8442aea303b63c1c98ca6b6676f6462f6c3ca4d1b74a65",
+    "sample.kt": "ed415e1c0e48bbd2a3c3b39361fe6af0a42c84b4274a4bf41448e7100bbe3258",
+    "sample.lua": "7f0c8601e0e424c2d643785d3c44ff26524257fee6a62bbdf9de1f8e02699e2a",
+    "sample.php": "2d9214c942de1653a8a67c7faa151a7159156d47a16d4381ba0edb1f717ff335",
+    "sample.py": "8a66f130516a20ad7cce6eb59b3a2c904c73a2ddcb65a05be54c3d291c3f83fd",
+    "sample.rb": "593ec8daac2661958e2a6665ccfc9a456442ed30833a6fce0a3cbacb9ef1259d",
+    "sample.rs": "e45cbfdff7c33264fd184a306c13854f10c413e7b465791f51664cbb48786a24",
+    "sample.sh": "baab1524edc860cefa2068d51f3382dd3018a395ae9eb4651be60fb7015cfac1",
+    "sample.swift": "7d51a95671e2605dc1027b5cd5019732eb05693064289be0e905ac44a51e11fb",
+    "sample.ts": "e5eb2515e03fc273c27b038ff572b32c55ec361f1d9a4f167f7b7fe010c872a5",
+    "sample.tsx": "66e17be9d18dcc1a71c1be6a4b6407b03095dd44f6f9a2febb614e5665e13702"
+  }
+}

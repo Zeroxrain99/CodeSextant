@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeSextant 功能 C · PoC-A · cosmos.gl 路線（WebGL2 + Bloom）</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0e14; overflow: hidden; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  .hud {
+    position: fixed; left: 22px; top: 20px; z-index: 10;
+    font-family: "Segoe UI", system-ui, sans-serif; color: #cfe6ff;
+    background: rgba(8, 12, 20, 0.62); border: 1px solid rgba(90, 180, 255, 0.22);
+    border-radius: 12px; padding: 14px 18px; backdrop-filter: blur(2px);
+    text-shadow: 0 1px 3px rgba(0,0,0,.8); max-width: 330px;
+  }
+  .hud h1 { margin: 0 0 6px; font-size: 15px; letter-spacing: .5px; color: #6fd3ff; }
+  .hud .tag { display:inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: rgba(60,200,255,.14); border:1px solid rgba(90,200,255,.35); color:#9fe3ff; margin-bottom:8px;}
+  .hud p { margin: 4px 0; font-size: 12px; line-height: 1.5; color: #acc6e0; }
+  .hud b { color: #eaf4ff; }
+  #stat { position: fixed; right: 22px; bottom: 18px; z-index: 10;
+    font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #7fb6e6;
+    background: rgba(8,12,20,.55); padding: 8px 12px; border-radius: 8px; text-shadow:0 1px 2px #000;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <span class="tag">PoC-A · WebGL2 路線</span>
+  <h1>CodeSextant 代碼關係圖</h1>
+  <p>渲染：<b>WebGL2 + UnrealBloom 後處理</b>（＝cosmos.gl 同級的覆蓋率最廣路線）</p>
+  <p>節點＝符號（大小＝PageRank 重要度）<br>連線＝引用關係 · 顏色＝社群分群</p>
+  <p style="color:#8fb">全瀏覽器一致（含 Firefox）· 不黑屏</p>
+</div>
+<div id="stat">init…</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.171.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.171.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { loadGraph, buildBuffers } from './graph-common.js';
+
+const params = new URLSearchParams(location.search);
+const DATA = params.get('data') || 'graph_synth.json';
+const statEl = document.getElementById('stat');
+
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: false, alpha: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x0a0e14, 1);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x0a0e14, 0.00035);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 1, 12000);
+camera.position.set(0, 0, 3300);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+const POINT_VERT = `
+  attribute float size; attribute vec3 color; varying vec3 vColor;
+  void main(){ vColor = color; vec4 mv = modelViewMatrix * vec4(position,1.0);
+    gl_PointSize = size * (900.0 / -mv.z); gl_Position = projectionMatrix * mv; }`;
+const POINT_FRAG = `
+  varying vec3 vColor;
+  void main(){ float d = distance(gl_PointCoord, vec2(0.5));
+    if(d > 0.5) discard; float a = smoothstep(0.5, 0.06, d);
+    float core = smoothstep(0.32, 0.0, d);
+    gl_FragColor = vec4(vColor + core*0.6, a); }`;
+
+(async function () {
+  const t0 = performance.now();
+  const graph = await loadGraph(DATA);
+  const buf = buildBuffers(graph);
+
+  // 連線（先畫、墊底）
+  const lg = new THREE.BufferGeometry();
+  lg.setAttribute('position', new THREE.BufferAttribute(buf.lpos, 3));
+  lg.setAttribute('color', new THREE.BufferAttribute(buf.lcol, 3));
+  const lm = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true,
+    opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false });
+  scene.add(new THREE.LineSegments(lg, lm));
+
+  // 節點
+  const pg = new THREE.BufferGeometry();
+  pg.setAttribute('position', new THREE.BufferAttribute(buf.pos, 3));
+  pg.setAttribute('color', new THREE.BufferAttribute(buf.col, 3));
+  pg.setAttribute('size', new THREE.BufferAttribute(buf.siz, 1));
+  const pm = new THREE.ShaderMaterial({ vertexShader: POINT_VERT, fragmentShader: POINT_FRAG,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: true });
+  scene.add(new THREE.Points(pg, pm));
+
+  // 後處理 bloom（整體輝光 = 科技感關鍵）
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.5, 0.42);
+  composer.addPass(bloom);
+
+  const buildMs = (performance.now() - t0).toFixed(0);
+  let frames = 0, fpsT = performance.now(), fps = 0;
+  window.__ready = false;
+
+  function animate() {
+    requestAnimationFrame(animate);
+    scene.rotation.y += 0.0009;
+    scene.rotation.x = Math.sin(performance.now() * 0.00006) * 0.12;
+    controls.update();
+    composer.render();
+    frames++;
+    const now = performance.now();
+    if (now - fpsT > 500) { fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }
+    statEl.textContent = `WebGL2 · ${buf.N.toLocaleString()} 節點 · ${buf.E.toLocaleString()} 連線 · ${buf.C} 社群 · ${fps} fps · 建圖 ${buildMs}ms`;
+    if (now - t0 > 1200) window.__ready = true; // 給 playwright 截圖訊號
+  }
+  animate();
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+  });
+})().catch(e => { statEl.textContent = '錯誤：' + e.message; window.__error = e.message; });
+</script>
+</body>
+</html>

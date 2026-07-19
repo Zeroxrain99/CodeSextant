@@ -1,0 +1,58 @@
+[
+  {
+    "kind": "function",
+    "name": "free_fn",
+    "line": 1,
+    "end_line": 1,
+    "scope": ""
+  },
+  {
+    "kind": "struct",
+    "name": "MyStruct",
+    "line": 3,
+    "end_line": 5,
+    "scope": ""
+  },
+  {
+    "kind": "enum",
+    "name": "MyEnum",
+    "line": 7,
+    "end_line": 10,
+    "scope": ""
+  },
+  {
+    "kind": "trait",
+    "name": "MyTrait",
+    "line": 12,
+    "end_line": 14,
+    "scope": ""
+  },
+  {
+    "kind": "function",
+    "name": "required",
+    "line": 13,
+    "end_line": 13,
+    "scope": "MyTrait"
+  },
+  {
+    "kind": "function",
+    "name": "method",
+    "line": 17,
+    "end_line": 17,
+    "scope": "MyStruct"
+  },
+  {
+    "kind": "variable",
+    "name": "MAX",
+    "line": 20,
+    "end_line": 20,
+    "scope": ""
+  },
+  {
+    "kind": "variable",
+    "name": "NAME",
+    "line": 21,
+    "end_line": 21,
+    "scope": ""
+  }
+]

@@ -1,0 +1,23 @@
+[
+  {
+    "kind": "function",
+    "name": "globalFn",
+    "line": 1,
+    "end_line": 3,
+    "scope": ""
+  },
+  {
+    "kind": "function",
+    "name": "localFn",
+    "line": 5,
+    "end_line": 7,
+    "scope": ""
+  },
+  {
+    "kind": "function",
+    "name": "M.method",
+    "line": 9,
+    "end_line": 11,
+    "scope": ""
+  }
+]

@@ -1,0 +1,37 @@
+[
+  {
+    "kind": "class",
+    "name": "Greeter",
+    "line": 1,
+    "end_line": 5,
+    "scope": ""
+  },
+  {
+    "kind": "function",
+    "name": "greet",
+    "line": 2,
+    "end_line": 4,
+    "scope": "Greeter"
+  },
+  {
+    "kind": "class",
+    "name": "Singleton",
+    "line": 7,
+    "end_line": 9,
+    "scope": ""
+  },
+  {
+    "kind": "function",
+    "name": "helper",
+    "line": 8,
+    "end_line": 8,
+    "scope": "Singleton"
+  },
+  {
+    "kind": "function",
+    "name": "topLevel",
+    "line": 11,
+    "end_line": 11,
+    "scope": ""
+  }
+]

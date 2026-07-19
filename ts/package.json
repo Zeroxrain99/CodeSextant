@@ -1,0 +1,40 @@
+{
+  "name": "codesextant",
+  "version": "0.16.0-ts.0",
+  "private": true,
+  "description": "CodeSextant — 跨語言代碼地圖 + 規範符合度檢查（spec-conformance）。全 TS 重寫，主語言 TS、語言專屬精度引擎降為可選配件。唯讀導航圖：只看引用關聯/結構，不改碼、線索非決策。",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "codesextant": "./dist/cli.js",
+    "csx-conform": "./dist/conformCli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "poc:symbols": "tsx src/poc/symbolsPoc.ts"
+  },
+  "dependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.11.1",
+    "web-tree-sitter": "^0.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tree-sitter-wasms": "^0.1.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "//": "deps 版本為估值，P0 首次 npm install 時以實際可用版本校正（尤其 web-tree-sitter API 0.20 vs 0.25 不同，PoC 時對齊）。語言精度配件（codesextant-python jedi 橋等）為 optional add-on、不列核心 deps。"
+}

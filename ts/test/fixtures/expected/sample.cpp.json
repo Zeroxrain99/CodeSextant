@@ -1,0 +1,37 @@
+[
+  {
+    "kind": "class",
+    "name": "Widget",
+    "line": 1,
+    "end_line": 4,
+    "scope": ""
+  },
+  {
+    "kind": "function",
+    "name": "doIt",
+    "line": 6,
+    "end_line": 6,
+    "scope": ""
+  },
+  {
+    "kind": "struct",
+    "name": "Point",
+    "line": 8,
+    "end_line": 10,
+    "scope": ""
+  },
+  {
+    "kind": "enum",
+    "name": "Color",
+    "line": 12,
+    "end_line": 12,
+    "scope": ""
+  },
+  {
+    "kind": "function",
+    "name": "freeFunc",
+    "line": 14,
+    "end_line": 16,
+    "scope": ""
+  }
+]

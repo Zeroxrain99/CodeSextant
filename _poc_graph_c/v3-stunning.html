@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeSextant 代碼星圖 · v2 震撼互動版（WebGPU + TSL）</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #070a10; overflow: hidden;
+    font-family: "Segoe UI", system-ui, "Microsoft JhengHei", sans-serif; }
+  #c { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+  .hud { position: fixed; left: 22px; top: 20px; z-index: 10; color: #cfe6ff;
+    background: rgba(8,12,20,.55); border: 1px solid rgba(90,180,255,.22);
+    border-radius: 12px; padding: 13px 17px; max-width: 320px; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+  .hud h1 { margin: 0 0 5px; font-size: 15px; color: #6fd3ff; letter-spacing: .5px; }
+  .hud .tag { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px;
+    background:rgba(60,200,255,.14); border:1px solid rgba(90,200,255,.35); color:#9fe3ff; margin-bottom:7px;}
+  .hud p { margin: 3px 0; font-size: 12px; line-height: 1.5; color: #acc6e0; }
+  .hud b { color: #eaf4ff; }
+  #stat { position: fixed; right: 20px; bottom: 16px; z-index: 10; font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px; color: #7fb6e6; background: rgba(8,12,20,.5); padding: 7px 11px; border-radius: 8px; text-shadow:0 1px 2px #000;}
+  #tiers { position: fixed; left: 22px; bottom: 18px; z-index: 11; display: flex; gap: 6px; }
+  #tiers button { font: 12px/1 "Segoe UI", system-ui, "Microsoft JhengHei", sans-serif; color: #acc6e0; cursor: pointer;
+    background: rgba(8,12,20,.55); border: 1px solid rgba(90,180,255,.28); border-radius: 8px; padding: 8px 14px; transition: all .15s; }
+  #tiers button:hover { color: #eaf4ff; border-color: rgba(120,200,255,.6); }
+  #tiers button.on { color: #070a10; background: #6fd3ff; border-color: #6fd3ff; font-weight: 600; }
+  #zoomscale { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 11;
+    font: 11px ui-monospace, Consolas, monospace; color: #6f93b6; text-shadow: 0 1px 2px #000; }
+  #hover { position: fixed; z-index: 12; pointer-events: none; transform: translate(-50%, calc(-100% - 14px));
+    background: rgba(10,16,26,.9); border: 1px solid rgba(110,200,255,.4); color: #dff1ff; font-size: 12px;
+    padding: 4px 9px; border-radius: 7px; white-space: nowrap; display: none; box-shadow: 0 4px 18px rgba(0,0,0,.5); }
+  #panel { position: fixed; right: 0; top: 0; height: 100%; width: 430px; z-index: 14;
+    background: linear-gradient(180deg, rgba(10,15,24,.97), rgba(8,12,20,.97));
+    border-left: 1px solid rgba(110,200,255,.28); box-shadow: -10px 0 40px rgba(0,0,0,.5);
+    transform: translateX(100%); transition: transform .35s cubic-bezier(.2,.8,.2,1); display: flex; flex-direction: column; }
+  #panel.show { transform: translateX(0); }
+  #panel .ph { padding: 16px 18px 10px; border-bottom: 1px solid rgba(110,200,255,.18); }
+  #panel .pk { font-size: 11px; color: #6fd3ff; text-transform: uppercase; letter-spacing: 1px; }
+  #panel .pn { font-size: 19px; color: #eaf4ff; margin: 4px 0 2px; word-break: break-all; }
+  #panel .pf { font-size: 12px; color: #88a4c4; font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
+  #panel pre { flex: 1; margin: 0; padding: 14px 16px; overflow: auto; font-family: ui-monospace, Consolas, monospace;
+    font-size: 12.5px; line-height: 1.55; color: #c9d6e6; tab-size: 4; }
+  #panel .kw { color: #c79bff; } #panel .st { color: #9ce8a0; } #panel .cm { color: #5f7388; font-style: italic; }
+  #panel .fn { color: #6fd3ff; } #panel .nm { color: #ffd479; }
+  #panel .close { position: absolute; right: 12px; top: 12px; cursor: pointer; color: #88a4c4; font-size: 20px;
+    width: 28px; height: 28px; text-align: center; line-height: 26px; border-radius: 6px; }
+  #panel .close:hover { background: rgba(255,255,255,.08); color: #fff; }
+  #intro { position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 11; color: #9fe3ff;
+    font-size: 13px; letter-spacing: 2px; text-shadow: 0 0 12px rgba(80,200,255,.6); transition: opacity 1s; }
+  #err { position: fixed; inset: 0; z-index: 30; display:none; place-items:center; color:#ffd0d0;
+    background: rgba(20,4,4,.88); text-align:center; font-size: 14px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <span class="tag">v3 · WebGPU + TSL · 五檔語義縮放 + 雙擊顯微</span>
+  <h1>CodeSextant 代碼星圖</h1>
+  <p>598 個真實符號 · 引用關係 · 社群分群</p>
+  <p><b>單擊</b>＝選取看代碼 · <b>雙擊</b>＝飛近（再雙擊貼顯微）<br><b>拖曳</b>＝旋轉 · <b>滾輪</b>＝自由縮放 · <b>1~5</b>＝全景/遠/中/近/顯微</p>
+</div>
+<div id="tiers">
+  <button data-t="overview">全景 (1)</button><button data-t="far">遠 (2)</button><button data-t="mid">中 (3)</button><button data-t="near">近 (4)</button><button data-t="micro">顯微 (5)</button>
+</div>
+<div id="zoomscale">距離 —</div>
+<div id="stat">init…</div>
+<div id="hover"></div>
+<div id="panel"><div class="close" id="pclose">×</div>
+  <div class="ph"><div class="pk" id="pk">function</div><div class="pn" id="pn">name</div><div class="pf" id="pf">file</div></div>
+  <pre id="pcode"></pre>
+</div>
+<div id="intro">粒子聚合中…</div>
+<div id="repobar" style="position:fixed;top:10px;left:10px;z-index:99;display:flex;gap:6px;align-items:center;background:rgba(10,14,20,.82);padding:8px 10px;border-radius:8px;font:12px system-ui;color:#cde;backdrop-filter:blur(4px)">
+  <input id="repoin" placeholder="repo 絕對路徑（例 E:\proj\src）→ Enter 即時出圖" style="width:320px;background:#0a0e14;border:1px solid #2a3a4a;color:#cde;padding:5px 8px;border-radius:5px;outline:none">
+  <button id="repogo" style="background:#1c6feb;border:0;color:#fff;padding:5px 14px;border-radius:5px;cursor:pointer">出圖</button>
+</div>
+<script>
+(function(){
+  var ip=document.getElementById('repoin'), bt=document.getElementById('repogo');
+  var cur=new URLSearchParams(location.search).get('project'); if(cur) ip.value=cur;
+  function go(){ var v=ip.value.trim(); if(v){ document.getElementById('intro').textContent='出圖中（首次需索引，稍候）…'; location.search='?project='+encodeURIComponent(v); } }
+  bt.onclick=go; ip.addEventListener('keydown',function(e){ if(e.key==='Enter') go(); });
+})();
+</script>
+<div id="err"><div><h2>WebGPU 初始化失敗</h2><p id="errmsg"></p></div></div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.178.0/build/three.module.js",
+    "three/webgpu": "https://unpkg.com/three@0.178.0/build/three.webgpu.js",
+    "three/tsl": "https://unpkg.com/three@0.178.0/build/three.tsl.js",
+    "three/addons/": "https://unpkg.com/three@0.178.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three/webgpu';
+import { attribute, instancedBufferAttribute, uniform, mix, smoothstep, clamp, float, vec3, vec4,
+         abs as tabs, pass, texture } from 'three/tsl';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { loadGraph, buildBuffers } from './graph-common.js';
+
+const statEl = document.getElementById('stat');
+// 心跳：一鍵啟動的 server 靠這個知道分頁還開著（關分頁停心跳 → server 30 秒後自動結束、無殘留）
+setInterval(() => { fetch('/ping').catch(() => {}); }, 5000);
+fetch('/ping').catch(() => {});
+const fail = (m) => { document.getElementById('err').style.display = 'grid';
+  document.getElementById('errmsg').textContent = m; statEl.textContent = '錯誤：' + m; window.__error = m; };
+
+if (!navigator.gpu) { fail('此瀏覽器無 WebGPU（如 Firefox）。正式版會自動降級 WebGL2/CSS。'); }
+else { main().catch(e => fail(e.message || String(e))); }
+
+// ── Web Audio 合成音效（hover/click，無外部音檔=離線可用；首次手勢解鎖 autoplay）──
+let actx = null;
+function unlockAudio() { if (!actx) { try { actx = new (AudioContext || webkitAudioContext)(); } catch (e) {} }
+  if (actx && actx.state === 'suspended') actx.resume(); }
+addEventListener('pointerdown', unlockAudio, { once: false });
+function beep(freq, dur, vol, type) {
+  if (!actx) return;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type || 'sine'; o.frequency.value = freq;
+  o.connect(g); g.connect(actx.destination);
+  const t = actx.currentTime;
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+let lastHoverBeep = 0;
+function hoverBeep() { const n = performance.now(); if (n - lastHoverBeep < 70) return; lastHoverBeep = n; beep(900 + Math.random() * 120, 0.05, 0.025, 'sine'); }
+function clickBeep() { beep(523, 0.16, 0.06, 'triangle'); setTimeout(() => beep(784, 0.18, 0.045, 'sine'), 40); }
+
+// ── 極簡語法高亮（Python/JS 關鍵字，離線、夠用）──
+const KW = /\b(def|class|return|import|from|if|elif|else|for|while|with|try|except|finally|raise|yield|async|await|lambda|function|const|let|var|export|new|this|extends|interface|type|public|private|static|void|int|float|bool|str|self|None|True|False|null|undefined)\b/g;
+function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function highlight(code) {
+  return esc(code)
+    .replace(/(#.*$|\/\/.*$)/gm, '<span class="cm">$1</span>')
+    .replace(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, '<span class="st">$1</span>')
+    .replace(KW, '<span class="kw">$1</span>');
+}
+
+async function main() {
+  const W0 = () => innerWidth, H0 = () => innerHeight;
+  const renderer = new THREE.WebGPURenderer({ canvas: document.getElementById('c'), antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+  renderer.setSize(W0(), H0());
+  renderer.setClearColor(0x070a10, 1);
+  await renderer.init();
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x070a10, 0.00026);
+  const camera = new THREE.PerspectiveCamera(55, W0() / H0(), 1, 16000);
+  camera.position.set(0, 0, 3600);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true; controls.dampingFactor = 0.08;
+  controls.minDistance = 80; controls.maxDistance = 9000;
+
+  // 代碼工作台 P0：?project=<repo絕對路徑> → daemon /graph_data 即時出圖（帶完整代碼）；
+  // ?g=<json> 看指定靜態圖；都沒給 → 預設靜態 graph_cs_v3_tidy.json（從 _poc_graph_c serve 時）。
+  const _sp = new URLSearchParams(location.search);
+  const _project = _sp.get('project');
+  const _graphUrl = _project
+    ? ('/graph_data?project=' + encodeURIComponent(_project) + '&name=live')
+    : (_sp.get('g') || 'graph_cs_v3_tidy.json');
+  const graph = await loadGraph(_graphUrl);
+  const buf = buildBuffers(graph);   // {N,E,pos,col,siz,lpos,lcol,C}
+  const N = buf.N;
+
+  // 節點最終 world 位置（picking + 飛近用；scene 不旋轉，world == target）
+  const nodeWorld = [];
+  for (let i = 0; i < N; i++) nodeWorld.push(new THREE.Vector3(buf.pos[i * 3], buf.pos[i * 3 + 1], buf.pos[i * 3 + 2]));
+  // ── §2.0 鄰接表（degree 焦點 / frameNodes 同社群鄰居 / S4 高亮 overlay 共用，O(E) 建一次）──
+  const adj = Array.from({ length: N }, () => []);
+  { const seen = Array.from({ length: N }, () => new Set());
+    graph.edges.forEach(e => {
+      if (!seen[e.source].has(e.target)) { adj[e.source].push(e.target); seen[e.source].add(e.target); }
+      if (!seen[e.target].has(e.source)) { adj[e.target].push(e.source); seen[e.target].add(e.source); }
+    }); }
+  // 相機依佈局範圍自適應（real 小圖不會太遠看不見）
+  let maxR = 1;
+  for (let i = 0; i < N; i++) maxR = Math.max(maxR, nodeWorld[i].length());
+  camera.position.set(0, maxR * 0.12, maxR * 2.25);
+  controls.minDistance = 1.0; controls.maxDistance = maxR * 6;   // minDistance 1.0＝可貼到節點表面（顯微鏡級）
+
+  // 開場：start = 隨機散開大球；target = 社群佈局；seed = per-particle 延遲
+  const startArr = new Float32Array(N * 3), seedArr = new Float32Array(N), aidArr = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const r = 2600 + Math.random() * 2600, a = Math.random() * Math.PI * 2, b = (Math.random() - 0.5) * Math.PI;
+    startArr[i * 3] = Math.cos(a) * Math.cos(b) * r;
+    startArr[i * 3 + 1] = Math.sin(b) * r;
+    startArr[i * 3 + 2] = Math.sin(a) * Math.cos(b) * r;
+    seedArr[i] = Math.random();
+    aidArr[i] = i;
+  }
+
+  // 節點：WebGPU 大圓點要用 THREE.Sprite + count + instancedBufferAttribute
+  // （THREE.Points 的 sizeNode 在 WebGPU 無效＝全 1px 看不見，研究 issue #30612）
+  const startIA = new THREE.InstancedBufferAttribute(startArr, 3);
+  const targetIA = new THREE.InstancedBufferAttribute(buf.pos, 3);
+  const colorIA = new THREE.InstancedBufferAttribute(buf.col, 3);
+  const sizeIA = new THREE.InstancedBufferAttribute(buf.siz, 1);
+  const seedIA = new THREE.InstancedBufferAttribute(seedArr, 1);
+  const aidIA = new THREE.InstancedBufferAttribute(aidArr, 1);
+  const alphaIA = new THREE.InstancedBufferAttribute(buf.alpha, 1);   // D6 死碼透明度
+
+  const morphP = uniform(0), uSel = uniform(-1), uHover = uniform(-1), uTierSize = uniform(1.0);   // §2.2 遠中近三檔節點大小
+  const startN = instancedBufferAttribute(startIA);
+  const targetN = instancedBufferAttribute(targetIA);
+  const colorN = instancedBufferAttribute(colorIA);
+  const sizeN = instancedBufferAttribute(sizeIA);
+  const seedN = instancedBufferAttribute(seedIA);
+  const aidN = instancedBufferAttribute(aidIA);
+  const alphaN = instancedBufferAttribute(alphaIA);
+
+  // 開場 morph：per-particle 用 seed 錯開抵達時間 → 自然聚合，不齊步
+  const t = smoothstep(float(0), float(1), clamp(morphP.mul(1.5).sub(seedN.mul(0.5)), float(0), float(1)));
+  const pmat = new THREE.PointsNodeMaterial({ transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, sizeAttenuation: false });
+  pmat.positionNode = mix(startN, targetN, t);
+
+  // 選中 / hover 放大＋加亮（aid 比對 uniform）
+  const isSel = tabs(aidN.sub(uSel)).lessThan(float(0.5));
+  const isHov = tabs(aidN.sub(uHover)).lessThan(float(0.5));
+  const emph = clamp(isSel.select(float(1), float(0)).add(isHov.select(float(0.6), float(0))), float(0), float(1));
+  pmat.sizeNode = sizeN.mul(float(5.2)).mul(uTierSize).mul(float(1).add(emph.mul(2.6))).mul(t.add(0.12));
+  // colorNode 用 vec3（非 vec4）：vec4 的 alpha 會壓掉 opacityNode 的圓形柔邊 → 節點全透明看不見
+  // （three.js WebGPU 官方 PointsNodeMaterial 慣例：colorNode 走 RGB、alpha 完全交給 opacityNode）
+  pmat.colorNode = colorN.add(vec3(0.5, 0.75, 1.0).mul(emph));
+  // 圓點：Sprite 有內建 uv → texture 取樣合法（圓形柔邊 alpha）
+  try {
+    const cc = document.createElement('canvas'); cc.width = cc.height = 64;
+    const cx = cc.getContext('2d'); const g = cx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.4, 'rgba(255,255,255,0.9)');
+    g.addColorStop(1, 'rgba(255,255,255,0)'); cx.fillStyle = g; cx.fillRect(0, 0, 64, 64);
+    pmat.opacityNode = texture(new THREE.CanvasTexture(cc)).mul(alphaN);  // ×D6 死碼 alpha（半透明脫團）
+  } catch (e) { console.warn('disc texture 失敗，退方點', e); }
+
+  const points = new THREE.Sprite(pmat);
+  points.count = N;
+  points.frustumCulled = false;
+  scene.add(points);
+
+  // 連線（開場聚合完成後淡入）
+  const lgeo = new THREE.BufferGeometry();
+  lgeo.setAttribute('position', new THREE.BufferAttribute(buf.lpos, 3));
+  lgeo.setAttribute('color', new THREE.BufferAttribute(buf.lcol, 3));
+  const uLineOp = uniform(0);
+  const lmat = new THREE.LineBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  lmat.colorNode = attribute('color', 'vec3');
+  lmat.opacityNode = uLineOp;
+  scene.add(new THREE.LineSegments(lgeo, lmat));
+
+  // D5 重複碼暗弧：孿生節點連暗紅弧（比一般連線亮 2.5×，重複碼暗債要看得到；跟檔位淡入）
+  if (buf.clE > 0) {
+    const clgeo = new THREE.BufferGeometry();
+    clgeo.setAttribute('position', new THREE.BufferAttribute(buf.clpos, 3));
+    clgeo.setAttribute('color', new THREE.BufferAttribute(buf.clcol, 3));
+    const clmat = new THREE.LineBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    clmat.colorNode = attribute('color', 'vec3');
+    clmat.opacityNode = uLineOp.mul(float(2.5));
+    scene.add(new THREE.LineSegments(clgeo, clmat));
+  }
+
+  // bloom 後處理
+  const post = new THREE.PostProcessing(renderer);
+  const scenePass = pass(scene, camera);
+  const bloomPass = bloom(scenePass.getTextureNode(), 0.42, 0.55, 0.5);
+  post.outputNode = scenePass.getTextureNode().add(bloomPass);
+
+  // ── 互動 ──
+  let selected = -1, hover = -1, fly = null, morphDone = false, isFlying = false;
+  let needsRender = true, flyTargetLineOp = 0, zoomTier = 'mid';
+  const invalidate = () => { needsRender = true; };
+  // §2.2 flying guard：飛行中只喚醒渲染、不反推改檔位（消抖動）；靜止才更新距離刻度尺
+  controls.addEventListener('change', () => { invalidate(); if (isFlying) return; updateZoomScaleUI(); });
+  const INTRO_FOCUS = 'overview_then_near';   // user 2026-06-22 拍板（S5 接開關鏈：overview_then_near|near_only|panorama）
+  const introEl = document.getElementById('intro'), hoverEl = document.getElementById('hover');
+  const panel = document.getElementById('panel');
+
+  // ── §2.1 degree 焦點 + frameNodes（fov 三角框焦點+鄰居）+ 同社群鄰居優先 ──
+  const FRAME_FILL = 0.82;   // 焦點+鄰居佔視野比例（user 要更近=填更滿；業界 0.6~0.9）
+  function pickFocusNode() { let bi = 0, bd = -1; for (let i = 0; i < N; i++) { const d = adj[i].length; if (d > bd) { bd = d; bi = i; } } return bi; }
+  function focusNeighbors(fi, K = 8) {   // S1 實測：hub 有 42 鄰居、框全部不夠近 → 取最近 K 個（貼 user「周遭幾個」）
+    const c = graph.nodes[fi].community;
+    let cand = adj[fi].filter(j => graph.nodes[j].community === c);
+    if (cand.length < 3) cand = adj[fi].slice();   // 同社群太少 → fallback 全鄰居
+    cand.sort((a, b) => nodeWorld[fi].distanceToSquared(nodeWorld[a]) - nodeWorld[fi].distanceToSquared(nodeWorld[b]));
+    return [fi, ...cand.slice(0, K)]; }   // K 接 graph_near_neighbors 開關（S5）
+  function startFly(toP, toT, durMs) {   // user：距離穿梭愈遠愈有美感 → 飛行時間依距離（遠飛久、近飛快）
+    const travel = camera.position.distanceTo(toP);
+    const dur = Math.max(durMs || 700, Math.min(2800, travel * 0.55));
+    fly = { fromP: camera.position.clone(), toP, fromT: controls.target.clone(), toT, t0: performance.now(), dur }; invalidate();
+  }
+  function frameNodes(indices, durMs) {
+    const ctr = new THREE.Vector3(); indices.forEach(i => ctr.add(nodeWorld[i])); ctr.multiplyScalar(1 / indices.length);
+    let r = 60; indices.forEach(i => { r = Math.max(r, ctr.distanceTo(nodeWorld[i])); });   // 保底 r=60 防單節點貼臉
+    const fovV = camera.fov * Math.PI / 180, fovH = 2 * Math.atan(Math.tan(fovV / 2) * camera.aspect);
+    const dist = Math.max(r / FRAME_FILL / Math.tan(fovV / 2), r / FRAME_FILL / Math.tan(fovH / 2));
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    startFly(ctr.clone().add(dir.multiplyScalar(dist)), ctr.clone(), durMs);
+  }
+
+  function project(i) { const v = nodeWorld[i].clone().project(camera);
+    return { x: (v.x * 0.5 + 0.5) * innerWidth, y: (-v.y * 0.5 + 0.5) * innerHeight, behind: v.z > 1 }; }
+
+  function pick(mx, my) {
+    if (!morphDone) return -1;
+    let best = -1, bestD = 26;
+    for (let i = 0; i < N; i++) {
+      const p = project(i); if (p.behind) continue;
+      const sizeBoost = Math.min(14, 4 + (graph.nodes[i].rank || 0) * 16);
+      const d = Math.hypot(p.x - mx, p.y - my);
+      if (d < bestD + sizeBoost) { bestD = d - sizeBoost; best = i; }
+    }
+    return best;
+  }
+
+  const cv = renderer.domElement;
+  // §R2：pointermove pick 用 rAF 節流（同幀只 pick 一次，synth 萬級不卡）
+  let pmPending = null, pmScheduled = false;
+  cv.addEventListener('pointermove', (e) => {
+    pmPending = { x: e.clientX, y: e.clientY };
+    if (pmScheduled) return; pmScheduled = true;
+    requestAnimationFrame(() => {
+      pmScheduled = false; const pm = pmPending; if (!pm) return;
+      const i = pick(pm.x, pm.y);
+      if (i !== hover) { hover = i; uHover.value = i; if (i >= 0) hoverBeep(); invalidate(); }
+      if (i >= 0) {
+        const n = graph.nodes[i];
+        hoverEl.style.display = 'block'; hoverEl.style.left = pm.x + 'px'; hoverEl.style.top = pm.y + 'px';
+        hoverEl.innerHTML = `<b style="color:#9fe3ff">${n.kind}</b> ${n.name}`;
+        cv.style.cursor = 'pointer';
+      } else { hoverEl.style.display = 'none'; cv.style.cursor = 'crosshair'; }
+    });
+  });
+  cv.addEventListener('pointerleave', () => { hover = -1; uHover.value = -1; hoverEl.style.display = 'none'; });
+
+  let downXY = null, lastClick = { i: -1, t: 0 };
+  const DBLCLICK_MS = 450;   // win32 系統雙擊 ~500ms（graph_dblclick_ms 開關 S5）
+  cv.addEventListener('pointerdown', (e) => { downXY = [e.clientX, e.clientY]; });
+  cv.addEventListener('pointerup', (e) => {
+    if (!downXY) return;
+    const moved = Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]); downXY = null;
+    const isSecond = (lastClick.i >= 0 && performance.now() - lastClick.t < DBLCLICK_MS);
+    if (moved > (isSecond ? 12 : 6)) return;   // 第二擊放寬 12px 防手抖（拖曳旋轉非點擊）
+    const i = pick(e.clientX, e.clientY); if (i < 0) return;
+    if (i === lastClick.i && isSecond) { flyToNearest(i); lastClick = { i: -1, t: 0 }; }   // 雙擊 → 兩段式飛近
+    else { selectNode(i, false); lastClick = { i, t: performance.now() }; }                 // 單擊 → 只選取不飛
+  });
+
+  let lastFocused = -1;   // 兩段式：記上次雙擊已 fit 的節點
+  function selectNode(i, fly = false) {   // S2：預設只選取+panel 不飛（解單擊被甩鏡頭痛點），雙擊才走 flyToNearest
+    selected = i; uSel.value = i; clickBeep();
+    const n = graph.nodes[i];
+    document.getElementById('pk').textContent = n.kind || 'symbol';
+    document.getElementById('pn').textContent = n.name;
+    document.getElementById('pf').textContent = `${n.file}:${n.line}`;
+    document.getElementById('pcode').innerHTML = highlight(n.code || '（此符號無代碼片段）');
+    panel.classList.add('show'); invalidate();
+    if (fly) frameNodes(focusNeighbors(i), 820);
+  }
+  function flyToDistance(dist, target, durMs) {
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    startFly(target.clone().add(dir.multiplyScalar(dist)), target.clone(), durMs);
+  }
+  function showOrphanHint(i) {   // RAW-07：孤兒無連線、退中距 + 文字反饋（非貼臉落空）
+    document.getElementById('pf').textContent = `${graph.nodes[i].file}:${graph.nodes[i].line} · ⚠ 無引用關係，已顯示所在社群`;
+  }
+  // §2.3 user 拍板 D2 兩段式：第一次雙擊 fit 焦點+鄰居（看連線）、對同節點再雙擊貼單點最近
+  function flyToNearest(i) {
+    selectNode(i, false);
+    if (adj[i].length === 0) { flyToDistance(maxR * 0.4, nodeWorld[i].clone(), 820); showOrphanHint(i); lastFocused = -1; return; }
+    if (i === lastFocused) { flyToDistance(Math.max(2.2, maxR * 0.0028), nodeWorld[i].clone(), 1000); lastFocused = -1; }   // 第二次雙擊 → 顯微鏡貼單點（從 ~11 拉到 ~2.7，再近很大）
+    else { frameNodes(focusNeighbors(i), 820); lastFocused = i; }        // 第一次雙擊 → fit 焦點+鄰居
+  }
+
+  // ── §2.2 五檔語義縮放（全景→遠→中→近→顯微，離散切換 + sizeMul/lineOp/相機距離 三表徵同步）──
+  const TIER = {
+    // 遠檔：放大節點＋連線近隱形＝團塊主導（看結構/社群）；近檔：連線漸顯（看關聯細節）。
+    // (c) 修：3309 連線 additive 疊加會蓋住節點，故全景 lineOp 大降、sizeMul 提高讓團塊浮現。
+    overview: { sizeMul: 1.15, lineOp: 0.05, mode: 'all' },                  // 全景：節點團塊主導、連線近隱形
+    far:      { sizeMul: 1.05, lineOp: 0.15, mode: 'dist', camK: 1.30 },     // 遠：整體結構，連線很淡
+    mid:      { sizeMul: 0.98, lineOp: 0.42, mode: 'dist', camK: 0.58 },     // 中：區域社群，連線漸顯
+    near:     { sizeMul: 1.00, lineOp: 0.82, mode: 'focus' },                // 近：焦點+鄰居連線
+    micro:    { sizeMul: 0.90, lineOp: 1.00, mode: 'single' },               // 顯微：貼單一節點表面
+  };
+  const TIER_ORDER = ['overview', 'far', 'mid', 'near', 'micro'];
+  function allNodesForFit() { return Array.from({ length: N }, (_, i) => i); }
+  function updateTierUI() { document.querySelectorAll('#tiers button').forEach(b => b.classList.toggle('on', b.dataset.t === zoomTier)); }
+  function updateZoomScaleUI() { const el = document.getElementById('zoomscale'); if (el) el.textContent = '距離 ' + Math.round(camera.position.distanceTo(controls.target)); }
+  function setZoomTier(tier) {
+    zoomTier = tier; const cfg = TIER[tier];
+    uTierSize.value = cfg.sizeMul; flyTargetLineOp = cfg.lineOp;
+    if (cfg.mode === 'all') frameNodes(allNodesForFit(), 900);
+    else if (cfg.mode === 'dist') flyToDistance(maxR * cfg.camK, controls.target.clone(), 900);
+    else if (cfg.mode === 'focus') { const fi = selected >= 0 ? selected : pickFocusNode(); frameNodes(focusNeighbors(fi), 900); }
+    else if (cfg.mode === 'single') { const fi = selected >= 0 ? selected : pickFocusNode(); flyToDistance(Math.max(2.2, maxR * 0.0028), nodeWorld[fi].clone(), 1000); }
+    updateTierUI(); invalidate();
+  }
+  document.querySelectorAll('#tiers button').forEach(b => b.addEventListener('click', () => setZoomTier(b.dataset.t)));
+  addEventListener('keydown', e => { const i = '12345'.indexOf(e.key); if (i >= 0) setZoomTier(TIER_ORDER[i]); });
+  updateTierUI();
+  window.__setTier = setZoomTier;   // playwright 測三檔
+  document.getElementById('pclose').onclick = () => { panel.classList.remove('show'); selected = -1; uSel.value = -1; };
+  // 給 playwright 截圖測互動效果
+  window.__selectNode = selectNode;
+  window.__dblclick = (i) => flyToNearest(i);   // playwright 測雙擊兩段式
+  window.__focusHub = () => pickFocusNode();
+  window.__camDist = () => camera.position.distanceTo(controls.target);   // playwright 驗近度
+  window.__selectTop = () => { let bi = 0, br = -1; for (let i = 0; i < N; i++) { const r = graph.nodes[i].rank || 0; if (r > br) { br = r; bi = i; } } selectNode(bi); return graph.nodes[bi].name; };
+
+  // ── 主迴圈 ──
+  const T0 = performance.now();
+  const GATHER_DELAY = 900, GATHER_DUR = 3000;
+  let frames = 0, fpsT = performance.now(), fps = 0;
+  const ease = x => x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+  window.__ready = false;
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const now = performance.now(), el = now - T0;
+    isFlying = !!fly;
+    // 開場聚合（morph 期間強制渲染）
+    if (!morphDone) {
+      const p = Math.min(1, Math.max(0, (el - GATHER_DELAY) / GATHER_DUR));
+      morphP.value = ease(p);
+      uLineOp.value = Math.max(0, (morphP.value - 0.78) / 0.22) * 0.10;  // 開場淡入收斂到 overview 低連線
+      if (p >= 1) {
+        morphDone = true; introEl.style.opacity = 0; setTimeout(() => introEl.remove(), 1100);
+        // §2.1 user 拍板 overview_then_near：全貌停 1 秒 → 飛入 degree 最密 hub + 同社群鄰居
+        if (INTRO_FOCUS === 'overview_then_near') {
+          const fi = pickFocusNode();
+          window.__focus = { i: fi, name: graph.nodes[fi].name, degree: adj[fi].length, neighbors: focusNeighbors(fi).length };
+          setTimeout(() => { frameNodes(focusNeighbors(fi), 1400); window.__introFlew = true; }, 1000);
+        } else { window.__introFlew = true; }
+      }
+      invalidate();
+    }
+    // 相機飛近補間
+    if (fly) {
+      const k = Math.min(1, (now - fly.t0) / fly.dur), e = ease(k);
+      camera.position.lerpVectors(fly.fromP, fly.toP, e);
+      controls.target.lerpVectors(fly.fromT, fly.toT, e);
+      if (k >= 1) fly = null;
+    }
+    // 連線 opacity 漸變到當前檔位 TIER lineOp（修真 bug：flyTargetLineOp 原本設了從未接到 uLineOp，
+    // morph 後連線卡 0.10、TIER lineOp 全失效 → 遠檔連線蓋住節點團塊看不見）
+    if (morphDone) {
+      const dop = flyTargetLineOp - uLineOp.value;
+      if (Math.abs(dop) > 0.003) { uLineOp.value += dop * 0.10; invalidate(); }
+    }
+    const dampingActive = controls.update();   // §2.5 spike1 坐實：damping 中回 true、靜止回 false
+    const active = !morphDone || isFlying || dampingActive;
+    // render-on-demand：閒置（無 needsRender 且無 active）零渲染
+    if (needsRender || active) {
+      post.render();
+      if (!active) needsRender = false;
+      frames++;
+      if (now - fpsT > 500) { fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }
+      statEl.textContent = `WebGPU+TSL · ${N} 節點 · ${buf.E} 連線 · ${buf.C} 社群 · ${fps} fps`
+        + (morphDone ? ' · 可互動' : ' · 聚合中') + ' · 按需渲染';
+    }
+    if (el > GATHER_DELAY + GATHER_DUR + 400) window.__ready = true;
+  }
+  animate();
+  addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight); });
+}
+</script>
+</body>
+</html>

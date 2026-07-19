@@ -1,0 +1,51 @@
+[
+  {
+    "kind": "class",
+    "name": "Vehicle",
+    "line": 1,
+    "end_line": 5,
+    "scope": ""
+  },
+  {
+    "kind": "property",
+    "name": "wheels",
+    "line": 2,
+    "end_line": 2,
+    "scope": "Vehicle"
+  },
+  {
+    "kind": "constructor",
+    "name": "init",
+    "line": 3,
+    "end_line": 3,
+    "scope": "Vehicle"
+  },
+  {
+    "kind": "function",
+    "name": "drive",
+    "line": 4,
+    "end_line": 4,
+    "scope": "Vehicle"
+  },
+  {
+    "kind": "protocol",
+    "name": "Drawable",
+    "line": 7,
+    "end_line": 9,
+    "scope": ""
+  },
+  {
+    "kind": "method",
+    "name": "draw",
+    "line": 8,
+    "end_line": 8,
+    "scope": "Drawable"
+  },
+  {
+    "kind": "function",
+    "name": "globalFunc",
+    "line": 11,
+    "end_line": 11,
+    "scope": ""
+  }
+]

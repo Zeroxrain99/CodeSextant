@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "function",
+    "name": "explicit_fn",
+    "line": 3,
+    "end_line": 5,
+    "scope": ""
+  },
+  {
+    "kind": "function",
+    "name": "other_fn",
+    "line": 7,
+    "end_line": 9,
+    "scope": ""
+  }
+]
