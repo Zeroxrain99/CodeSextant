@@ -2,130 +2,88 @@
 tier: 全文
 type: 專案交接（三層交接之全文層）
 喚起詞: 交接 CodeSextant / 交接 codesextant
-updated: 2026-07-18
-最後壓縮整理: 2026-07-18（-1 節 07-16 checkpoint 已壓成 3 行；併發根治收於 -3 節）
+updated: 2026-07-19
+最後壓縮整理: 2026-07-19（-3 節逐檔改動移交 git log；-1 節 07-16 checkpoint 早已壓成 3 行）
 設計SSOT: E:\ai-king\_AI_BRAIN\05_Planning\CodeSextant_自創代碼地圖神器_設計_2026-06-18.md
+版本控制: ⭐ 2026-07-19 起有獨立 git（此前 9,395 行零回復點）。逐版史用 git log 查，⛔別再往本檔塞
 ---
 
 # 交接 CodeSextant
 
-## -3. 🎉 2026-07-18 多代理併發根治（已換代上線·實測 155× 改善）
+## -4. ⭐ 2026-07-19 獨立產品化 + 技術債棘輪（5 個 commit·438 測試綠）
 
-**起因**：user「現在很多進程都會同時用這服務 看是否要多開幾個服務埠 或怎樣 根治這問題」。
+**起因**：user「concinno 相關用詞全拿掉 / CodeSextant 就是屬於自己 CodeSextant 的產品 /
+整個做出來用 既然無法被取代 那就超越所有人 成為 SOTA」。
 
-### 裁決：⛔ 不多開埠（方案 A 駁回）
+### ⭐ 最重要的一件事：建立版本控制
 
-派紅藍 Opus 各一（皆完成報告），指揮官逐條重算後裁定：
+9,395 行產品碼、432 個測試，此前**零版本控制**——沒有任何「回到上一個好狀態」的點。
+對一個目標是幫別人守住代碼紀律的工具，這是最不該有的缺口。已建獨立 git repo
+（外層把 `項目資料/` 列入忽略，所以不影響外層）。本輪重構時字串手術打錯錨點、改壞
+`find_deadcode`，**靠它救回來**——建好幾小時就派上用場。
 
-| 方案 | 裁決 | 決定性理由（皆有實測） |
-|---|---|---|
-| **A 多開 N 個埠** | **駁回** | ① 摧毀 single-flight 合併（實測仍在生效：4 個相同請求只算 1 次）② 無狀態路由 × 有狀態工作＝N=4 時 75% 機率踩冷快取（冷啟 map 曾 523.9s）③ 逐字重演 07-15 事故（`_WATCH_MGR` 是模組級單例＝每 daemon 一個 watcher）④ N 個進程寫同一個 .db＋無鎖 snapshot sidecar＝資料損毀風險 |
-| **B 工人進程池** | **接受但降級·改選型·排第二順位** | 方向對（唯一能解控制面 GIL 餓死），但 ⛔**不可用 stdlib `ProcessPoolExecutor`**（無單任務逾時、強殺工人→`BrokenProcessPool`→**在途工作全部連坐失敗**＝把「一人被擋」變「全部被炸」）。前置件已補（見下）。 |
-| **C 預建快取** | **接受但降級** | 消費者是「一直在改碼的 AI 代理」，每次 Edit 就失效，且既有 snapshot 是 revision 不合就整份丟＝命中率結構性受限。僅 `/projects` 清單快取值得單做。 |
-| **★ 新增第一刀（紅隊提案）** | **接受·升 P0·已上線** | 重工作道是**全機全專案共用一條**＝跨專案隊頭阻塞。改 per-project 分片。 |
+### 競品調查改變了戰略判斷（⚠ 推翻先前結論）
 
-### 已上線的改動（4 檔 + 3 個新測試檔·全套 420 綠）
+| 專案 | Star | 建立 | 工具數 | 性質 |
+|---|---:|---|---:|---|
+| colbymchenry/codegraph | 60,803 | 2026-01（6 個月） | 8 | **全是導航** |
+| DeusData/codebase-memory-mcp | 32,729 | 2026-02（5 個月） | 26 | **全是導航/記憶** |
 
-| 檔案 | 改動 |
+（數字為 2026-07-19 親自 curl GitHub API 所得，非轉述子代理；曾懷疑刷星，查證後撤回
+——ruff 的 star:watcher 451:1 與 codegraph 457:1 同量級。README 引文亦逐句比對屬實。）
+
+**先前判斷「差異化在於會誠實聲明盲區」只對一半**——這兩個競品都做了盲區聲明，概念上
+不再獨有。但兩者合計 34 個工具**沒有一個是紀律閘門**：它們回答「這東西在哪被用」，
+CodeSextant ＋ discipline-audit 回答「有沒有東西偏離了我們宣告的規矩」。
+
+→ **戰略結論**：通用代碼地圖賽道追不上（分發差兩個數量級、jedi 主攻 Python vs 158 語言）；
+**代碼紀律強制**是空地，也正是 user 的原始目的（防屎山、反熵、工程管理）。
+
+### 本輪落地
+
+| 項目 | 內容 |
 |---|---|
-| `codesextant/work_coordinator.py` | 新增 `ShardedHeavyWork`：per-project FIFO 車道 + 全域併發上限（預設 2）。保留 single-flight 合併與 owner-thread 重入防護。`snapshot()` 聚合時回報**跨分片最久**的工作，維持 supervisor stuck-detection 契約。 |
-| `codesextant/daemon.py` | `_route_work_key` 改回 `(key, shard)`；`_execute_route` 傳 `shard=`；`_HEAVY_COORDINATOR` 指向 `SHARED_SHARDED`。 |
-| `codesextant/watcher.py` | ⚠**接線半套 bug（WIREDO 閘擋下才發現）**：watcher 的增量重索引原本還走舊 `SHARED_COORDINATOR`＝**第二個互相看不見的權威**——它會逃過全域上限，且跟 HTTP `/reindex` **不再合併**，同一 repo 可能同時跑兩份完整重索引（正是 07-16 修好的「watcher 共用 lane」被改壞）。已遷到 `SHARED_SHARDED` 並傳 `shard`。**`SHARED_COORDINATOR` 單例已整個移除**（留著就是讓後人接錯的陷阱），`HeavyWorkCoordinator` 僅作為分片內部的車道實作。 |
-| `codesextant/storage.py` | 新增 `apply_connection_pragmas()`（WAL + busy_timeout + synchronous=NORMAL，三個 env 開關）接到**兩處**裸 connect（`:264`/`:551`，原交接只記一處）；新增 `ProjectStore.open_readonly()`（走 `PRAGMA query_only`，⛔非 `mode=ro`——WAL 庫需建 `-shm`、`mode=ro` 開不起來）。 |
-| `tests/conftest.py`（新） | autouse session fixture 把 `CODESEXTANT_HOME` 指到 tmp。**修掉測試污染生產 `supervisor.log`**（見數據校正）。 |
-| `tests/test_storage_concurrency.py`（新 7 測） | WAL / busy_timeout / 寫入中讀者不被擋 / 開關可關 |
-| `tests/test_storage_readonly.py`（新 6 測） | 唯讀連線拒寫 / 不建庫 / 寫入交易中仍可讀快照 |
-| `tests/test_heavy_sharding.py`（新 9 測） | 跨專案不互卡 / 同專案仍序列化 / 全域上限生效 / 合併仍在 / supervisor 契約 / 分片可關 |
-| `tests/test_sharded_wiring.py`（新 8 測） | watcher 與 HTTP 共用同一權威 / 舊單例不得復活 / 顯式 0 不得掉回環境預設 / 節流可觀測 / **日誌真的到得了 daemon 檔案處理器** |
-| `tools/bench_contention.py`（新·**保留工具非拋棄式腳本**） | 跨專案塞車可複現量測。交接說「先觀察一週」＝接手的人要能跑出同一組數字比對。⚠**中文路徑當參數必走 PowerShell 三通道**（`chcp 65001`＋`$OutputEncoding`＋`[Console]::OutputEncoding`），從 Bash 傳中文 argv 會靜默無輸出（已踩）。用法：`python tools/bench_contention.py --busy <大專案> --idle <小專案>` |
-| `tests/test_bench_contention.py`（新 4 測） | 釘住膨脹倍數算式（50.32×／0.77×）＋單次失敗不得中斷＋除零不得編造比值 |
+| **技術債棘輪** | 接進 discipline-audit：現況掃描是已接受基線的子集就過；長出基線沒有的 → exit 1。既有債（含誤報）進基線永久靜音，**不必先大掃除就能開始守紀律**（「要求先清乾淨」正是多數紀律工具推不動的原因）。契約 `.wiredo-audit.json` ＋ 基線 `.codesextant-baseline.json` |
+| **獨立性** | 稽核路徑改成只讀環境變數 `CODESEXTANT_DISCIPLINE_LOG`；面板顯示服務回報的真實來源而非寫死路徑；原始碼外部品牌用詞零殘留 |
+| **自己的規範** | 補 `[tool.ruff]`（此前沒有，外部工具拿 88 字元預設來評判，一次報 359 個假問題）。產品碼現在 ruff All checks passed |
+| **結構** | `find_duplicates` 216 行／巢狀 6 層 → 拆成七個階段函式。四條路徑（預設／near_global／call_pattern／scope_file）輸出逐位元組相同 |
+| **量測基線** | `tools/measure_coverage.py`：產品碼 Python 中位數解析率 **50.0%**、零高信心 44%、0.29 秒／符號。文件 `docs/量測基線_解析覆蓋率_2026-07-19.md` |
 
-### 實測前後對比（同機同測試·只差程式碼）
+### ⛔ 本輪最貴的教訓（已沉澱 memory `prove-the-gate-fails-before-trusting-green`）
 
-| 指標 | 舊碼（pid 15332） | 新碼（pid 42756） |
-|---|---|---|
-| 小專案便宜查詢（單獨） | 1,486 ms | 624 ms |
-| 小專案便宜查詢（**別的專案忙碌中**） | **74,772 ms** | **482 ms** |
-| 膨脹倍數 | **50.3×** | 0.8×（無膨脹） |
-| `/status`（全日平均 → 換代後實測） | 5,474 ms | 62 ms |
+**棘輪第一版是結構性永遠綠的假閘門**：引擎的 subset 語意是「消費端 ⊆ 真相源」，我把
+現況掃描放在真相源那一側，新債只會把真相源撐大、基線永遠是它的子集。連跑三次全綠
+看起來像成功，是**注入真實新債**才揪出來。
 
-換代程序：停排程 → `python codesextant/daemon.py stop`（優雅停）→ 重啟排程。驗證：8790 恰好一個 listener（pid 42756）、supervisor 43092、功能正確（`/get_symbols` 回 1466 真符號）、single-flight 合併仍在（4 請求 wall 1129ms、彼此差 19ms）。
+配套三次同族錯誤：把測試的設定步驟輸出丟進 /dev/null，`/reindex` 不吃 GET 的失敗被
+自己藏起來，稽核一路比對舊資料還回綠。→ **閘門要先證明它會紅，才信它的綠；測試腳本
+裡的設定步驟絕不可靜音。**
 
-### ✅ WIREDO 交付閘：四個誤判都已根治（不是繞過，是把閘修對）
+量測工具亦然：同一份工具、同一份 repo，因測法不同數字從 2.0% → 4.3% → 50.0%，三次
+都是測法錯不是工具變好。**發布任何數字前先證明測法本身對。**
 
-原本此閘對本專案報 `code(wired,extensible,defended,observable)` 全數失敗。**四條全部已修在 concinno 源碼裡**（不是把 CodeSextant 改成迎合 regex）。修完實測：六維 **W/I/E/D/O 全 PASS**（22 個本 session 檔案，`wiredo_full_check` 真入口跑出來的）。
+### ⚠ 已知邊界（誠實記錄，非待修）
 
-| 維度 | 原判定 | 現況 |
-|---|---|---|
-| **observable** | 真缺陷 | ✅ **已修**：`work_coordinator.py` 零日誌，已補「全域上限擋下」「重工作完成（>10s）」兩行，生產落檔 `重工作完成 /get_health（分片 ...concinno）耗時 116.1s`。⚠ 修的過程犯過**假可觀測**：起初用 `logging.getLogger("codesextant.admission")`＝daemon logger 的**兄弟**、沒處理器、訊息全靜默丟棄，而閘照樣給過（它只看原始碼有沒有 logging 呼叫）。正解＝取名**子代** `codesextant.daemon.admission`。已加 `test_admission_log_reaches_the_daemon_log_handler` 釘住。 |
-| **wired** | 「結構性誤判·勿追」 | ✅ **已修（原判定作廢）**：根因是閘刻意不加 `--no-ignore`（怕大工作區逾時），而 `項目資料/` 在 `.gitignore:207`＝整個專案對它隱形。修法＝**全工作區掃到零筆時，改用該檔自己的專案子樹重掃一次並加 `--no-ignore`**（範圍縮到單一專案所以不會逾時）。`wiredo._project_scope_for()` + 兩趟式 `_is_wired_grep`。**同族 bug 一併修**：`orphan.py` 的批次掃描路徑也漏了 `--no-ignore`（單符號路徑有、批次沒有＝自己跟自己不一致）。 |
-| **extensible** | 「誤判」 | ✅ **已修**：`DEFAULT_PORT = 8790` 是具名常數＋`CODESEXTANT_PORT` 環境變數覆寫（`daemon.py:250`）＝**教科書上正確的可配置寫法**，卻被判違規。改成逐行判讀 + 三種豁免（行尾註解／上一行區塊註解／同檔有環境變數讀取）。⚠ 順手抓到原本 `(?!\s*#)` 註解逃生口**從來沒生效過**（`\d+` 會回溯成只吃 `3`，lookahead 看到的是 `0`）。另修：`f(timeout=0.0)` 是呼叫端傳參數不是宣告設定，已用 `^` 錨定排除。 |
-| **defended** | 「本設定下不可能過·勿偽造」 | ✅ **已修（原判定是錯的）**：證據通道不是被開關 #51 關掉，是**寫入端和讀取端路徑對不上**。寫入端落在 `.concinno_cache/sentinel/sentinel/`（`StateStore` 基底已含 `sentinel`，`record_outcome` 又加一層命名空間），`wiredo` 卻讀 `.concinno_cache/sentinel/`＝沒人寫的空目錄。**疊了三個 bug**：①路徑錯位 ②`record_outcome` 沒寫 `bash_pfx`＝指令身分整個遺失（實測 10 筆全空）③ `calls` 是 10 筆滾動窗，測試跑完再做幾件事就被擠掉。三個都修了，現在生產實測 `has_test_evidence: True`、黏性證據 `{"cmd": "...python.exe -m pytest tests/test_handoff_claim_g", "ts": ...}`。**⛔ 舊交接寫的「不可能過」是我上一輪的錯誤結論，別再引用。** |
+- `work_coordinator.py` 的 `SHARED_COORDINATOR` 是模組級單例，會被誤報成未接線；已收進
+  基線並註明 **⛔不要去「修」這個沒壞的東西**
+- deadcode 斷言暫撤：未用匯入實測為 0，兩側皆空會被 vacuous 守衛正確判為 SUSPECT。一條
+  永遠 SUSPECT 的斷言會訓練人忽略 exit 2，反而更糟。ruff 的 F401 目前守著這塊
+- 量測只量了自己；要跟別人比得在公認開源 repo 上跑同一套方法。TypeScript 每符號 25 秒
+  （走 ts-morph 子行程），比 Python 慢兩個數量級
 
-**修的過程另外挖出兩個同族真 bug**（都是「查不出來」被折成「確定沒有」＝憑空指控）：
+## -3. 2026-07-18 多代理併發根治（已上線·實測 155× 改善）
 
-- `wiredo._is_wired_grep` 第二趟回 `None`（工具缺席／逾時）被 `bool()` 折成 `False`＝判定孤島。逾時是間歇的，同一支檔會時好時壞。
-- `orphan._batch_check_imported_rg` 例外被靜默吞掉後回全空 dict，而 `has_rg` 只問「rg 執行檔在不在」→ 走訪退路被跳過 → **整批符號全被判成孤島**，且沒有任何一行日誌說掃描其實沒跑完。已改成回 `None` + `_log.warning`。
+多代理同時打服務造成塞車。**⛔ 駁回「多開埠」方案**（會摧毀 single-flight 請求合併、
+無狀態路由配有狀態工作有 75% 機率踩冷快取、逐字重演 07-15 的 watcher 模組級單例事故、
+N 個進程寫同一個資料庫有損毀風險），改用 **per-project 分片 ＋ WAL**：塞車 74.8 秒
+降到 0.48 秒。工人進程池方向對（唯一能解控制面 GIL 餓死），但 ⛔不可用標準庫的
+ProcessPoolExecutor——它沒有單任務逾時，強殺工人會讓在途工作全部連坐失敗，把「一人
+被擋」變成「全部被炸」。列第二順位，未做。
 
-**效能改良（`c879a20`）**：閘的總時間 **6,145ms → 1,006ms（6.1×）**。瓶頸量出來全在 W 維（佔 99.8%，其他五維加起來 55ms）——它**每個檔各自跑一次 rg**，25 個檔就把整個工作區的目錄樹走 10 遍（每趟 621ms；熱 5.8s、冷 33.6s）。⚠ 誠實記：上面那個兩趟式 gitignore 修法**讓它更慢**（零命中的檔多付一趟）。修法＝抄 `orphan._batch_check_imported_rg` 既有母版（⛔不另造第二套）：一次搜尋全部 stem→只讀命中的檔→純 Python 比對，第二趟也按專案分組批次。25 檔搜尋次數 10→2、判定不變。`test_wired_batch.py` 釘住搜尋次數，防日後悄悄退回逐檔掃。⚠ 量測注意：冷快取 33.6s vs 熱 5.8s 差 6 倍，**別拿冷啟數字當基準**（我第一次差點就據此下錯結論）。
+⚠ 未解：控制面 GIL 餓死。（supervisor 日誌裡的 pid=7 那幾行是測試污染、不是事故）
 
-**查證後推翻的假設**（留著省下一個人重查）：曾懷疑 `_is_wired` 的 `"{stem}"` 這條 pattern 太寬、會把「log 訊息裡剛好提到模組名」誤判成已接線＝漏報孤島。**實測不成立**——pattern 要求的是**帶雙引號**的 `"engine"`，`print("starting engine subsystem")` 並不匹配，孤島照樣正確報出。此條無需修改。
+逐檔改動、紅藍全程與當時的 3 條 pre-existing 失敗記錄 → 用 git log 查，本檔不再留逐版史。
 
-**這輪不追的**：R 維「nested loop」對 `for a in A: for b in a.x:`（走訪巢狀資料＝O(總數)）誤判——已改成看內層迭代對象是否來自外層迴圈變數，攤平不報、真的相乘才報。
-
-### ⚠ 數據校正（舊交接與 brief 的錯誤，已坐實）
-
-1. **「fresh subprocess 約 14s」是錯的**（-1 節第 4 條）。實測 `import codesextant.engine` 子進程完整牆鐘 **0.5–1.5 秒**（`-X importtime` 累計 0.33s；純 python 啟動 0.198s）。紅隊獨立測得 0.81/1.35/1.52s。推測原數字量於 07-16 多 daemon 重索引、CPU 打滿時——**它本身就是餓死現象的症狀**，不是 import 固有成本。
-2. **`supervisor.log` 裡的 `heavy job stuck ... pid=7 ... active_for_sec=5400.0 -> recycling daemon` 全部是測試污染**，不是生產事故。字面值出自 `tests/test_daemon_reliability.py:1164,1168`，而 `supervisor.py:31` 把 log 寫死在 `default_db_dir()/supervisor.log`。已用 `tests/conftest.py` 根治（跑全套前後 byte 完全不變＝零污染實證）。**既有 11 行假告警保留未刪（刪日誌＝破壞性），讀 log 時請忽略所有 `pid=7` 行。**
-3. **推論**：因此「supervisor stuck-recycle 生產可用」**沒有生產證據**——單元測試綠燈，但 `stop_running` 在測試中被 monkeypatch，生產從未真正觸發過。
-4. **busy_timeout 原本不是 0 而是 5000**（Python `sqlite3.connect` 預設 `timeout=5.0`）。原描述「未設 busy_timeout」易誤導成「沒有逾時保護」。
-5. **藍隊主張「`C:\Python311` 缺 tree_sitter、`/find_duplicates` 靜默降級」＝駁回**。實測 `tree_sitter` 在 `C:\Python311\Lib\site-packages\tree_sitter\`，`clones`/`engine` 匯入正常。
-
-### ⛔ 回滾程序（WAL 是資料庫持久屬性，碼回滾不會回滾它）
-
-程式碼回滾後**必須**另外把已轉檔的庫轉回，否則舊碼會對著 WAL 庫跑：
-
-```powershell
-# 1) 碼回滾後，逐庫轉回 rollback journal
-Get-ChildItem "$env:USERPROFILE\.codesextant\*.db" | ForEach-Object {
-  C:\Python311\python.exe -c "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);c.execute('PRAGMA journal_mode=DELETE');c.close()" $_.FullName
-}
-# 2) 或不改碼、只關開關（不需重轉檔，新碼相容兩種模式）
-#    CODESEXTANT_SQLITE_WAL=0 / CODESEXTANT_HEAVY_SHARDING=0
-```
-
-WAL 是**惰性轉換**（該庫被新碼開過才轉）。2026-07-18 換代後實測：125MB 庫已轉 `wal`，2.2GB 等尚未被碰的仍是 `delete`。
-
-### 新增開關（皆 env·對齊 L0 鐵律 #6）
-
-`CODESEXTANT_HEAVY_SHARDING=0`（回單一車道舊行為）｜`CODESEXTANT_HEAVY_GLOBAL_CAP`（全域併發，預設 2）｜`CODESEXTANT_HEAVY_QUEUE_CAP`（**現為每分片**，預設 8）｜`CODESEXTANT_HEAVY_FOLLOWER_CAP`（8）｜`CODESEXTANT_SQLITE_WAL=0`｜`CODESEXTANT_SQLITE_BUSY_TIMEOUT_MS`（5000）｜`CODESEXTANT_SQLITE_SYNC_NORMAL=0`
-
-另有 `CODESEXTANT_HEAVY_SLOW_LOG_SEC`（預設 10）＝超過幾秒的重工作才寫一行完成日誌（免得便宜查詢刷版）、`CODESEXTANT_WATCH_STOP_JOIN_SEC`（預設 2）＝關閉時等監看執行緒收工的上限。
-
-**調 `GLOBAL_CAP` 的依據**（新增遙測，`/health` → `heavy_work`）：`global_waiting`＝此刻純粹卡在全域上限的請求數、`global_throttled_total`＝累計被上限擋過的次數。持續 >0 ＝上限是瓶頸可考慮調高；恆為 0 ＝上限沒在綁，調高無意義。⛔ 別靠端到端延遲猜。另可直接看日誌：`grep -E "全域上限擋下|重工作完成" ~/.codesextant/daemon.log`。
-
-### ⬜ 未解決（誠實列，勿當已完成）
-
-1. ⬜ **控制面 GIL 餓死未解**。分片**沒有**把 CPU 工作移出進程；「135s reindex → `/health` 23,646ms」那條因果鏈仍可能重演。換代後看到的 `/health` <31ms 是因為當時的重查詢偏 I/O，**不可當成已修的證據**。真解＝工人子進程（方案 B），且⛔須自管子進程 + 單任務逾時 + 工人隔離重啟，**不可用 `ProcessPoolExecutor`**。前置件 `open_readonly()` 已備好。
-2. ⬜ **全域上限預設 2 可能微幅加劇 GIL 爭用**（舊碼是嚴格 1）。實測 4 執行緒對 CPU 工作是 **0.64×**（比循序更慢；藍隊獨立測得 0.78×），4 進程才 1.53×（藍隊 2.02×）。若觀察到控制面變差，先降 `CODESEXTANT_HEAVY_GLOBAL_CAP=1`。
-3. ⬜ **單次查詢仍是分鐘級**：`/find_duplicates` 320s、`/find_unwired` 320s、`/get_symbols` 152s、`/impact` 137s。分片只解「排錯隊」，不解「算太久」。
-4. ⬜ **`/projects` 19.3s 且不在重工作道**——I/O 綁定（開 37 個庫含 2.2GB），工人進程救不了它，需獨立的清單快取。
-5. ⬜ **B 的 pickle 邊界未量**：結果跨進程反序列化是在父進程持 GIL 做的，可能把 CPU 請回父進程。緩解方向＝工人直接回 JSON bytes、父進程只轉發不反序列化。動工前必量。
-6. ⬜ **`RotatingFileHandler` 非多進程安全**——走方案 B 前必須先解決工人的 log 通道。
-7. ⬜ 版本 SSOT 漂移：`__init__`=0.16.0 vs `pyproject`=0.15.0（ai-usage 線收口時同步）。
-8. ⬜ `_get_watch_mgr` 無鎖（production 不可觸發）。
-
-**以下 3 條在 concinno 那條線、不是 CodeSextant**（07-18 修 WIREDO 閘時順手發現，本輪未動——不是我造成的，也不敢猜原作者意圖）：
-
-**全套實測基線（2026-07-18·排除下述 2 個卡死檔）＝`9188 passed / 72 failed / 57 errors`，13 分 25 秒。** 72 條裡只有 3 條是我造成的（`test_wired_check.py`，已修，見下）；其餘 69 條**證實與本輪無關**——那 12 個失敗檔的模組圖全部載不到我改的 4 個模組（`delivery/{wiredo,orphan,artifact_pipeline}.py`＋`sentinel.py`），且改動前的那一輪同樣是 72 failed。**接手時請以這組數字當基線**，別把既有失敗算到自己頭上。既有失敗的兩大族：①品牌改名（測試還期待 `[Concinno: ...]`，程式已輸出 `[AI King: ...]`）②相容殼分歧（如 `concinno.core.subprocess_safe` 自帶一份與 `aiking_core` **不同**的 `_inject_flags`，⛔這是兩份真相源、要挑哪份得原作者定奪）。
-
-- ⬜ **concinno 全套在本機跑不完——3 個測試會走訪真實機器而卡死**（同一族，非我造成）：①`test_auto_update_tier2.py::TestIsInUse::test_returns_sane_tuple` → `psutil.Process.open_files()` 列舉**所有活行程**的檔案握柄 ②`test_destruction_guard.py` → `backup_targets()` 對整棵目錄樹 `os.stat` ③某測試呼叫 `importlib.metadata.packages_distributions()` 掃全部已安裝套件的 metadata。三者都在「讀真實檔案系統／行程表」時停住（雲端同步佔位檔會讓 `os.stat` 阻塞——就是 `_SEARCH_TIMEOUT_S` 註解裡寫的那個坑）。**都是測試設計問題**（想驗回傳值形狀卻要掃整台機器），不是功能壞掉。**替代驗證法**：跑「你改到的檔＋其相關測試」而非全套——本輪即用此法拿到 374 passed。
-- ⬜ **`tests/test_a2a_attacks.py::TestPiBenchPolicyCompliance::test_ignore_system_prompt` 失敗**（`blocked=False`，期望 True）。已證與本輪修改無關：`GuardAgent` 匯入的 60 個 concinno 模組**沒有一個**是我改過的。疑似與守門員白名單收斂（開關 #51）有關，未確認。
-- ⬜ **`tests/test_profile_fail_mode_overrides.py` 2 條 + `test_preset_cascade.py` 1 條失敗**。這 8 個測試檔原本**整個無法載入**（`concinno.feature_config` 是指向 `aiking_core` 的反向殼，而 `from X import *` 不會匯出底線開頭的私有名字）。已把私有匯入改指向 `aiking_core.*`，**救回 121 個原本完全跑不到的測試**；剩下這 3 條是 rebrand 後的**行為**變更（驗證器不再拋 `ValueError`），需要原作者確認是不是故意的。
-
-### 下一步
-
-先觀察一週分片在真實多代理負載下的表現（看 `daemon.log` 是否還有跨專案等待、`/health` 是否出現 >1s）；確認穩定後再評估是否真的需要方案 B——若控制面餓死不再出現，B 可以不做（96 次重查詢／10.4 小時的真實負載下，B 的 1.5–2× 並行收益不見得值那個複雜度）。TS 重寫線（`namegraph.ts`）不受本次影響。
 
 ## -2. 🎉 2026-07-17 修復線收口（Ready YES·現役已換代·索引交付）
 
