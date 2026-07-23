@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import threading
 import time
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
+from logging.handlers import RotatingFileHandler
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,55 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from codesextant import client, daemon  # noqa: E402
+
+
+def test_log_rollover_does_not_rename_files_locked_by_windows(tmp_path, monkeypatch):
+    """Readers can deny rename/delete sharing on Windows; rotation must still work."""
+    log_path = tmp_path / "daemon.log"
+
+    def locked_rename(*_args, **_kwargs):
+        raise PermissionError(32, "file is being used by another process")
+
+    monkeypatch.setattr(os, "rename", locked_rename)
+    handler = daemon._CopyTruncateRotatingFileHandler(
+        log_path, maxBytes=80, backupCount=2, encoding="utf-8")
+    logger = logging.getLogger(f"codesextant.rollover-test.{id(tmp_path)}")
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    try:
+        logger.info("A" * 100)
+        logger.info("after-rollover")
+    finally:
+        handler.close()
+        logger.handlers.clear()
+
+    assert "after-rollover" in log_path.read_text(encoding="utf-8")
+    archives = list(tmp_path.glob("daemon.log.*"))
+    assert 1 <= len(archives) <= 2
+    assert any("A" * 100 in path.read_text(encoding="utf-8") for path in archives)
+
+
+def test_control_plane_logger_does_not_open_daemon_log(tmp_path, monkeypatch):
+    """Only the serving daemon may own daemon.log; wrapper clients use stderr."""
+    monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path))
+    previous = daemon._logger
+    daemon._logger = None
+    try:
+        logger = daemon.get_logger()
+        assert not any(isinstance(h, RotatingFileHandler) for h in logger.handlers)
+        assert not (tmp_path / "daemon.log").exists()
+
+        logger = daemon.get_logger(file_output=True)
+        file_handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+        assert len(file_handlers) == 1
+        assert isinstance(file_handlers[0], daemon._CopyTruncateRotatingFileHandler)
+    finally:
+        for handler in list(daemon._logger.handlers if daemon._logger else []):
+            handler.close()
+            if daemon._logger:
+                daemon._logger.removeHandler(handler)
+        daemon._logger = previous
 
 
 def test_thin_client_import_does_not_load_heavy_engine():

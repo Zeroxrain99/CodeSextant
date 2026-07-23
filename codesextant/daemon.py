@@ -43,6 +43,7 @@ import importlib
 import json
 import logging
 import os
+import shutil
 import socket
 import subprocess
 import threading
@@ -269,32 +270,85 @@ _logger: logging.Logger | None = None
 _LOGGER_LOCK = threading.Lock()
 
 
-def get_logger() -> logging.Logger:
-    """單例 logger：落檔（RotatingFileHandler，避免 log 無限長）+ stderr。"""
+class _CopyTruncateRotatingFileHandler(RotatingFileHandler):
+    """Rotate without renaming the active file (which Windows readers can lock).
+
+    The stdlib handler renames ``daemon.log`` and each numbered backup.  A
+    second process merely reading/opening any of those files can deny delete
+    sharing on Windows and make every subsequent log emit print WinError 32.
+    Copying to a unique archive and truncating our own open stream avoids both
+    rename operations.  Locked stale archives are pruned on a later rollover.
+    """
+
+    def doRollover(self):
+        if self.stream is None:
+            self.stream = self._open()
+        self.stream.flush()
+        base = Path(self.baseFilename)
+        archive = base.with_name(
+            f"{base.name}.{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{time.time_ns()}")
+        try:
+            shutil.copyfile(base, archive)
+        except FileNotFoundError:
+            return
+
+        self.stream.seek(0)
+        self.stream.truncate(0)
+        self.stream.seek(0, os.SEEK_END)
+
+        archives = sorted(
+            base.parent.glob(f"{base.name}.*"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+        for stale in archives[self.backupCount:]:
+            try:
+                stale.unlink()
+            except PermissionError:
+                pass
+
+
+def get_logger(*, file_output: bool = False) -> logging.Logger:
+    """Return the process logger; only the serving daemon owns ``daemon.log``.
+
+    Wrapper/control-plane processes call ``ensure_running`` too.  Giving each
+    one a file handler made them race the real daemon's rollover.  They now log
+    to stderr only; ``serve`` explicitly upgrades the singleton with the one
+    rotating file handler.
+    """
     global _logger
-    if _logger is not None:
+    if (_logger is not None
+            and (not file_output or any(
+                isinstance(h, _CopyTruncateRotatingFileHandler)
+                for h in _logger.handlers))):
         return _logger
     with _LOGGER_LOCK:
-        if _logger is not None:
-            return _logger
-        lg = logging.getLogger("codesextant.daemon")
-        lg.setLevel(logging.INFO)
-        lg.propagate = False
-        fmt = logging.Formatter(
-            "%(asctime)s [%(levelname)s] pid=%(process)d %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-        try:
-            fh = RotatingFileHandler(_log_path(), maxBytes=2_000_000, backupCount=3,
-                                     encoding="utf-8")
-            fh.setFormatter(fmt)
-            lg.addHandler(fh)
-        except Exception as exc:  # 落檔失敗也不該炸 daemon，退而只用 stderr
-            sys.stderr.write(f"[codesextant daemon] log 落檔失敗（改用 stderr）：{exc}\n")
-        sh = logging.StreamHandler(sys.stderr)
-        sh.setFormatter(fmt)
-        lg.addHandler(sh)
-        _logger = lg
+        if _logger is None:
+            lg = logging.getLogger("codesextant.daemon")
+            lg.setLevel(logging.INFO)
+            lg.propagate = False
+            fmt = logging.Formatter(
+                "%(asctime)s [%(levelname)s] pid=%(process)d %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+            sh = logging.StreamHandler(sys.stderr)
+            sh.setFormatter(fmt)
+            lg.addHandler(sh)
+            _logger = lg
+        else:
+            lg = _logger
+            fmt = lg.handlers[0].formatter or logging.Formatter("%(message)s")
+
+        if file_output and not any(
+                isinstance(h, _CopyTruncateRotatingFileHandler) for h in lg.handlers):
+            try:
+                fh = _CopyTruncateRotatingFileHandler(
+                    _log_path(), maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+                fh.setFormatter(fmt)
+                lg.addHandler(fh)
+            except Exception as exc:  # 落檔失敗也不該炸 daemon，退而只用 stderr
+                sys.stderr.write(
+                    f"[codesextant daemon] log 落檔失敗（改用 stderr）：{exc}\n")
         return lg
 
 
@@ -953,7 +1007,7 @@ _START_TS = time.time()
 def serve(port: int | None = None):
     """前景跑 HTTP server（ensure 會 detached 背景呼叫這個）。"""
     port = port or _port()
-    lg = get_logger()
+    lg = get_logger(file_output=True)
     probe_guard = _InterprocessFileLock(
         _daemon_lock_path(port, "instance-probe"), timeout=1.0)
     try:
