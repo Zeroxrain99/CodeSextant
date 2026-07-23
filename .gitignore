@@ -23,6 +23,9 @@ tools/__pycache__/
 .venv/
 .hypothesis/
 
+# Project-local isolated git worktrees used by parallel release-gate work
+.worktrees/
+
 # SQLite 的 WAL 邊車檔（跟 *.db 同生命週期）
 *.db-wal
 *.db-shm
