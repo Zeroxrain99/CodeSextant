@@ -292,3 +292,64 @@ netstat -ano | Select-String ':8790 '
 - Codex Skill：`C:\Users\zerox\.agents\skills\codesextant`
 - Claude Skill：`C:\Users\zerox\.claude\skills\codesextant`
 - 全域摘要索引：`C:\Users\zerox\.claude\HANDOFF.md`
+# CURRENT CHECKPOINT — 2026-07-24 — G0/G1 Task 9 complete
+
+## Authoritative working state
+
+- Implementation worktree: `E:\ai-king\項目資料\CodeSextant\.worktrees\codesextant-sota-gate`
+- Branch: `codex/codesextant-sota-gate`
+- Clean HEAD: `a6ff73a fix: launch npm gate without a shell`
+- G0-G1 foundation Tasks 1-9 are complete.
+- Next: `docs/superpowers/plans/2026-07-23-codesextant-g2-g3-quality-contracts.md`,
+  Task 1, “Classify every indexed path and make map scope explicit”.
+
+## Task 9 commits
+
+1. `f9a572e style: establish clean Python lint baseline`
+2. `2921287 ci: enforce immutable oracle and Rust parity gate`
+3. `18d58da style: preserve immutable oracle lint closure`
+4. `bc16491 fix: report fail-fast gate command`
+5. `a6ff73a fix: launch npm gate without a shell`
+
+Task 9 adds closed G0/G1 command contracts, fail-fast hashed child evidence,
+typed domain payload schemas, check-only PASS modes, and candidate producers
+that safely return 2 without bytes until the authenticated G5 runtime,
+ReleaseSubject, public-export authority, and inherited exclusive handle exist.
+The producers never know or write final receipt paths.
+
+## Verification on the same clean HEAD
+
+- `C:\Python311\python.exe tools/verify_g0.py check` -> `G0 PASS`
+- `C:\Python311\python.exe tools/verify_g1.py check` -> `G1 PASS`
+- G1 covers version foundation, identity vectors, immutable oracle, full Python
+  suite, Ruff, retained TS tests/build, Cargo fmt/clippy/workspace tests, and
+  final git cleanliness.
+- Full Python regression observed: 525 passed, 6 skipped.
+- Retained TS regression observed: 93 passed; TypeScript build passed.
+- `tools/oracle_snapshot.py --verify` exits 0.
+- Both implementation worktree and index were clean after the final run.
+
+## Environment recovery and production invariant
+
+- The missing CodeSextant wrapper was mechanically restored from the existing
+  `E:\ai-king\ai-king-share\CodeSextant_v0.15.0_friend.zip` to:
+  - `C:\Users\zerox\.claude\skills\codesextant\scripts\codesextant_query.py`
+  - `C:\Users\zerox\.agents\skills\codesextant\scripts\codesextant_query.py`
+- Both copies SHA-256:
+  `8FAB4BEDBB574C520C15CBB90F8D65781CE54AE828AE42BF253013F55E4152A9`.
+- Only the wrapper was restored. No archived product code was copied into the
+  repository.
+- Production daemon was not restarted or switched. Final read-only health:
+  PID 14256, port 8790, engine 0.16.0, status ok, uptime about 11 hours.
+
+## Non-negotiable boundaries
+
+- Python 0.16.0 remains the production correctness oracle.
+- Do not restart or switch production for tests.
+- Do not publish, push a public repository, release packages, claim SOTA, or
+  submit Claude for Open Source before all required gates pass and the user
+  explicitly authorizes it.
+- Do not read or copy competitor implementation source.
+- Use `Invoke-ExactTaskCommit` for every implementation commit.
+
+---
