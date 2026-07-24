@@ -23,12 +23,13 @@ updated: 2026-07-24
 ### 狀態總覽
 
 - `master` 停在 `20252a1`（完整 release-gate 設計與七份實作計畫）。
-- 執行分支目前停在乾淨 commit `a599471 test: add immutable Python oracle generator`。
+- 執行分支目前停在乾淨 commit `87dd3e1 test: make untracked materialization check durable`。
 - 已完成並提交：
   1. `df678bf`：Python 產品版本單一權威與精確提交工具。
   2. `e2c0c27`、`3162a95`、`8217715`：Rust kernel / Python oracle 架構裁決、TS-primary 降為 fixture/adapter 輸入。
   3. `9b6a404`：schema v4 抽為共用 resource。
   4. `a599471`：不可變 Python oracle 產生器、隔離環境 lock、deterministic corpus、manifest validator。
+  5. `87dd3e1`：修正 Task 4 commit 後才暴露的假綠；untracked exclusion 改用 disposable Git repo 真測。
 - Task 4 聚焦驗證：`38 passed in 20.81s`；Ruff 全綠；精確提交閘曾抓到 5 個檔尾空白，修正後才允許 commit。
 - production daemon 未被重啟或切換：`http://127.0.0.1:8790/health` 於 2026-07-24 查得 `v0.16.0`、status ok、單一 listener。
 
@@ -43,10 +44,10 @@ updated: 2026-07-24
 
 ### next_step
 
-1. 在乾淨 `a599471` 上執行 G0-G1 **Task 5：Freeze the Python oracle in a separate commit**。
+1. 在乾淨 `87dd3e1` 上執行 G0-G1 **Task 5：Freeze the Python oracle in a separate commit**。
 2. 生成兩份獨立 output root，比對 bytes，跑 `--verify-output-root ... --precommit`。
 3. 只複製並精確提交三個 evidence 檔：`tests/fixtures/oracle-manifest.json`、`tests/parity/golden/python-engine-v1.json`、`python-store-v1.json`。
-4. 驗證 evidence commit 的 first parent 正是 `a599471`，再進 Task 6 Rust workspace。
+4. 驗證 evidence commit 的 first parent 正是 `87dd3e1`，再進 Task 6 Rust workspace。
 
 ## -4. ⭐ 2026-07-19 獨立產品化 + 技術債棘輪（5 個 commit·438 測試綠）
 
