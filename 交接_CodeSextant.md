@@ -30,7 +30,7 @@ verified: 2026-07-24（HEAD 731217c；tools/oracle_snapshot.py 與 tools/public_
 
 - `master` 只收本交接 checkpoint；產品實作全在上述 worktree 隔離分支。
 - ⚠ plan Markdown checkbox 全空（0 checked / 665 unchecked 是假象，非進度）。commit↔task 以各 task 的 `Invoke-ExactTaskCommit -Message` 字串比對確認。
-- **當前 HEAD＝`7a2ba99 feat(core): add deterministic native discovery`＝native-kernel Task 3 完成（parent 731217c）；worktree 乾淨。**
+- **當前 HEAD＝`9fb8cb0`（native-kernel Task 4 impl=`9eabd1b` + reviewed plan-change 記錄）＝native-kernel Task 4 完成；worktree 乾淨。**
 - 跨越序（interlock：G0/G1 → quality T1-3 → native T1 → quality T4 → quality T5-9 → **native T2-12** → 回 quality T10-11）：
   - **G0-G1 Task 1-9**：`…a6ff73a`（foundation；`verify_g0.py`/`verify_g1.py` 綠。逐 task 摘要見 git log 與 `docs/.../g0-g1-foundation.md`）
   - **quality T1**＝`158c10b`（schema v5 source-class 分類）｜**T2**＝`7cb4f6a`（deterministic explainable ranking）｜**T3**＝`d70415f`（凍結 public Python + command registry）
@@ -39,9 +39,11 @@ verified: 2026-07-24（HEAD 731217c；tools/oracle_snapshot.py 與 tools/public_
   - **quality T5**＝`9876220`+`1537dd4`（non-vacuous self-map 品質閘）｜**T6**＝`304c457`（完整 8-crate Rust workspace）｜**T7**＝`66233be`（從 operations.yaml 生 protocol/error 契約）｜**T8**＝`885c84e`（canonical envelopes + QueryService 邊界）｜**T9**＝`5fd3d5d`（thin CLI/MCP/HTTP adapters）
   - oracle harness 修正：`9318a47`（no-side-effect check 限縮 isolated run）+ `b272527`（evidence-commit invariant 允許 manifest+changed-golden subset）
   - **native T2**＝`731217c`（凍結 18-operation public oracle：manifest fmt v2 + golden，evidence-only）
-  - **native T3**＝`7a2ba99`（native deterministic discovery + classification parity：no-follow directory-handle walker〔Windows windows-sys CreateFileW+GetFileInformationByHandleEx、reparse rejection、identity-swap retry〕、11-rule source-class 與 Python `source_class.py` byte-parity、in-scope-only ignore policy、state-root 非可覆蓋排除、BLAKE3 discovery digest、weighted byte-semaphore pipeline）← **HEAD**
-- 綠證（本 session 2026-07-24，⛔ 主代理親自重跑非轉述子代理）：native T2 邊界 `oracle_snapshot.py --verify` / `public_operation_oracle.py --verify` 皆 exit 0；native T3（HEAD 7a2ba99）`cargo test --locked -p codesextant-core --test discovery_parity` **兩次同 digest `7389bf4a…842`（各 2 passed）** + `--test discovery_security` 12 passed，commit 恰 10 檔（4M+6A）、零 oracle-bound 路徑、`git status --porcelain` 空。
-- ⚠ native T3 已知邊界（非 blocker）：POSIX discovery path（rustix `open O_NOFOLLOW` sys 模組）本機 Windows-only toolchain **未編譯/未測**，Linux CI build 前別依賴；content-addressed spill / IndexReceipt / 完整 AccessScope threading de-scoped 到後續 task（各有其 task）。
+  - **native T3**＝`7a2ba99`（native deterministic discovery + classification parity：no-follow directory-handle walker〔Windows windows-sys CreateFileW+GetFileInformationByHandleEx、reparse rejection、identity-swap retry〕、11-rule source-class 與 Python `source_class.py` byte-parity、in-scope-only ignore policy、state-root 非可覆蓋排除、BLAKE3 discovery digest、weighted byte-semaphore pipeline）
+  - **native T4**＝`9eabd1b`（bundled 16-language tree-sitter parser registry；per-language Python-oracle parity〔symbols/comments/complexity/fingerprint〕、iterative bounded extraction + QueryCursor limits + PARSER_LIMIT、16 grammar 精確 pin）＋ `9fb8cb0`（reviewed plan change：go re-pin + kotlin carve-out 記錄）← **HEAD**
+- 綠證（本 session 2026-07-24/25，⛔ 主代理親自重跑非轉述子代理）：native T2 邊界 `oracle_snapshot.py`/`public_operation_oracle.py --verify` 皆 exit 0；**native T3**（7a2ba99）`discovery_parity` 兩次同 digest `7389bf4a…842`（各 2 passed）+ `discovery_security` 12 passed、commit 10 檔零 oracle-bound；**native T4**（9eabd1b）`cargo test -p codesextant-parser`＝language_registry 5 + parser_limits 14(+1 ignored) + python_oracle 2（含 carve-out guard test）全綠、clippy `-D warnings` exit 0、commit 13 檔零 frozen、`cargo tree -d` 恰 1 個 tree-sitter 0.25.8/go 0.25.0/kotlin-ng 1.1.0/無 fwcd。
+- ⚠ native T3 已知邊界（非 blocker）：POSIX discovery path（rustix `open O_NOFOLLOW` sys 模組）本機 Windows-only toolchain **未編譯/未測**，Linux CI build 前別依賴；content-addressed spill / IndexReceipt / 完整 AccessScope threading de-scoped 到後續 task。
+- ⚠ native T4 已知 carry-over（非 blocker）：① **kotlin `raw_token_hash` documented carve-out**（fwcd↔ng tokenization 合法差異；只碰 fingerprint col-11、語意欄位全 byte-parity；guard test `carveout_is_kotlin_raw_token_hash_only` 自證 15 語言零 masking + 防 stale；plan authority table 已記錄 commit `9fb8cb0`）② **`parser_limits::query_capture_explosion_trips_match_limit` `#[ignore]`**（match-limit gate 經 single-node query 結構性不可觸發、pre-existing；DoS fan-out 已由 capture-limit test 覆蓋；待 plan-owner 決：開 custom-query 測試 seam 或撤 gate）③ kotlin `block_comment` 修正僅 static 驗（corpus 無 kotlin 註解，MEDIUM-HIGH）。
 - production daemon 未動：`127.0.0.1:8790/health`＝engine `0.16.0`、status ok、單一 listener（pid 20028）。
 - 8-crate Rust workspace（`.worktrees/codesextant-sota-gate/crates/`）：codesextant-core / -parser / -store / -protocol / -sidecar-protocol / -daemon / -cli / -mcp（＋ root `Cargo.toml`、`xtask/`）。`spec/operations.yaml`（23,967B）＝18-operation 唯一權威。
 
@@ -56,19 +58,14 @@ verified: 2026-07-24（HEAD 731217c；tools/oracle_snapshot.py 與 tools/public_
 - Rust 工具鏈：官方 rustup 鎖 `1.96.0` minimal（含 rustfmt/clippy）；Cargo 不在全域 PATH，可靠入口 `C:\Users\zerox\.cargo\bin\cargo.exe`。
 - ⚠ 環境復原記錄：CodeSextant wrapper 曾遺失，已從 `E:\ai-king\ai-king-share\CodeSextant_v0.15.0_friend.zip` 機械還原至兩份 Skill scripts，SHA-256＝`8FAB4BEDBB574C520C15CBB90F8D65781CE54AE828AE42BF253013F55E4152A9`（只還原 wrapper，未複製任何 archived 產品碼進 repo）。
 
-### ⚠ BLOCKED — native-kernel Task 4（16-language parser registry）卡在 go+kotlin grammar↔oracle 版本不一致
+### next_step — native-kernel Task 5：Implement atomic incremental indexing and versioned recovery
 
-**2026-07-24 子代理實作 + 主代理驗根因**：14/16 語言達完美 byte-parity；**go + kotlin FAIL**。根因（已從凍結 oracle 源碼證實）：frozen oracle `codesextant/symbols.py` 用 `from tree_sitter_language_pack import get_language`（kotlin 規則 `child:simple_identifier`＝fwcd grammar；go grammar 有 `statement_list`），但 plan authority table pin 的 Rust grammar 版本結構不同——`tree-sitter-go 0.23.4` 無 `statement_list`（node_count 差 1、shape_hash 不符）；plan 行 123 **刻意** pin `tree-sitter-kotlin-ng`（明禁 fwcd，因 fwcd 卡 tree-sitter <0.23，與 0.25 runtime 不相容）→ kotlin name node 出 `<anon>`、raw_token_hash 與凍結 golden 不符。
-子代理未 commit、**已還原乾淨 7a2ba99（主代理驗證 porcelain 空）**、14/16 實作存為 patch：`E:/Temp/claude/.../scratchpad/task4_parser_impl.patch`（134KB，`git apply` 從 worktree root 續跑）。
-**每條自主修法都撞硬規則**：float pin（plan 行 125 禁）／改 frozen oracle（凍結面禁編輯）／弱化 parity gate（repo 反假綠 ethos 禁）→ **需 plan-owner 決策**（reconciliation：go 重 pin + kotlin 有文件 carve-out ＼ vs 重凍 oracle）。決策定案前 **⛔ 不進 Task 5**（Task 5 消費此 parser 的 ParseOutput）。
+native T4 已 ✅（go+kotlin reconciliation 見上 carry-over；go 0.25.0 re-pin + kotlin carve-out 已寫入 plan authority table，commit `9fb8cb0`）。從乾淨 `9fb8cb0` 起，subagent-driven TDD，**同紀律**：先寫紅測看 red→green／exact-commit 恰列檔／Cargo manifest 單一 lockfile window／⛔不碰 frozen oracle 面／land 一個 green exact-commit 或還原 pristine／⛔不重啟 production daemon／不碰 master。
 
-**決策後續跑計畫**（native plan 行 398-471，subagent-driven TDD，依賴 Task 3）：
-
-1. **Step 1 先寫紅測**：`crates/codesextant-parser/tests/language_registry.rs`（registry 恰好 16 語言 Python/JavaScript/TypeScript/TSX/Go/Rust/CSharp/Java/C/Cpp/Kotlin/Swift/PHP/Ruby/Bash/Lua；拒 Python `SUPPORTED_EXTENSIONS` 沒有的 extension alias；Kotlin 用 `tree_sitter_kotlin::LANGUAGE.into()`；`cargo tree -d` 斷言恰一個 runtime `tree-sitter` 0.25.8、含 `tree-sitter-kotlin-ng` 1.1.0、拒 `tree-sitter-kotlin`）＋ `python_oracle.rs`（每語言 fixture 對 Python oracle parity：symbol name/kind/start-end line/parent/visibility evidence、comments/tags、complexity 值或明確 unknown reason、structural fingerprint）＋ `parser_limits.rs`（max bytes/nodes/depth、QueryCursor match/capture limit + `did_exceed_match_limit()`、per-file fact/output-byte caps、invalid bytes、timeout/cancellation、malformed、stack-adversarial 巢狀、query-capture 爆炸；PARSER_LIMIT 穩定、零 partial fact/revision、permit cleanup）。Step 2 跑紅確認 FAIL。
-2. **Step 3-4 實作**：root Cargo.toml 加 tree-sitter + 16 grammar crate（authority table 行 103-118 精確 pin，Kotlin 用 `tree-sitter-kotlin-ng` 別名）；`codesextant-parser` 只 workspace deps；每 LanguageSpec 擁 extensions/grammar factory/definition+comment queries/visibility/complexity/fingerprint；grammar lazy-init 一次、⛔不從 system path 載、⛔不呼叫外部 parser exe；feature `default-languages` 含全 16、minimal 只 dev。Parse 一次/檔、**iterative 非 recursive** 遍歷、每 256 node 檢 cancellation、QueryCursor 給明確 match/capture limit；syntax error → ParseWarning + partial facts（reason syntax_recovery）；任何 hard limit → PARSER_LIMIT 丟整檔、釋放 weighted permit、零 partial publish。
-3. **Step 5**：`cargo test --locked -p codesextant-parser` 全綠（16 語言 fixture + limit）+ `cargo clippy --locked -p codesextant-parser --all-targets -- -D warnings`。⛔ corpus `tests/parity/corpora/languages` 是驗證輸入、不可改（oracle-bound）。
-4. **Step 6 exact commit**（13 檔）message＝`feat(parser): bundle native sixteen-language extraction`。Cargo manifest 改動走單一 lockfile window（`cargo generate-lockfile` 一次→檢 lock diff→全 `--locked`）。
-5. parity 源＝Python `codesextant/symbols.py`/`comments.py`/complexity/fingerprint。Task 4 綠仍非公開 / 發布 / SOTA 授權。
+1. **先讀 plan Task 5 全文**：`docs/superpowers/plans/2026-07-23-codesextant-g2-native-kernel-adapters.md` **行 475+**（Files/Interfaces/Steps）。Task 5＝atomic incremental indexing + versioned recovery（crash recovery、原子 index write、cancellation/parser/sidecar 失敗**不得 publish partial revision**）。
+2. **消費 T4 parser**：Task 5 吃 `codesextant-parser` 的 `ParseOutput`（+ T3 discovery）→ 寫進 `codesextant-store`（versioned SQLite，quality T6 已 bootstrap）。⚠ 子代理 W 維觀察：parser crate 目前只被自身 test 驗、未接任何 consumer；Task 5 是把 discovery→parse→store 串成 end-to-end index 的第一個真接線 gate。
+3. 派子代理前把 plan Task 5 全文 + 前置（`pytest tests/release/test_exact_task_commit.py` 綠→dot-source `tools/exact_task_commit.ps1`）+ dispatch preamble 寫進 brief；exact-commit message 依 plan Step 指定。
+4. Task 5 綠仍非公開 / 發布 / SOTA 授權。
 
 ## -4. ⭐ 2026-07-19 獨立產品化 + 技術債棘輪（5 commit·438 測試綠）
 
