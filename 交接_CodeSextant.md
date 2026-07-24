@@ -58,9 +58,12 @@ verified: 2026-07-24（HEAD 731217c；tools/oracle_snapshot.py 與 tools/public_
 - Rust 工具鏈：官方 rustup 鎖 `1.96.0` minimal（含 rustfmt/clippy）；Cargo 不在全域 PATH，可靠入口 `C:\Users\zerox\.cargo\bin\cargo.exe`。
 - ⚠ 環境復原記錄：CodeSextant wrapper 曾遺失，已從 `E:\ai-king\ai-king-share\CodeSextant_v0.15.0_friend.zip` 機械還原至兩份 Skill scripts，SHA-256＝`8FAB4BEDBB574C520C15CBB90F8D65781CE54AE828AE42BF253013F55E4152A9`（只還原 wrapper，未複製任何 archived 產品碼進 repo）。
 
-### next_step — native-kernel Task 5：Implement atomic incremental indexing and versioned recovery
+### next_step — native-kernel Task 5（⚠ 驗證後＝monolithic mega-task + Task-6 forward-dep；decomposition 決策 pending）
 
-native T4 已 ✅（go+kotlin reconciliation 見上 carry-over；go 0.25.0 re-pin + kotlin carve-out 已寫入 plan authority table，commit `9fb8cb0`）。從乾淨 `9fb8cb0` 起，subagent-driven TDD，**同紀律**：先寫紅測看 red→green／exact-commit 恰列檔／Cargo manifest 單一 lockfile window／⛔不碰 frozen oracle 面／land 一個 green exact-commit 或還原 pristine／⛔不重啟 production daemon／不碰 master。
+**2026-07-25 子代理 stop-and-report（零寫入、tree 淨 9fb8cb0）＋主代理驗證確認**：Task 5＝plan 最大且 **monolithic**（Step 6 一次 exact-commit **23 檔** all-or-nothing，無 partial delivery）；需 ~5.5-9k LOC stateful 分散式系統碼（v4→v5→v6 migration engine〔store 現 `SUPPORTED_SCHEMA=4`、`ExistingSchema` 只 Empty/V3/V4、無 migration engine〕、versioned revision、ReaderEpoch snapshot、CAS publish、lease/fencing、GC、crash-recovery + 多進程 barrier 注入 harness），非單 sub-agent 單 pass 可完成；且 `incremental_index` 的「correct semantic bundles」**forward-depend Task 6**（`SourceBlob`/`ResolutionInput`/`AnalyzerSnapshot` 皆未存在、`grep SourceBlob`=0；而 Task 6 `Dependencies: Task 5`＝真 ordering tension）。
+**推薦拆 5a-5d**：**5a**＝schema authority + v4→v5→v6 migration engine（Task-6-獨立、`codesextant/schema_v5.sql` 凍結、`tests/parity/test_schema_v5_python_rust.py` parity oracle 已綠、最低風險，先做）｜5b＝versioned revision/recovery/single-process index｜5c＝multiprocess CAS/lease/PID-reuse harness｜5d＝semantic-context bundles（Task 6 resolver 後才能真斷言）。**待 plan-owner 決 decomposition 方向**（split-start-5a / monolithic-multi-session / reorder 5↔6）。
+
+決策後（若 split）：從乾淨 `9fb8cb0` 起，subagent-driven TDD，**同紀律**：先寫紅測看 red→green／exact-commit 恰列檔／Cargo manifest 單一 lockfile window（Task 5 需擴 `rusqlite` pin 到 bundled/functions/limits/modern_sqlite）／⛔不碰 frozen oracle 面／land 一個 green exact-commit 或還原 pristine／⛔不重啟 production daemon／不碰 master。
 
 1. **先讀 plan Task 5 全文**：`docs/superpowers/plans/2026-07-23-codesextant-g2-native-kernel-adapters.md` **行 475+**（Files/Interfaces/Steps）。Task 5＝atomic incremental indexing + versioned recovery（crash recovery、原子 index write、cancellation/parser/sidecar 失敗**不得 publish partial revision**）。
 2. **消費 T4 parser**：Task 5 吃 `codesextant-parser` 的 `ParseOutput`（+ T3 discovery）→ 寫進 `codesextant-store`（versioned SQLite，quality T6 已 bootstrap）。⚠ 子代理 W 維觀察：parser crate 目前只被自身 test 驗、未接任何 consumer；Task 5 是把 discovery→parse→store 串成 end-to-end index 的第一個真接線 gate。
