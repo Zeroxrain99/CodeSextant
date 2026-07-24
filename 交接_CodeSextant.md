@@ -10,7 +10,7 @@ updated: 2026-07-24
 
 # 交接 CodeSextant
 
-## -6. ⭐ 2026-07-24 SOTA release gate 執行中（G0-G1 Task 4 已提交）
+## -6. ⭐ 2026-07-24 SOTA release gate 執行中（G0-G1 Task 6 已提交）
 
 ### §0 計畫路徑索引
 
@@ -22,15 +22,22 @@ updated: 2026-07-24
 
 ### 狀態總覽
 
-- `master` 停在 `20252a1`（完整 release-gate 設計與七份實作計畫）。
-- 執行分支目前停在乾淨 commit `87dd3e1 test: make untracked materialization check durable`。
+- `master` 只新增交接 checkpoint；產品實作仍只在隔離分支。
+- 執行分支目前停在乾淨 commit `a499018 feat: establish Rust core domain contract`。
 - 已完成並提交：
   1. `df678bf`：Python 產品版本單一權威與精確提交工具。
   2. `e2c0c27`、`3162a95`、`8217715`：Rust kernel / Python oracle 架構裁決、TS-primary 降為 fixture/adapter 輸入。
   3. `9b6a404`：schema v4 抽為共用 resource。
   4. `a599471`：不可變 Python oracle 產生器、隔離環境 lock、deterministic corpus、manifest validator。
   5. `87dd3e1`：修正 Task 4 commit 後才暴露的假綠；untracked exclusion 改用 disposable Git repo 真測。
-- Task 4 聚焦驗證：`38 passed in 20.81s`；Ruff 全綠；精確提交閘曾抓到 5 個檔尾空白，修正後才允許 commit。
+  6. `c6ffeff`：隔離 oracle home 同時保留 Jedi/Parso 可用性。
+  7. `ccd9638`：Windows 可寫 descriptor fsync，修正真生成 `EBADF`。
+  8. `f62a36c`：assert 真 project identity 後正規化 DB locator，使兩次獨立生成 byte-identical。
+  9. `a29f7f7`：Task 5 evidence-only commit；manifest source/first parent=`f62a36c`。
+  10. `a499018`：Task 6 Rust 1.96 workspace、core wire types、Python 3.11 path identity parity、SHA-1 legacy key＋domain-separated SHA-256 storage ID。
+- Task 5：兩次獨立生成三檔 SHA-256 完全一致；committed verifier、40 tests、Ruff 全綠。
+- Task 6：Cargo fmt/clippy/test 全綠；Rust identity 對照 Python 3.11 closed vectors；Python vectors 3 tests 綠；oracle verifier 仍綠。
+- 本機已由官方 rustup 安裝／鎖定 Rust `1.96.0` minimal，含 rustfmt、clippy；Cargo 不在全域 PATH，可靠入口為 `C:\Users\zerox\.cargo\bin\cargo.exe`。
 - production daemon 未被重啟或切換：`http://127.0.0.1:8790/health` 於 2026-07-24 查得 `v0.16.0`、status ok、單一 listener。
 
 ### 鐵律／未解決
@@ -44,10 +51,10 @@ updated: 2026-07-24
 
 ### next_step
 
-1. 在乾淨 `87dd3e1` 上執行 G0-G1 **Task 5：Freeze the Python oracle in a separate commit**。
-2. 生成兩份獨立 output root，比對 bytes，跑 `--verify-output-root ... --precommit`。
-3. 只複製並精確提交三個 evidence 檔：`tests/fixtures/oracle-manifest.json`、`tests/parity/golden/python-engine-v1.json`、`python-store-v1.json`。
-4. 驗證 evidence commit 的 first parent 正是 `87dd3e1`，再進 Task 6 Rust workspace。
+1. 從乾淨 `a499018` 執行 G0-G1 **Task 7：Add the versioned Rust graph-store boundary**。
+2. 先寫／跑 `schema_migration` 紅測，再把 `codesextant-store` 加入 workspace；manifest 變更只准一次 controlled `cargo generate-lockfile`，之後全用 `--locked`。
+3. 完成 no-create read-only preflight、v3→v4 無損 migration、future/malformed fail-closed、readonly 零檔案變異、WAL reader concurrency、identity collision、StateRoot ACL/reparse 防護。
+4. Task 7 不是普通 SQLite wrapper；state-root security 與 collision fail-closed 不得降級成「先做能跑版」。
 
 ## -4. ⭐ 2026-07-19 獨立產品化 + 技術債棘輪（5 個 commit·438 測試綠）
 
