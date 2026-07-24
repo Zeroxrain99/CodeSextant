@@ -2,13 +2,51 @@
 tier: 全文
 type: 專案交接（三層交接之全文層）
 喚起詞: 交接 CodeSextant / 交接 codesextant
-updated: 2026-07-19
+updated: 2026-07-24
 最後壓縮整理: 2026-07-19（-3 節逐檔改動移交 git log；-1 節 07-16 checkpoint 早已壓成 3 行）
 設計SSOT: E:\ai-king\_AI_BRAIN\05_Planning\CodeSextant_自創代碼地圖神器_設計_2026-06-18.md
 版本控制: ⭐ 2026-07-19 起有獨立 git（此前 9,395 行零回復點）。逐版史用 git log 查，⛔別再往本檔塞
 ---
 
 # 交接 CodeSextant
+
+## -6. ⭐ 2026-07-24 SOTA release gate 執行中（G0-G1 Task 4 已提交）
+
+### §0 計畫路徑索引
+
+- 設計 SSOT：`E:\ai-king\項目資料\CodeSextant\docs\superpowers\specs\2026-07-23-sota-open-source-release-gate-design.md`
+- 目前執行計畫：`E:\ai-king\項目資料\CodeSextant\docs\superpowers\plans\2026-07-23-codesextant-g0-g1-foundation.md`
+- 後續計畫：同目錄 `2026-07-23-codesextant-g2-*.md` 至 `g7-g8-publication-application.md`
+- 執行 worktree：`E:\ai-king\項目資料\CodeSextant\.worktrees\codesextant-sota-gate`
+- 執行分支：`codex/codesextant-sota-gate`
+
+### 狀態總覽
+
+- `master` 停在 `20252a1`（完整 release-gate 設計與七份實作計畫）。
+- 執行分支目前停在乾淨 commit `a599471 test: add immutable Python oracle generator`。
+- 已完成並提交：
+  1. `df678bf`：Python 產品版本單一權威與精確提交工具。
+  2. `e2c0c27`、`3162a95`、`8217715`：Rust kernel / Python oracle 架構裁決、TS-primary 降為 fixture/adapter 輸入。
+  3. `9b6a404`：schema v4 抽為共用 resource。
+  4. `a599471`：不可變 Python oracle 產生器、隔離環境 lock、deterministic corpus、manifest validator。
+- Task 4 聚焦驗證：`38 passed in 20.81s`；Ruff 全綠；精確提交閘曾抓到 5 個檔尾空白，修正後才允許 commit。
+- production daemon 未被重啟或切換：`http://127.0.0.1:8790/health` 於 2026-07-24 查得 `v0.16.0`、status ok、單一 listener。
+
+### 鐵律／未解決
+
+- ⛔ 不在 `master` 實作；所有 G0-G1 工作只在上述 worktree。
+- ⛔ Python 0.16.0 仍是 production oracle；Rust parity 完成前不可切換。
+- ⛔ G0-G7 全綠、獨立驗證與 user 明確授權前，不得建立公開 repo、發布 package/release、宣稱 SOTA 或送 Claude for Open Source。
+- ⛔ 不讀／不複製競品 implementation source；研究邊界只到公開文件、論文、issue、benchmark protocol、documented interface。
+- ⛔ production daemon 不因測試或交接重啟；磁碟最新碼不等於已部署。
+- 計畫 Markdown checkbox 尚未回填，不能拿 `0 checked / 665 unchecked` 判進度；Git commits + clean worktree + 測試才是權威。
+
+### next_step
+
+1. 在乾淨 `a599471` 上執行 G0-G1 **Task 5：Freeze the Python oracle in a separate commit**。
+2. 生成兩份獨立 output root，比對 bytes，跑 `--verify-output-root ... --precommit`。
+3. 只複製並精確提交三個 evidence 檔：`tests/fixtures/oracle-manifest.json`、`tests/parity/golden/python-engine-v1.json`、`python-store-v1.json`。
+4. 驗證 evidence commit 的 first parent 正是 `a599471`，再進 Task 6 Rust workspace。
 
 ## -4. ⭐ 2026-07-19 獨立產品化 + 技術債棘輪（5 個 commit·438 測試綠）
 
