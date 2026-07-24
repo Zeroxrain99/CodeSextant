@@ -10,7 +10,7 @@ updated: 2026-07-24
 
 # 交接 CodeSextant
 
-## -6. ⭐ 2026-07-24 SOTA release gate 執行中（G0-G1 Task 7 已提交）
+## -6. ⭐ 2026-07-24 SOTA release gate 執行中（G0-G1 Task 8 已提交）
 
 ### §0 計畫路徑索引
 
@@ -23,7 +23,7 @@ updated: 2026-07-24
 ### 狀態總覽
 
 - `master` 只新增交接 checkpoint；產品實作仍只在隔離分支。
-- 執行分支目前停在乾淨 commit `c63d1d5 feat: add versioned Rust graph store`。
+- 執行分支目前停在乾淨 commit `9e4fc2a feat: prove Rust store parity with Python oracle`。
 - 已完成並提交：
   1. `df678bf`：Python 產品版本單一權威與精確提交工具。
   2. `e2c0c27`、`3162a95`、`8217715`：Rust kernel / Python oracle 架構裁決、TS-primary 降為 fixture/adapter 輸入。
@@ -36,9 +36,11 @@ updated: 2026-07-24
   9. `a29f7f7`：Task 5 evidence-only commit；manifest source/first parent=`f62a36c`。
   10. `a499018`：Task 6 Rust 1.96 workspace、core wire types、Python 3.11 path identity parity、SHA-1 legacy key＋domain-separated SHA-256 storage ID。
   11. `c63d1d5`：Task 7 versioned Rust graph store、immutable/no-create preflight、v3→v4 無損 migration、future/malformed fail-closed、真 read-only/WAL reader、identity collision、Windows protected DACL/reparse/root replacement 防護。
+  12. `9e4fc2a`：Task 8 frozen Python store transcript parity、完整 CRUD records/API、transaction rollback atomicity、UnsupportedProvenance fail-closed、Python identity byte-compare。
 - Task 5：兩次獨立生成三檔 SHA-256 完全一致；committed verifier、40 tests、Ruff 全綠。
 - Task 6：Cargo fmt/clippy/test 全綠；Rust identity 對照 Python 3.11 closed vectors；Python vectors 3 tests 綠；oracle verifier 仍綠。
 - Task 7：精確提交 closure 15 檔；store integration 15 tests＋注入 collision unit 1 test 全綠，workspace/doc tests、Clippy `-D warnings`、schema/version/oracle verifier 全綠。Production daemon 未切換，仍為 Python v0.16.0。
+- Task 8：`python_oracle` 逐值等於 frozen golden；`crud_atomicity` 4 tests 覆蓋 late insert/delete、refs rollback、provenance preflight；workspace/doc tests、Clippy、version/oracle verifier 全綠。
 - 本機已由官方 rustup 安裝／鎖定 Rust `1.96.0` minimal，含 rustfmt、clippy；Cargo 不在全域 PATH，可靠入口為 `C:\Users\zerox\.cargo\bin\cargo.exe`。
 - production daemon 未被重啟或切換：`http://127.0.0.1:8790/health` 於 2026-07-24 查得 `v0.16.0`、status ok、單一 listener。
 
@@ -53,10 +55,10 @@ updated: 2026-07-24
 
 ### next_step
 
-1. 從乾淨 `c63d1d5` 執行 G0-G1 **Task 8：Prove Rust store CRUD parity against the Python oracle**。
-2. 先完整讀 Task 8 契約與檔案清單，再寫／跑 `python_oracle.rs` 紅測；不可重做或弱化 Task 7。
-3. 以 frozen Python oracle 與 designated previous artifact 證明同一 legacy DB 的 CRUD、rollback compatibility、transaction atomicity 與錯誤語意；任何 oracle 差異都先當 Rust bug 查。
-4. 繼續使用 `tools/exact_task_commit.ps1`；Cargo manifest/lock 變更仍遵守 controlled lockfile 規則。
+1. 從乾淨 `9e4fc2a` 執行 G0-G1 **Task 9：Add a machine-verifiable G1 gate**。
+2. 先完整讀 Task 9 契約、ReleaseSubject 與 fail-closed 規則，再做指定紅測。
+3. Gate 必須驗證 immutable oracle、Python tests/lint、Rust fmt/clippy/tests、版本/架構權威與 git cleanliness；不可用「測過一次」文字代替機器證據。
+4. G1 gate 綠仍不是公開 repo／發布／SOTA 宣稱／Claude for Open Source 申請授權。
 
 ## -4. ⭐ 2026-07-19 獨立產品化 + 技術債棘輪（5 個 commit·438 測試綠）
 
