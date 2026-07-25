@@ -3,10 +3,10 @@ tier: 全文
 type: 專案交接（三層交接之全文層）
 喚起詞: 交接 CodeSextant / 交接 codesextant
 status: active
-updated: 2026-07-24
-last_updated: 2026-07-24
-verified: 2026-07-24（HEAD 731217c；tools/oracle_snapshot.py 與 tools/public_operation_oracle.py --verify 皆 exit 0；worktree porcelain 空）
-最後壓縮整理: 2026-07-24（Claude 接手核對 git ground truth，發現交接落後 ~14 commit；重建當前戰線 §-6，壓縮已解事故 §1/舊 CHECKPOINT 到 git-log 指針）
+updated: 2026-07-25
+last_updated: 2026-07-25
+verified: 2026-07-25（HEAD 99b12f6；主代理親自重跑非轉述：store 16 binaries + core 32 + multiprocess_publish 5×5/5 + clippy 兩 crate exit 0 全綠；worktree porcelain 空）
+最後壓縮整理: 2026-07-25（★ native Task 5 核心層 5a-5c 完成里程碑；§-6 frontier 更新至 Task 6，5a-5b 規劃敘事壓成 git/plan 指針。三層分明：frontmatter 元資料層／§-6 frontier 索引+摘要層／§-4↓ 近期 session + §0↓ 產品參考＝歷史封存層）
 設計SSOT: E:\ai-king\_AI_BRAIN\05_Planning\CodeSextant_自創代碼地圖神器_設計_2026-06-18.md
 版本控制: ⭐ 2026-07-19 起有獨立 git（項目資料/ 被外層 ignore，不影響外層）。逐版史用 git log 查，⛔別再往本檔塞
 ---
