@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CodeSextant C5b — ts-morph 找引用橋（給 Python daemon 透過 stdin/stdout JSON 呼叫）",
+  "description": "CodeSextant C5b ts-morph reference-finding bridge, called by the Python daemon over stdin/stdout JSON",
   "dependencies": {
     "ts-morph": "^28.0.0"
   }

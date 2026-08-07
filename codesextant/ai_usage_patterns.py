@@ -1,25 +1,34 @@
-"""ai-usage 掃描的偵測目錄（純資料 + 編譯好的 regex）——單一真相源。
+"""ai-usage scan's detection directory (pure data + compiled regex): single source of truth.
 
-只放「怎麼認出某段碼在用哪家 AI/LLM、走哪條通道」的 pattern 與對照表，
-不放掃描邏輯（邏輯在 ai_usage.py，本檔零 import engine，避免循環）。
+Holds only the patterns and lookup tables for "how to tell which AI/LLM provider a piece
+of code is using, and which channel it goes through", not the scanning logic (that lives
+in ai_usage.py; this file imports zero engine code, to avoid a cycle).
 
-三通道語義（對齊 dispatch_policy「既有代碼審計」+ user 2026-07-16 directive）：
-  - cli   ＝合規：走 Claude Code CLI 通道 / <x>-cli subprocess（CC subscription 計費，非 metered）
-  - direct＝違規：直呼遠端計費 API（Anthropic / OpenAI / Google 等 metered endpoint）
-  - local ＝中性：本地模型（ollama 等 localhost），無計費、非違規（⛔ 不塗紅、誠實標灰）
+Three-channel semantics (aligned with dispatch_policy's "existing-code-audit" + the
+user's 2026-07-16 directive):
+  - cli   = compliant: goes through the Claude Code CLI channel / <x>-cli subprocess
+    (billed via the CC subscription, not metered)
+  - direct= violation: calls a remote metered API directly (Anthropic / OpenAI / Google
+    etc. metered endpoints)
+  - local = neutral: a local model (ollama etc. on localhost), unmetered, not a violation
+    (⛔ never painted red, honestly labeled gray)
 
-⚠ 名稱級 regex 偵測＝行級線索、非執行證明：字串拼接 base_url / 動態 import /
-   經 wrapper 間接 hit API 會漏；判「違規」前務必人工讀碼確認確實走 metered endpoint。
-   （對齊 deadcode.py「寧誠實線索、不自信假陽性」命門。）
+⚠ Name-level regex detection = a line-level clue, not proof of execution: a concatenated
+   base_url string, a dynamic import, or hitting the API indirectly through a wrapper can
+   all slip past it. Before flagging something as a "violation", read the code yourself to
+   confirm it really hits a metered endpoint.
+   (Aligned with deadcode.py's guiding principle: "an honest clue beats an overconfident
+   false positive".)
 
-維護：新增廠商只改本檔（PROVIDER_META + OPENAI_COMPAT_HOST_MAP + SITE_RULES），
-掃描邏輯不動（開放封閉，對齊既有 code skill OCP）。
+Maintenance: adding a new vendor only touches this file (PROVIDER_META +
+OPENAI_COMPAT_HOST_MAP + SITE_RULES); the scanning logic never changes (open/closed,
+matching the existing code skill's OCP).
 """
 from __future__ import annotations
 
 import re
 
-# ── provider 顯示中繼資料（節點 label / 首字母的單一真相源）──
+# ── provider display metadata (single source of truth for node label / initial) ──
 PROVIDER_META: dict[str, dict[str, str]] = {
     "anthropic": {"label": "Anthropic", "initial": "A"},
     "openai": {"label": "OpenAI", "initial": "O"},
@@ -38,7 +47,8 @@ PROVIDER_META: dict[str, dict[str, str]] = {
 
 
 def provider_meta(pid: str) -> dict[str, str]:
-    """回某 provider 的顯示資料；未知 provider 誠實給 fallback（首字母大寫）。"""
+    """Return a provider's display data; an unknown provider honestly gets a fallback
+    (capitalized initial)."""
     m = PROVIDER_META.get(pid)
     if m:
         return m
@@ -46,8 +56,9 @@ def provider_meta(pid: str) -> dict[str, str]:
             "initial": (pid[:1] or "?").upper()}
 
 
-# ── OpenAI-compat base_url host → 真正 provider ──
-# DeepSeek / Groq / Ollama 等常騎 openai SDK、靠 base_url 分家；不查 base_url 會全誤判成 OpenAI。
+# ── OpenAI-compat base_url host -> the real provider ──
+# DeepSeek / Groq / Ollama etc. often ride the openai SDK and are distinguished only by
+# base_url; without checking base_url they'd all be misclassified as OpenAI.
 OPENAI_COMPAT_HOST_MAP: dict[str, str] = {
     "api.openai.com": "openai",
     "api.deepseek.com": "deepseek",
@@ -60,15 +71,17 @@ OPENAI_COMPAT_HOST_MAP: dict[str, str] = {
     "api.mistral.ai": "mistral",
 }
 
-# 本地 host（→ channel=local、無計費）
+# Local hosts (-> channel=local, unmetered)
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
-# base_url = "..." / baseURL: "..."（Python + JS/TS 兩式）
+# base_url = "..." / baseURL: "..." (covers both the Python and JS/TS forms)
 BASE_URL_RE = re.compile(r"""base[_]?url\s*[=:]\s*["']([^"']+)["']""", re.I)
 
 
-# ── import 標記（file context：判斷該檔拉了哪家 base SDK，供共用呼叫簽名解析 provider）──
-# 值＝context marker（不直接產 site，只當上下文；langchain/cc 另在 SITE_RULES 直接產 site）。
+# ── import markers (file context: which base SDK this file pulls in, used to resolve a
+#    provider from a shared call signature) ──
+# value = a context marker (does not produce a site directly, context only; langchain/cc
+# separately produce a site directly in SITE_RULES).
 IMPORT_MARKERS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?:from\s+anthropic\b|import\s+anthropic\b|@anthropic-ai/sdk)"), "anthropic"),
     (re.compile(r"""(?:from\s+openai\b|import\s+openai\b|from\s+["']openai["']|require\(\s*["']openai["']\s*\))"""), "openai"),
@@ -79,28 +92,31 @@ IMPORT_MARKERS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-# ── SITE_RULES：直接產生一個「呼叫點」的 pattern ──
-# 每筆 (compiled_regex, kind, need_import)：
-#   kind        → ai_usage._resolve() 據此決定 (provider, channel, compliance)
-#   need_import → 該 file 必須偵測到此 base SDK import 才算數（FP 護欄；None=無條件）
-# 順序＝優先序（每行取第一個命中，避免同行重複計）：cli → wrapper → ctor → create → host。
+# ── SITE_RULES: patterns that each directly produce a "call site" ──
+# Each entry is (compiled_regex, kind, need_import):
+#   kind        -> ai_usage._resolve() uses this to decide (provider, channel, compliance)
+#   need_import -> the file must be found to import this base SDK for the match to count
+#                  (an FP guard; None=unconditional)
+# Order = priority (each line takes its first match, to avoid double-counting the same
+# line): cli -> wrapper -> ctor -> create -> host.
 SITE_RULES: list[tuple[re.Pattern[str], str, str | None]] = [
-    # 1) 合規 CLI 通道（channel=cli）
+    # 1) compliant CLI channel (channel=cli)
     (re.compile(r"(?:claude_code_sdk|claude_agent_sdk|@anthropic-ai/claude-code)"), "cc_sdk", None),
     (re.compile(r"""\bAgent\s*\([^)]*model\s*[=:]\s*["'](?:claude|opus|sonnet|haiku)""", re.I), "cc_agent", None),
     (re.compile(r"""(?:claude\s+--print|["']claude["']\s*,\s*["']--print["']|subprocess[.\w]*\([^)]*["']claude["'])"""), "claude_subprocess", None),
     (re.compile(r"""subprocess[.\w]*\([^)]*["']([a-z0-9_]+)-cli["']"""), "generic_cli", None),
-    # 2) langchain wrapper（走 API metered endpoint = 違規 direct）
+    # 2) langchain wrapper (hits a metered API endpoint = a direct violation)
     (re.compile(r"(?:langchain_anthropic|@langchain/anthropic|\bChatAnthropic\b)"), "langchain_anthropic", None),
     (re.compile(r"(?:langchain_openai|@langchain/openai|\bChatOpenAI\b)"), "langchain_openai", None),
-    # 3) 建構子（需對應 import；OpenAI ctor 走 base_url 消歧）
+    # 3) constructors (needs the matching import; OpenAI ctor is disambiguated via base_url)
     (re.compile(r"\b(?:Async)?Anthropic\s*\("), "anthropic_ctor", "anthropic"),
     (re.compile(r"\b(?:Async)?OpenAI\s*\("), "openai_ctor", "openai"),
-    # 4) 共用呼叫簽名（需對應 import；⛔ 永不單獨當 provider，繼承檔內解析）
+    # 4) shared call signatures (needs the matching import; ⛔ never resolves a provider on
+    #    its own, and inherits the resolution from within the file)
     (re.compile(r"\.messages\.create\b"), "anthropic_msg_create", "anthropic"),
     (re.compile(r"\.chat\.completions\.create\b"), "openai_chat_create", "openai"),
     (re.compile(r"\.generate_content\b"), "google_generate", "google"),
-    # 5) API host 字面（direct；host 本身即證據，無需 import）
+    # 5) literal API hosts (direct; the host itself is the evidence, no import needed)
     (re.compile(r"api\.anthropic\.com"), "anthropic_host", None),
     (re.compile(r"api\.openai\.com"), "openai_host", None),
     (re.compile(r"generativelanguage\.googleapis\.com"), "google_host", None),
@@ -111,7 +127,7 @@ SITE_RULES: list[tuple[re.Pattern[str], str, str | None]] = [
     (re.compile(r"api\.cohere\.(?:com|ai)"), "cohere_host", None),
 ]
 
-# host-kind → provider（direct）對照（step 5 那批）
+# host-kind -> provider (direct) lookup table (the step-5 batch)
 HOST_KIND_PROVIDER: dict[str, str] = {
     "anthropic_host": "anthropic",
     "openai_host": "openai",
@@ -123,9 +139,9 @@ HOST_KIND_PROVIDER: dict[str, str] = {
     "cohere_host": "cohere",
 }
 
-# 通道 → 合規性中文描述（drawer / CLI formatter 用）
+# channel -> compliance description (used by the drawer / CLI formatter)
 COMPLIANCE_LABEL: dict[str, str] = {
-    "cli": "CLI subprocess（合規·CC subscription 通道）",
-    "direct": "direct API（違規·metered endpoint）",
-    "local": "本地模型（無計費·非違規）",
+    "cli": "CLI subprocess (compliant, CC subscription channel)",
+    "direct": "direct API (violation, metered endpoint)",
+    "local": "local model (unmetered, not a violation)",
 }

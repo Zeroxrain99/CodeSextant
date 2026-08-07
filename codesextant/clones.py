@@ -1,26 +1,47 @@
-"""重複/類似功能偵測（統一母版）— 結構指紋 + winnowing，純非語義（功能 B 第一半）。
+"""Duplicate / near-duplicate detection (shared core): structural fingerprints +
+winnowing, strictly non-semantic (the first half of feature B).
 
-核心張力（設計 §1.2）：「類似功能」最易踩 embedding 語義相似陷阱（CodeSextant 鐵律拒絕）。
-本模組一律把「類似」降維成**結構/詞彙的離散信號**——AST 形狀雜湊、呼叫名集合、winnowing
-k-gram 指紋，全程只有雜湊/集合/計數運算，⛔零向量、零語義模型、零 GPU、零新依賴。
+The central tension (design §1.2): "similar functionality" is exactly where
+embedding-based semantic similarity is tempting, and CodeSextant's hard rules
+reject it. This module reduces "similar" to **discrete structural and lexical
+signals**: AST shape hashes, called-name sets, winnowing k-gram fingerprints.
+Everything is hashing, sets and counting: ⛔ no vectors, no semantic models, no
+GPU, no new dependencies.
 
-三條正交指紋（設計 §3.A.1）：
-  - shape_hash（主指紋，抓 Type-1/2）：body 前序遍歷 node-type 序列，identifier→ID、literal→LIT、
-    丟匿名標點/註解、**保留**關鍵字 node kind 與控制流結構 → sha1。抹值後改名/換常數仍同形→同 hash。
-  - raw_token_hash（Type-1 逐字判定）：**未正規化**的 terminal token 原值串接 → sha1。
-    ⛔ 只有 raw_token_hash 也相同才配 EXACT_DUP（紅隊 FIX-2：否則三個語義無關的 __init__ collide）。
-  - call_hash（呼叫模式，正交補強）：body 內呼叫節點的被呼叫名 sorted multiset → sha1。
-  - winnowing 指紋集（抓 Type-3）：正規化 token 流切 k-gram→crc32→大小 w 滑窗留最小（選代表）。
-    guarantee threshold t=w+k−1。k-gram hash 用標準庫 **zlib.crc32**（快、跨進程穩定、零新依賴；
-    ⛔不用 Python hash()〔PYTHONHASHSEED 不穩〕、不用 sha1〔短 k-gram 過慢〕、不用 xxhash/mmh3〔新依賴〕）。
+Three orthogonal fingerprints (design §3.A.1):
+  - shape_hash (primary, catches Type-1/2): a pre-order traversal of the body's
+    node types with identifier→ID, literal→LIT, anonymous punctuation and comments
+    dropped, and keyword node kinds and control-flow structure **kept** → sha1.
+    Once values are erased, renaming or swapping constants keeps the same shape and
+    therefore the same hash.
+  - raw_token_hash (verbatim Type-1 decision): the **un-normalized** terminal token
+    values concatenated → sha1. ⛔ EXACT_DUP is only awarded when raw_token_hash
+    also matches (red team FIX-2: otherwise three semantically unrelated __init__
+    methods collide).
+  - call_hash (call pattern, an orthogonal reinforcement): the sorted multiset of
+    called names at call nodes inside the body → sha1.
+  - winnowing fingerprint set (catches Type-3): the normalized token stream is cut
+    into k-grams → crc32 → a sliding window of size w keeps the minimum (the chosen
+    representative). Guarantee threshold t=w+k−1. The k-gram hash is the standard
+    library's **zlib.crc32** (fast, stable across processes, no new dependency).
+    ⛔ Do not use Python's hash() (PYTHONHASHSEED makes it unstable), do not use
+    sha1 (too slow for short k-grams), do not use xxhash/mmh3 (new dependencies).
 
-結構顯著性硬門檻（紅隊 FIX-2/3，擋 __init__/getter 大宗誤報）：去葉後 body **必含至少一個控制流
-節點**（if/for/while/try/match…）才有資格進 RENAMED_DUP 以上；純賦值串/純 return 屬性/純委派呼叫
-壓制到 BOILERPLATE_SUPPRESSED。此硬規則取代失效的 kind_diversity 啟發式（紅隊實測 getter diversity=4 擋不住）。
+Structural-significance hard gate (red team FIX-2/3, which stops the flood of
+__init__/getter false positives): after leaves are dropped, a body **must contain at
+least one control-flow node** (if/for/while/try/match…) to be eligible for
+RENAMED_DUP or above. Plain assignment runs, plain attribute returns and plain
+delegating calls are suppressed to BOILERPLATE_SUPPRESSED. This hard rule replaces
+the kind_diversity heuristic, which did not work (the red team measured a getter at
+diversity=4, which the heuristic let through).
 
-⛔ 鐵律③（唯讀導航圖）：永不出「應刪/應合併」決策，只報「結構相同群 + 位置 + 信心等級」，刪改前人工讀碼+CI。
+⛔ Hard rule 3 (read-only navigation map): never emit a "should be deleted / should
+be merged" decision. Report only the group of structurally identical units, their
+locations, and a confidence level. Read the code yourself and run CI before deleting
+or changing anything.
 
-開關（L0 鐵律 #6，皆 .lower() 容錯）：見 §3.C / switches.md `codesextant_dedup`。
+Switches (L0 hard rule #6, all tolerant via .lower()): see §3.C / switches.md
+`codesextant_dedup`.
 """
 from __future__ import annotations
 
@@ -32,14 +53,17 @@ import tree_sitter
 
 from . import complexity, symbols
 
-# 視為 ID 的葉子節點（跨語言通用，抹成佔位符 "ID"——換名不換形）
+# Leaf nodes treated as identifiers (shared across languages; erased to the
+# placeholder "ID", so renaming does not change the shape).
 _IDENT_TYPES = {
     "identifier", "property_identifier", "field_identifier", "type_identifier",
     "shorthand_property_identifier", "shorthand_property_identifier_pattern",
     "private_property_identifier", "statement_identifier", "label_name",
 }
-# 視為 LIT 的葉子節點（抹成 "LIT"——換常數不換形）。⚠ 紅隊 L1-MEDIUM：Go 整數是 int_literal
-# （非 integer/integer_literal）、imaginary_literal 也要列，否則 Go 數值不抹 LIT → int↔float 漏同形。
+# Leaf nodes treated as literals (erased to "LIT", so swapping a constant does not
+# change the shape). ⚠ Red team L1-MEDIUM: Go integers are int_literal (not
+# integer/integer_literal), and imaginary_literal must be listed too, otherwise Go
+# numbers are not erased to LIT and int↔float pairs miss their shared shape.
 _LITERAL_TYPES = {
     "integer", "float", "string", "true", "false", "none", "null",
     "integer_literal", "float_literal", "string_literal", "boolean_literal",
@@ -47,9 +71,12 @@ _LITERAL_TYPES = {
     "interpreted_string_literal", "rune_literal", "int_literal", "imaginary_literal",
     "string_content", "string_fragment", "true_lit", "false_lit",
 }
-# 控制流節點（結構顯著性門檻：body 含任一即「夠複雜」、有資格判 RENAMED_DUP 以上）。
-# ⚠ 紅隊 L1-HIGH：Go 普通 switch 解成 expression_switch_statement（非 switch_statement），漏列會讓
-# Go switch dispatch 函數 has_control_flow=False 被當 boilerplate 系統性誤壓制。
+# Control-flow nodes (the structural-significance gate: a body containing any of
+# these is "complex enough" to be eligible for RENAMED_DUP or above).
+# ⚠ Red team L1-HIGH: a plain Go switch parses as expression_switch_statement, not
+# switch_statement. Omitting it gives Go switch-dispatch functions
+# has_control_flow=False, so they are systematically misclassified as boilerplate
+# and suppressed.
 _CONTROL_FLOW = {
     "if_statement", "for_statement", "while_statement", "try_statement",
     "match_statement", "with_statement", "if_expression", "for_expression",
@@ -58,9 +85,12 @@ _CONTROL_FLOW = {
     "do_statement", "except_clause", "case_clause", "guard_statement",
     "type_switch_statement", "select_statement", "expression_switch_statement",
 }
-# 各語言呼叫節點型別（2026-06-19 既有 + 2026-06-22 主流語言一批，tools/_probe_extra.py 坐實）。
-# 值＝set（PHP/Ruby 有多種呼叫節點）；_call_names 用 `in` 比對。⚠ Type-4 CALL_PATTERN_SIM 是
-# opt-in 次要功能：被呼叫名的 field 未逐語言 probe，_call_names 用常見 field 容錯、精度盡力而為。
+# Call node types per language (the 2026-06-19 set plus the 2026-06-22 batch of
+# mainstream languages, proved out by tools/_probe_extra.py). Values are sets
+# (PHP and Ruby have several call node types); _call_names matches with `in`.
+# ⚠ Type-4 CALL_PATTERN_SIM is an opt-in secondary feature: the field holding the
+# called name has not been probed per language, so _call_names falls back through
+# the common field names and its precision is best-effort.
 _CALL_TYPES: dict[str, set[str]] = {
     "python": {"call"}, "javascript": {"call_expression"}, "typescript": {"call_expression"},
     "tsx": {"call_expression"}, "go": {"call_expression"}, "rust": {"call_expression"},
@@ -89,7 +119,8 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_float(name: str, default: float) -> float:
-    # 紅隊 L4-LOW：NaN 保護（'nan' 會讓 `sim < nan` 恆 False＝門檻形同關閉）；越界 clamp 由消費端做。
+    # Red team L4-LOW: guard against NaN ('nan' makes `sim < nan` always False, which
+    # silently disables the threshold). Out-of-range clamping is the caller's job.
     import math
     try:
         v = float(os.environ.get(name, ""))
@@ -106,19 +137,20 @@ def _node_text(src: bytes, node) -> str:
     return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
 
 
-# ── 三條指紋 + winnow 的底層遍歷 ──
+# ── the traversals underlying the three fingerprints and winnowing ──
 def _shape_tokens(src: bytes, body) -> list[str]:
-    """前序遍歷 node-type 序列：identifier→ID、literal→LIT、丟匿名標點/註解、保留結構+關鍵字命名節點。"""
+    """Pre-order node-type sequence: identifier→ID, literal→LIT, anonymous punctuation
+    and comments dropped, structural and keyword named nodes kept."""
     toks: list[str] = []
 
     def rec(n):
         t = n.type
-        if not n.is_named:          # 匿名 token（標點、字面關鍵字符號）→ 丟（保留的是結構命名節點）
+        if not n.is_named:          # anonymous token (punctuation, literal keyword symbols) → drop; what we keep are named structural nodes
             return
         if t in _COMMENT_LIKE:
             return
         if t in _IDENT_TYPES:
-            toks.append("ID")       # 葉子，抹值不下鑽
+            toks.append("ID")       # a leaf: erase the value, do not descend
             return
         if t in _LITERAL_TYPES:
             toks.append("LIT")
@@ -132,7 +164,8 @@ def _shape_tokens(src: bytes, body) -> list[str]:
 
 
 def _raw_tokens(src: bytes, body) -> list[str]:
-    """terminal token 原值串接（保留 identifier/literal 實際值，給逐字 Type-1 判定）。"""
+    """Concatenated raw terminal token values (identifier and literal values are kept,
+    for the verbatim Type-1 decision)."""
     toks: list[str] = []
 
     def rec(n):
@@ -151,7 +184,7 @@ def _raw_tokens(src: bytes, body) -> list[str]:
 
 
 def _last_identifier(src: bytes, node) -> str | None:
-    """取被呼叫名的最後一段 identifier（a.b.c → c；單 identifier → 自己）。"""
+    """Take the last identifier segment of a called name (a.b.c → c; a bare identifier → itself)."""
     last = None
 
     def rec(n):
@@ -165,19 +198,22 @@ def _last_identifier(src: bytes, node) -> str | None:
     return last
 
 
-# 下標型 callee（handlers[key]()）——_last_identifier 會誤取下標 index 名當被呼叫名（紅隊 L1-LOW），
-# 直接 skip 不貢獻 call_hash 條目。
+# Subscript callees (handlers[key]()): _last_identifier would wrongly take the
+# subscript index name as the called name (red team L1-LOW), so skip them entirely
+# and contribute nothing to call_hash.
 _SUBSCRIPT_TYPES = {"subscript", "subscript_expression", "index_expression"}
 
 
 def _call_names(src: bytes, body, lang_key: str) -> list[str]:
-    """body 內所有呼叫節點的被呼叫名 sorted multiset（呼叫模式指紋原料）。"""
+    """Sorted multiset of called names at every call node in the body (the raw material
+    for the call-pattern fingerprint)."""
     call_types = _CALL_TYPES.get(lang_key, {"call_expression"})
     names: list[str] = []
 
     def rec(n):
         if n.type in call_types:
-            # 被呼叫名的 field 跨語言不同（function=C系/name=Java·Lua/method=Ruby）→ 試常見 field 容錯
+            # The field holding the called name differs by language (function for the
+            # C family, name for Java and Lua, method for Ruby) → try the common ones.
             fn = (n.child_by_field_name("function")
                   or n.child_by_field_name("name")
                   or n.child_by_field_name("method"))
@@ -193,7 +229,8 @@ def _call_names(src: bytes, body, lang_key: str) -> list[str]:
 
 
 def _metadata(body) -> tuple[int, int, bool]:
-    """(node_count=named 子孫數, nstmts=body 直接 named children 數, has_control_flow)。"""
+    """(node_count = number of named descendants, nstmts = number of direct named
+    children of the body, has_control_flow)."""
     node_count = 0
     has_cf = False
 
@@ -211,14 +248,17 @@ def _metadata(body) -> tuple[int, int, bool]:
 
 
 def _kgram_hash(kgram: tuple) -> int:
-    """k-gram → crc32（標準庫、快、跨進程穩定、零依賴）。"""
+    """k-gram → crc32 (standard library, fast, stable across processes, no dependencies)."""
     return zlib.crc32("\x1f".join(kgram).encode("utf-8")) & 0xFFFFFFFF
 
 
 def winnow(shape_tokens: list[str], k: int, w: int) -> list[int]:
-    """winnowing 指紋（MOSS）：正規化 token 切 k-gram→crc32→大小 w 滑窗留最右最小 hash。
+    """Winnowing fingerprints (MOSS): cut normalized tokens into k-grams → crc32 →
+    keep the rightmost minimum hash in each window of size w.
 
-    guarantee threshold t=w+k−1：任何 ≥t 的相同子串保證被偵測。同一最小值連續窗只記一次（降密度）。
+    Guarantee threshold t=w+k−1: any identical substring of length ≥t is guaranteed to
+    be detected. Consecutive windows sharing the same minimum are recorded once, which
+    lowers the fingerprint density.
     """
     if not shape_tokens:
         return []
@@ -233,7 +273,8 @@ def winnow(shape_tokens: list[str], k: int, w: int) -> list[int]:
     for i in range(len(grams) - w + 1):
         window = grams[i:i + w]
         m = min(window)
-        # 最右最小位置（MOSS：同窗多個最小取最右，降重複記錄）
+        # Rightmost minimum position (MOSS: with several minima in a window take the
+        # rightmost, which reduces duplicate records).
         pos = i + (len(window) - 1 - window[::-1].index(m))
         if pos != prev_pos:
             out.append(m)
@@ -248,13 +289,16 @@ def _sha1(s: str) -> str:
 def _fingerprint_unit(src: bytes, def_node, lang_key: str, *,
                       func_name: str | None = None,
                       min_node_count: int) -> dict | None:
-    """對一個 function/method 定義節點算指紋。body 取不到 → None（不指紋）。
+    """Compute the fingerprint of one function/method definition node. If the body
+    cannot be obtained, return None (no fingerprint).
 
-    winnow 只在 node_count ≥ min_node_count 才算（FIX-2 省算力：小單元 winnow 無意義）。
-    回 {shape_hash, raw_token_hash, call_hash, node_count, nstmts, has_control_flow,
-    cognitive, winnow:[...]}。cognitive=P3 D3 認知複雜度（高信心語言 int / 其餘 None）。
+    Winnowing runs only when node_count ≥ min_node_count (FIX-2, to save work:
+    winnowing a small unit is meaningless).
+    Returns {shape_hash, raw_token_hash, call_hash, node_count, nstmts,
+    has_control_flow, cognitive, winnow:[...]}. cognitive is the P3 D3 cognitive
+    complexity (an int for high-confidence languages, None for the rest).
     """
-    body = complexity.function_body(def_node, lang_key)  # Kotlin function_body 無 field → per-lang fallback
+    body = complexity.function_body(def_node, lang_key)  # Kotlin has no function_body field → per-language fallback
     if body is None:
         return None
     node_count, nstmts, has_cf = _metadata(body)
@@ -264,10 +308,14 @@ def _fingerprint_unit(src: bytes, def_node, lang_key: str, *,
     calls = _call_names(src, body, lang_key)
     k = _env_int("CODESEXTANT_DEDUP_WINNOW_K", 5)
     w = _env_int("CODESEXTANT_DEDUP_WINNOW_W", 4)
-    # winnow 指紋落盤前去重（紅隊 L4-HIGH：同一函數內 winnow 會在多位置吐同一 fp_value，不去重
-    # 會讓 DF-cap 的 COUNT(*) 把「單函數內重複」誤算成「跨函數氾濫」→ 把真 Type-3 近似克隆 flood 砍光）
-    # + gate has_cf（紅隊 L2-HIGH/L4-LOW：無控制流的大型樣板 __init__/builder 根本不進 stage-2 倒排，
-    # 讓 stage-2 STRUCTURAL_NEAR 自動繼承「結構顯著性硬門檻」、不再漏判樣板、同時省算力防膨脹）。
+    # Deduplicate winnow fingerprints before persisting (red team L4-HIGH: within one
+    # function, winnowing emits the same fp_value at several positions; without
+    # deduplication the DF-cap's COUNT(*) reads "repeated inside a single function" as
+    # "flooding across functions" and prunes away the real Type-3 near-clones).
+    # Also gate on has_cf (red team L2-HIGH/L4-LOW: large boilerplate __init__/builder
+    # bodies with no control flow never enter the stage-2 inverted index, so stage-2
+    # STRUCTURAL_NEAR inherits the structural-significance hard gate automatically,
+    # stops misjudging boilerplate, and saves work at the same time).
     winnow_fps = (sorted(set(winnow(shape, k, w)))
                   if (node_count >= min_node_count and has_cf) else [])
     return {
@@ -285,26 +333,28 @@ def _fingerprint_unit(src: bytes, def_node, lang_key: str, *,
 def extract_fingerprints_from_source(source: bytes, lang_key: str = "python", *,
                                      file_path: str = "<memory>",
                                      min_node_count: int | None = None, tree=None) -> list[dict]:
-    """抽一段原始碼裡每個 function/method 的結構指紋（不混進 extract_symbols，守單一職責）。
+    """Extract the structural fingerprint of every function/method in a piece of source
+    (kept out of extract_symbols to preserve single responsibility).
 
-    回 list[dict]：每筆 = {name, kind, line, end_line, scope, shape_hash, raw_token_hash,
-    call_hash, node_count, nstmts, has_control_flow, winnow:[fp_value...]}。
-    fail-loud：source 非 bytes → TypeError；lang_key 不支援 → ValueError。
+    Returns list[dict], each entry being {name, kind, line, end_line, scope, shape_hash,
+    raw_token_hash, call_hash, node_count, nstmts, has_control_flow, winnow:[fp_value...]}.
+    Fails loudly: source that is not bytes → TypeError; an unsupported lang_key →
+    ValueError.
     """
     if not isinstance(source, (bytes, bytearray)):
         raise TypeError(
-            f"extract_fingerprints_from_source 需要 bytes，收到 {type(source).__name__}（{file_path}）")
+            f"extract_fingerprints_from_source needs bytes, got {type(source).__name__} ({file_path})")
     spec = symbols.LANGUAGE_SPECS.get(lang_key)
     if spec is None:
         raise ValueError(
-            f"extract_fingerprints_from_source 不支援的語言 '{lang_key}'（{file_path}）")
+            f"extract_fingerprints_from_source does not support language '{lang_key}' ({file_path})")
     if min_node_count is None:
         min_node_count = _env_int("CODESEXTANT_DEDUP_MIN_NODE_COUNT", 15)
 
     always: dict = spec["always"]
     scope_only: dict = spec.get("scope_only", {})
-    name_rules: dict = spec.get("name_rules", {})   # 無 name field 節點取名策略（C/C++ c_declarator、Kotlin child:）
-    if tree is None:    # 紅隊 L4-MEDIUM：index 共用 tree 省重複 parse
+    name_rules: dict = spec.get("name_rules", {})   # naming strategy for nodes with no name field (C/C++ c_declarator, Kotlin child:)
+    if tree is None:    # red team L4-MEDIUM: share the tree with indexing to avoid parsing twice
         parser = tree_sitter.Parser(symbols._ts_language(spec["language"]))
         tree = parser.parse(bytes(source))
 
@@ -313,8 +363,10 @@ def extract_fingerprints_from_source(source: bytes, lang_key: str = "python", *,
     def walk(node, scope_parts: list[str]) -> None:
         child_scope = scope_parts
         if node.type in always:
-            # 套 name_rules（與 symbols.extract_symbols 一致）；有 name field 的語言 rule=None→_name_of 不變行為。
-            # ⛔ 原直接 _name_of 不套 rule → C/C++/Kotlin fingerprint name 全 <anon>（dedup/cognitive 落盤名失真）
+            # Apply name_rules (matching symbols.extract_symbols); for languages that
+            # do have a name field the rule is None, so _name_of behaves as before.
+            # ⛔ Calling _name_of directly without the rule made every C/C++/Kotlin
+            # fingerprint name <anon>, corrupting the persisted dedup/cognitive names.
             name = symbols._extract_name(source, node, name_rules.get(node.type))
             if always[node.type] in ("function", "method"):
                 fp = _fingerprint_unit(source, node, lang_key, func_name=name,
@@ -338,14 +390,15 @@ def extract_fingerprints_from_source(source: bytes, lang_key: str = "python", *,
 
 
 def extract_fingerprints(file_path: str, *, min_node_count: int | None = None) -> list[dict]:
-    """讀檔抽指紋。副檔名不支援 → ValueError；讀不到 → FileNotFoundError。"""
+    """Read a file and extract its fingerprints. Unsupported extension → ValueError;
+    unreadable → FileNotFoundError."""
     lang_key = symbols.language_for_file(file_path)
     if lang_key is None:
-        raise ValueError(f"抽指紋失敗：不支援的副檔名 {file_path}")
+        raise ValueError(f"fingerprint extraction failed: unsupported file extension {file_path}")
     try:
         with open(file_path, "rb") as f:
             source = f.read()
     except OSError as exc:
-        raise FileNotFoundError(f"抽指紋失敗：讀不到檔 {file_path}（{exc}）") from exc
+        raise FileNotFoundError(f"fingerprint extraction failed: cannot read file {file_path} ({exc})") from exc
     return extract_fingerprints_from_source(source, lang_key, file_path=file_path,
                                             min_node_count=min_node_count)

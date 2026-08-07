@@ -1,14 +1,21 @@
-"""ai-usage 掃描層測試 — provider 偵測 + dispatch_policy 三通道分類 + HUD 產出。
+"""AI usage scan layer: provider detection, channel classification, HUD output.
 
-守的不變式：
-  - direct（違規）：直呼 Anthropic/OpenAI API（含 langchain wrapper）→ channel=direct、file violation=True。
-  - cli（合規）：claude --print / claude_code_sdk / <x>-cli subprocess → channel=cli、非 violation。
-  - local（本地無計費）：ollama localhost base_url → channel=local、非 violation（⛔ 不誤標違規）。
-  - OpenAI-compat 消歧：DeepSeek/Groq 騎 openai SDK 靠 base_url 分家 → 解析成真 provider、非 OpenAI。
-  - FP 護欄：langchain/generate_content 裸字（無真 import）不產生 node。
-  - 空 repo graceful；HUD HTML 非空、含 window.GRAPH、XSS 跳脫。
+The invariants these tests hold:
+  - direct (a violation): calling the Anthropic or OpenAI API straight, langchain
+    wrappers included, gives channel=direct and marks the file as a violation.
+  - cli (compliant): claude --print, claude_code_sdk or an <x>-cli subprocess gives
+    channel=cli and is not a violation.
+  - local (nothing metered): an ollama localhost base_url gives channel=local and is not
+    a violation, because flagging local inference would be the worst kind of noise.
+  - OpenAI-compatible disambiguation: DeepSeek and Groq ride the openai SDK, so base_url
+    is what tells them apart. They resolve to the real provider, not to OpenAI.
+  - False-positive guards: a bare "langchain" or "generate_content" word with no real
+    import produces no node at all.
+  - An empty repo degrades gracefully. The HUD HTML is non-empty, carries window.GRAPH,
+    and escapes anything that could inject script.
 
-純掃描（不依賴 daemon/index），照 test_deadcode.py 風格用 CODESEXTANT_HOME 隔離。
+Pure scanning, with no dependency on the daemon or the index. CODESEXTANT_HOME is
+redirected per test, the same way test_deadcode.py does it.
 """
 import json
 import os
@@ -46,7 +53,7 @@ def _channels(fnode):
     return {(s["provider"], s["channel"]) for s in fnode["sites"]}
 
 
-# ─────────────── direct 違規（Anthropic）───────────────
+# ---- direct calls, which count as violations ----
 class TestDirectViolation:
     def test_anthropic_sdk_direct_is_violation(self, tmp_path, db_home):
         _write(tmp_path, "api.py", """
@@ -71,7 +78,7 @@ class TestDirectViolation:
         assert _files(r)["bench.py"]["violation"] is True
 
     def test_langchain_anthropic_wrapper_is_violation(self, tmp_path, db_home):
-        # wrapper 走 API metered endpoint = 違規（dispatch_policy 反 pattern）
+        # The wrapper still hits the metered API endpoint, so it is a violation.
         _write(tmp_path, "pipe.py", "from langchain_anthropic import ChatAnthropic\nllm = ChatAnthropic()\n")
         r = engine.find_ai_usage(str(tmp_path))
         p = _files(r)["pipe.py"]
@@ -79,7 +86,7 @@ class TestDirectViolation:
         assert ("anthropic", "direct") in _channels(p)
 
 
-# ─────────────── cli 合規 ───────────────
+# ---- CLI calls, which are compliant ----
 class TestCliCompliant:
     def test_claude_subprocess_is_cli(self, tmp_path, db_home):
         _write(tmp_path, "d.py", """
@@ -109,7 +116,7 @@ class TestCliCompliant:
         assert ("groq", "cli") in _channels(_files(r)["s.py"])
 
 
-# ─────────────── OpenAI-compat 消歧（載重正確性）───────────────
+# ---- telling OpenAI-compatible providers apart ----
 class TestOpenAICompatDisambiguation:
     def test_deepseek_via_base_url_not_openai(self, tmp_path, db_home):
         _write(tmp_path, "ds.py", """
@@ -122,11 +129,11 @@ class TestOpenAICompatDisambiguation:
         node = _files(r)["ds.py"]
         provs = {s["provider"] for s in node["sites"]}
         assert "deepseek" in provs
-        assert "openai" not in provs  # base_url 消歧：不誤判成 OpenAI
+        assert "openai" not in provs  # base_url decides it, so no OpenAI misfire
         assert ("deepseek", "direct") in _channels(node)
 
     def test_plain_openai_is_direct_violation(self, tmp_path, db_home):
-        # 無 base_url → 純 OpenAI direct（user 2026-07-16：direct OpenAI 也算違規）
+        # No base_url means plain OpenAI direct, which counts as a violation too.
         _write(tmp_path, "oa.py", """
             from openai import OpenAI
             c = OpenAI()
@@ -139,7 +146,7 @@ class TestOpenAICompatDisambiguation:
         assert node["violation"] is True
 
 
-# ─────────────── local 本地（無計費·非違規）───────────────
+# ---- local inference: nothing metered, so not a violation ----
 class TestLocalChannel:
     def test_ollama_localhost_is_local_not_violation(self, tmp_path, db_home):
         _write(tmp_path, "gemma.py", """
@@ -150,13 +157,13 @@ class TestLocalChannel:
         """)
         r = engine.find_ai_usage(str(tmp_path))
         node = _files(r)["gemma.py"]
-        assert node["violation"] is False  # 本地無計費，非違規
+        assert node["violation"] is False  # runs locally, nothing is metered
         assert ("ollama", "local") in _channels(node)
         assert r["stats"]["local"] >= 1
         assert _provs(r)["ollama"]["channel"] == "local"
 
 
-# ─────────────── FP 護欄 ───────────────
+# ---- false-positive guards ----
 class TestFalsePositiveGuards:
     def test_langchain_bareword_without_import_no_node(self, tmp_path, db_home):
         _write(tmp_path, "doc.py", """
@@ -178,7 +185,7 @@ class TestFalsePositiveGuards:
         assert "t.py" not in _files(r)
 
 
-# ─────────────── 空 repo / 契約 ───────────────
+# ---- empty repos and the result contract ----
 class TestContract:
     def test_empty_repo_graceful(self, tmp_path, db_home):
         _write(tmp_path, "plain.py", "def f():\n    return 1\n")
@@ -196,7 +203,7 @@ class TestContract:
     def test_json_serializable(self, tmp_path, db_home):
         _write(tmp_path, "api.py", "from anthropic import Anthropic\nc = Anthropic()\n")
         r = engine.find_ai_usage(str(tmp_path))
-        assert json.dumps(r, ensure_ascii=False)  # 不拋
+        assert json.dumps(r, ensure_ascii=False)  # must not raise
 
     def test_scope_file_limits_scan(self, tmp_path, db_home):
         _write(tmp_path, "a.py", "from anthropic import Anthropic\nc = Anthropic()\n")
@@ -206,7 +213,7 @@ class TestContract:
         assert labels == {"b.py"}
 
 
-# ─────────────── HUD HTML 產出 ───────────────
+# ---- HUD HTML output ----
 class TestHtmlRender:
     def test_render_nonempty_and_safe(self, tmp_path, db_home):
         _write(tmp_path, "api.py", """
@@ -219,8 +226,9 @@ class TestHtmlRender:
         html = ai_usage_html.render_ai_usage(r)
         assert "window.GRAPH" in html
         assert "<svg" in html
-        assert "%%GRAPH_JSON%%" not in html  # placeholder 已替換
-        # snippet 走前端 esc()，不得注入未跳脫的裸 <script> 進 GRAPH 資料
+        assert "%%GRAPH_JSON%%" not in html  # the placeholder was substituted
+        # Snippets go through the front-end esc(), so no raw unescaped <script> may
+        # reach the GRAPH data.
         assert "<script>alert(1)</script>" not in html
 
     def test_render_empty_repo(self, tmp_path, db_home):
@@ -230,7 +238,7 @@ class TestHtmlRender:
         assert "window.GRAPH" in html and "<svg" in html
 
 
-# ─────────────── 掃描層純單元 ───────────────
+# ---- scan layer, pure unit tests ----
 class TestScanUnit:
     def test_resolve_openai_local_priority(self):
         assert ai_usage._resolve_openai_call(set(), None, True) == ("ollama", "local")

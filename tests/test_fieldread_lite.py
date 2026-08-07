@@ -1,7 +1,9 @@
-"""FieldRead-lite 輸出壓縮層測試（借 user 自創 FieldRead 精髓的 MIT 零依賴版）。
+"""FieldRead-lite output compression layer.
 
-驗證：full/under-budget 不壓、over-budget 按 priority 分配 + 麵包屑、min_keep 保護重要分區、
-總量不超 budget、原順序維持、render 麵包屑文字。純函數、零依賴、零 SQLite。
+What is covered: full output and under-budget input are left alone; over-budget input is
+allocated by priority and gets a breadcrumb; min_keep protects a section that would
+otherwise be squeezed out; the total never exceeds the budget; section order survives;
+and render() emits the breadcrumb text. Pure functions, no dependencies, no SQLite.
 """
 import os
 import sys
@@ -42,7 +44,8 @@ class TestCompress:
         assert by["hi"] > by["lo"], by
 
     def test_min_keep_protects_important(self):
-        # crit 雖低 priority，但 min_keep=3 → 至少留 3，不被高 priority 擠掉
+        # "crit" has low priority, but min_keep=3 holds three items back from the
+        # higher-priority section.
         out = fl.compress([_sec("hi", range(50), priority=10),
                            _sec("crit", range(10), priority=1, min_keep=3)], budget=10)
         by = {c.name: len(c.shown) for c in out}
@@ -61,20 +64,20 @@ class TestCompress:
         assert len(out[0].shown) == 2 and out[0].elided == 8
 
     def test_shown_is_prefix(self):
-        # 壓縮保留的是前綴（呼叫端已先排好序：重要的在前）
+        # Compression keeps a prefix. Callers sort the important items to the front first.
         out = fl.compress([_sec("a", range(20))], budget=5)
         assert out[0].shown == [0, 1, 2, 3, 4]
 
 
 class TestRender:
     def test_breadcrumb_text(self):
-        lines = fl.render([fl.Section("callers", "被呼叫鏈", list(range(20)))], budget=5)
+        lines = fl.render([fl.Section("callers", "Caller chain", list(range(20)))], budget=5)
         joined = "\n".join(lines)
-        assert "省略" in joined and "--full" in joined
+        assert "elided" in joined and "--full" in joined
 
     def test_full_no_breadcrumb(self):
         lines = fl.render([fl.Section("a", "A", [1, 2, 3])], budget=2, full=True)
-        assert "省略" not in "\n".join(lines)
+        assert "elided" not in "\n".join(lines)
 
     def test_empty_section_skipped(self):
         assert fl.render([fl.Section("a", "A", [])], budget=5) == []

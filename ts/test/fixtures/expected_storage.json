@@ -1,13 +1,13 @@
 {
   "platform": "win32",
   "project_key": {
-    "E:\\ai-king\\項目資料\\CodeSextant": "a92a335f32edd44a1374346220786029f3706123",
-    "E:\\Ai-King\\Foo": "97785cd6a93244635078d2bf0105a2340e9c61c7",
-    "C:\\Users\\zerox": "fed19953c619994a83ce77f4944f45dfb6c810da",
-    "E:/ai-king/foo": "97785cd6a93244635078d2bf0105a2340e9c61c7",
+    "E:\\workspace\\Проект\\CodeSextant": "218efa190ce1b48ef98c275bfc810f6e8b7af50a",
+    "E:\\Work-Space\\Foo": "d1d3b0ca7d6b1c330e72f120501975db31f894aa",
+    "C:\\Users\\example": "029effc3d891f4a1d2d541cc875c5abc569b4286",
+    "E:/workspace/foo": "b4d85816a0d8132118f9a4c65df51cc141a7f1a9",
     "E:\\foo.\\bar": "01fe4c7bceae19d89e3ca12bad32620e4420f2f8",
     "E:\\a b ": "b7e993293cff65ef78fe47af0d79526bacb04882",
-    "E:\\專案 \\Foo.": "c6abfc78de7c5e7d37f0e77c14c1dccd1f1f6580"
+    "E:\\Проект \\Foo.": "73abad38640ae9a25061c203b9f3736f5904ac1b"
   },
   "file_content_hash": {
     "sample.c": "d690514bc05da5746657b22bd5c2ce500a5a72eae2aa8fc21fb272c41c9be96e",

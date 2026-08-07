@@ -1,12 +1,16 @@
-// storage.ts 黃金測試 —
-//   (A) 對照凍結的 Python 版 storage.py ground truth（fixtures/expected_storage.json）：
-//       - project_key：TS 與 Python 算出相同 sha1 ⇒ 同專案共用同一個 .db 庫（不混線命脈）。
-//       - file_content_hash：同檔同 sha256 ⇒ 增量失效 key 跨語言一致。
-//   (B) 行為測試（邏輯內生、不需 Python 對照）：開庫/增量/符號 round-trip/引用邊/呼叫鏈 CTE/
-//       fingerprints+comments/stats/fail-soft 列舉。
+// storage.ts golden tests:
+//   (A) Against the frozen Python storage.py ground truth (fixtures/expected_storage.json):
+//       - project_key: TypeScript and Python compute the same sha1, so one project shares one .db,
+//         which is what keeps projects from crossing wires.
+//       - file_content_hash: the same file gives the same sha256, so the incremental invalidation key
+//         agrees across languages.
+//   (B) Behavioural tests (self-contained logic, no Python comparison needed): opening a database,
+//       incrementality, symbol round-trip, reference edges, the call-chain CTE, fingerprints and
+//       comments, stats, and fail-soft listing.
 //
-// ground truth 由 test/gen_storage_gt.py 用 Python 版生成。project_key 的 normcase 行為依平台，
-// 故 ground truth 標記 platform，TS 端只在同平台對照（誠實 skip 跨平台）。
+// The ground truth is generated from the Python version by test/gen_storage_gt.py. project_key's
+// normcase behaviour is platform-dependent, so the ground truth records its platform and the
+// TypeScript side only compares on a matching platform, and skips honestly elsewhere.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,36 +36,37 @@ const gt = JSON.parse(
   readFileSync(join(here, "fixtures", "expected_storage.json"), "utf-8"),
 ) as StorageGroundTruth;
 
-// ── (A) ground truth 對照 ──
-describe("storage 黃金測試 — project_key 對照 Python 版（共用 .db 庫命脈）", () => {
+// ── (A) ground truth comparison ──
+describe("storage golden tests: project_key against Python (what keeps one project on one .db)", () => {
   const samePlatform = process.platform === gt.platform;
   for (const [path, expected] of Object.entries(gt.project_key)) {
-    it(`project_key(${path}) 與 Python 版一致`, () => {
+    it(`project_key(${path}) matches the Python version`, () => {
       if (!samePlatform) {
-        // normcase 依平台；ground truth 是在 gt.platform 生成的，跨平台不對照（誠實 skip）。
+        // normcase is platform-dependent and the ground truth was generated on gt.platform, so there
+        // is nothing to compare across platforms, so skip honestly.
         return;
       }
       expect(projectKey(path)).toBe(expected);
     });
   }
 
-  it("normcase 把大小寫 + 正反斜線正規化成同一把 key", () => {
+  it("normcase folds case and slash direction into one key", () => {
     if (process.platform !== "win32") return;
-    // Windows 上 E:\Ai-King\Foo 與 E:/ai-king/foo 必須對應同一個 project_key。
+    // On Windows, E:\Ai-King\Foo and E:/ai-king/foo have to map to the same project_key.
     expect(projectKey("E:\\Ai-King\\Foo")).toBe(projectKey("E:/ai-king/foo"));
   });
 });
 
-describe("storage 黃金測試 — file_content_hash 對照 Python 版（增量失效 key）", () => {
+describe("storage golden tests: file_content_hash against Python (the incremental invalidation key)", () => {
   for (const [name, expected] of Object.entries(gt.file_content_hash)) {
-    it(`file_content_hash(${name}) 與 Python 版一致`, () => {
+    it(`file_content_hash(${name}) matches the Python version`, () => {
       expect(fileContentHash(join(samplesDir, name))).toBe(expected);
     });
   }
 });
 
-// ── (B) 行為測試（庫隔離到臨時 CODESEXTANT_HOME）──
-describe("storage 行為測試", () => {
+// ── (B) behavioural tests (the database is isolated in a temporary CODESEXTANT_HOME) ──
+describe("storage behaviour", () => {
   let tmpHome: string;
   let tmpRepo: string;
   const savedHome = process.env["CODESEXTANT_HOME"];
@@ -75,7 +80,8 @@ describe("storage 行為測試", () => {
   afterEach(() => {
     if (savedHome === undefined) delete process.env["CODESEXTANT_HOME"];
     else process.env["CODESEXTANT_HOME"] = savedHome;
-    // Windows 上 better-sqlite3 close 後 .db handle 釋放偶有延遲 → rmSync EPERM；maxRetries 兜底。
+    // On Windows the .db handle is sometimes released a moment after better-sqlite3 close, which
+    // makes rmSync fail with EPERM; maxRetries covers that.
     const rmOpts = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 };
     rmSync(tmpHome, rmOpts);
     rmSync(tmpRepo, rmOpts);
@@ -89,7 +95,7 @@ describe("storage 行為測試", () => {
     scope = "",
   ): SymbolDef => ({ kind, name, line, end_line, scope });
 
-  it("open 空庫 stats 全 0、schema_version 正確", () => {
+  it("opening an empty database gives all-zero stats and the right schema_version", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const s = store.stats();
@@ -105,7 +111,7 @@ describe("storage 行為測試", () => {
     }
   });
 
-  it("storeFileSymbols → getSymbols round-trip + needsReindex 增量", () => {
+  it("storeFileSymbols → getSymbols round-trip, plus needsReindex incrementality", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const fpath = join(tmpRepo, "a.py");
@@ -114,25 +120,25 @@ describe("storage 行為測試", () => {
         sym("method", "bar", 3, 8, "Foo"),
         sym("function", "top", 22, 25),
       ];
-      expect(store.needsReindex(fpath, "h1")).toBe(true); // 庫裡沒這檔
+      expect(store.needsReindex(fpath, "h1")).toBe(true); // the database has never seen this file
       store.storeFileSymbols(fpath, "h1", syms, 1000.5);
-      // round-trip：欄位逐一對齊（含 scope）
+      // round-trip: every field comes back, scope included
       expect(store.getSymbols(fpath)).toEqual([
         { path: fpath, kind: "class", name: "Foo", line: 1, end_line: 20, scope: "" },
         { path: fpath, kind: "method", name: "bar", line: 3, end_line: 8, scope: "Foo" },
         { path: fpath, kind: "function", name: "top", line: 22, end_line: 25, scope: "" },
       ]);
-      // 增量：同 hash 不重算、改 hash 要重算
+      // incrementality: the same hash needs no recompute, a changed hash does
       expect(store.needsReindex(fpath, "h1")).toBe(false);
       expect(store.needsReindex(fpath, "h2")).toBe(true);
-      // stats 計數 + last_indexed_at（REAL 浮點原樣回）
+      // stats counts, plus last_indexed_at (a REAL comes back as given)
       const s = store.stats();
       expect(s.indexed_files).toBe(1);
       expect(s.symbols).toBe(3);
       expect(s.last_indexed_at).toBe(1000.5);
       // findSymbolDefinitions
       expect(store.findSymbolDefinitions("bar").map((r) => r.name)).toEqual(["bar"]);
-      // 重寫該檔（先清舊符號）
+      // rewrite the file (old symbols are cleared first)
       store.storeFileSymbols(fpath, "h2", [sym("function", "only", 1, 2)], 2000);
       expect(store.getSymbols(fpath).map((r) => r.name)).toEqual(["only"]);
       expect(store.stats().symbols).toBe(1);
@@ -141,7 +147,7 @@ describe("storage 行為測試", () => {
     }
   });
 
-  it("removeFile 清掉符號 + 檔記錄 + 引用邊", () => {
+  it("removeFile clears symbols, the file row and the reference edges", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const fpath = join(tmpRepo, "a.py");
@@ -161,20 +167,20 @@ describe("storage 行為測試", () => {
     }
   });
 
-  it("replaceRefsFor → allRefs round-trip（含 null def_path）", () => {
+  it("replaceRefsFor → allRefs round-trip, including a null def_path", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const a = join(tmpRepo, "a.py");
       store.replaceRefsFor(a, [
         { src_path: a, src_line: 5, symbol_name: "g", def_path: join(tmpRepo, "b.py"), def_line: 1, confidence: "high" },
-        { src_path: a, src_line: 9, symbol_name: "h", confidence: "low" }, // def 未解析 → null
+        { src_path: a, src_line: 9, symbol_name: "h", confidence: "low" }, // definition unresolved → null
       ]);
       const refs = store.allRefs();
       expect(refs.length).toBe(2);
       const low = refs.find((r) => r.symbol_name === "h")!;
       expect(low.def_path).toBeNull();
       expect(low.def_line).toBeNull();
-      // 重寫該 src 檔的邊（先清舊）
+      // rewrite that source file's edges (the old ones are cleared first)
       store.replaceRefsFor(a, [{ src_path: a, src_line: 1, symbol_name: "x", confidence: "low" }]);
       expect(store.allRefs().map((r) => r.symbol_name)).toEqual(["x"]);
     } finally {
@@ -182,36 +188,36 @@ describe("storage 行為測試", () => {
     }
   });
 
-  it("traverseCallGraph：up 找 caller、down 找 callee（CTE 遞迴）", () => {
+  it("traverseCallGraph: up finds callers, down finds callees (recursive CTE)", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const a = join(tmpRepo, "a.py");
       const b = join(tmpRepo, "b.py");
-      // a.py 第 1-10 行有 function f；b.py 第 1-5 行有 function g
+      // a.py has function f on lines 1-10; b.py has function g on lines 1-5
       store.storeFileSymbols(a, "ha", [sym("function", "f", 1, 10)], 1);
       store.storeFileSymbols(b, "hb", [sym("function", "g", 1, 5)], 1);
-      // f 在第 5 行呼叫 g（定義在 b.py）
+      // f calls g on line 5 (g is defined in b.py)
       store.replaceRefsFor(a, [
         { src_path: a, src_line: 5, symbol_name: "g", def_path: b, def_line: 1, confidence: "high" },
       ]);
-      // up：誰呼叫 g → f
+      // up: who calls g → f
       const callers = store.traverseCallGraph("g", b, "up");
       expect(callers.map((c) => [c.name, c.path, c.depth, c.confidence])).toEqual([
         ["f", a, 1, "high"],
       ]);
-      // down：f 呼叫誰 → g
+      // down: whom f calls → g
       const callees = store.traverseCallGraph("f", a, "down");
       expect(callees.map((c) => [c.name, c.path, c.depth, c.confidence])).toEqual([
         ["g", b, 1, "high"],
       ]);
-      // refs 表為空（換個沒邊的符號）→ 回 []
+      // a symbol with no edges gives back []
       expect(store.traverseCallGraph("nobody", a, "up")).toEqual([]);
     } finally {
       store.close();
     }
   });
 
-  it("traverseCallGraph 非法 direction 拋錯", () => {
+  it("traverseCallGraph throws on an invalid direction", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       expect(() =>
@@ -222,7 +228,7 @@ describe("storage 行為測試", () => {
     }
   });
 
-  it("fingerprints + comments 落盤（含 null 欄位）不爆 + stats 計數", () => {
+  it("fingerprints + comments persist with null fields without blowing up, and stats counts them", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const fpath = join(tmpRepo, "a.py");
@@ -231,18 +237,18 @@ describe("storage 行為測試", () => {
         fpath,
         [
           { name: "f", kind: "function", line: 1, end_line: 5, shape_hash: "S1", raw_token_hash: "R1", call_hash: "C1", node_count: 10, nstmts: 3, has_control_flow: true, cognitive: 7 },
-          { name: "g", kind: "function", line: 6, end_line: 9, shape_hash: "S2", cognitive: null }, // 多欄缺省 → null
+          { name: "g", kind: "function", line: 6, end_line: 9, shape_hash: "S2", cognitive: null }, // several fields omitted → null
         ],
         [{ line: 2, fp_value: 123 }, { line: 3, fp_value: 456 }],
       );
       store.storeFileComments(fpath, [
         { line: 1, end_line: 1, kind: "comment", is_doc: false, tag: "TODO", text: "fix me" },
-        { line: 2, kind: "string", is_doc: true, owner_line: 1, text: "docstring" }, // end_line 缺省 → 用 line
+        { line: 2, kind: "string", is_doc: true, owner_line: 1, text: "docstring" }, // end_line omitted → falls back to line
       ]);
       const s = store.stats();
       expect(s.fingerprints).toBe(2);
       expect(s.comments).toBe(2);
-      // removeFile 連 fingerprints/comments 一起清
+      // removeFile clears fingerprints and comments too
       store.removeFile(fpath);
       expect(store.stats().fingerprints).toBe(0);
       expect(store.stats().comments).toBe(0);
@@ -251,7 +257,7 @@ describe("storage 行為測試", () => {
     }
   });
 
-  it("recordGitSha 寫入後 stats.indexed_git_sha 讀回", () => {
+  it("recordGitSha writes a sha that stats.indexed_git_sha reads back", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       expect(store.stats().indexed_git_sha).toBeNull();
@@ -262,8 +268,9 @@ describe("storage 行為測試", () => {
     }
   });
 
-  // ── review 補測：CTE 信心傳播（HIGH 盲區，最易平移錯的核心邏輯）──
-  it("traverseCallGraph：多跳傳遞 + confidence='low' 傳播 + max_hops 截斷", () => {
+  // ── added after review: CTE confidence propagation (a HIGH blind spot, and the core logic most
+  //    easily got wrong in the port) ──
+  it("traverseCallGraph: multi-hop transitivity, confidence='low' propagation, max_hops truncation", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const a = join(tmpRepo, "a.py");
@@ -275,14 +282,15 @@ describe("storage 行為測試", () => {
       // f →(low) g →(high) h
       store.replaceRefsFor(a, [{ src_path: a, src_line: 5, symbol_name: "g", def_path: b, def_line: 1, confidence: "low" }]);
       store.replaceRefsFor(b, [{ src_path: b, src_line: 5, symbol_name: "h", def_path: c, def_line: 1, confidence: "high" }]);
-      // up('h')：g depth1 high（g→h 那段 high）；f depth2 low（鏈含 f→g low 邊，黏性傳播）
+      // up('h'): g is depth 1 high (the g→h leg is high); f is depth 2 low (its chain includes the
+      // low f→g edge, and low is sticky)
       expect(store.traverseCallGraph("h", c, "up").map((x) => [x.name, x.depth, x.confidence])).toEqual([
         ["g", 1, "high"],
         ["f", 2, "low"],
       ]);
-      // max_hops=1：只回 depth1 的 g，截斷 f
+      // max_hops=1: only depth-1 g comes back, f is truncated
       expect(store.traverseCallGraph("h", c, "up", 1).map((x) => x.name)).toEqual(["g"]);
-      // down('f')：g depth1 low（f→g low）、h depth2 low（min_conf 已 low、黏性）
+      // down('f'): g is depth 1 low (f→g is low), h is depth 2 low (min_conf is already low, and it sticks)
       expect(store.traverseCallGraph("f", a, "down").map((x) => [x.name, x.depth, x.confidence])).toEqual([
         ["g", 1, "low"],
         ["h", 2, "low"],
@@ -292,7 +300,7 @@ describe("storage 行為測試", () => {
     }
   });
 
-  it("traverseCallGraph：同節點 high+low 雙路徑取 high（MAX 聚合）+ MIN depth", () => {
+  it("traverseCallGraph: a node reached by both a high and a low path takes high (MAX) and MIN depth", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const a = join(tmpRepo, "a.py");
@@ -301,7 +309,8 @@ describe("storage 行為測試", () => {
       store.storeFileSymbols(a, "ha", [sym("function", "x", 1, 20)], 1);
       store.storeFileSymbols(b, "hb", [sym("function", "g", 1, 10)], 1);
       store.storeFileSymbols(c, "hc", [sym("function", "h", 1, 5)], 1);
-      // x →(high) h 直達；x →(low) g →(high) h 繞路。x 對 h 同時有 depth1-high 與 depth2-low 兩路徑。
+      // x →(high) h directly, and x →(low) g →(high) h the long way round. So x reaches h by both a
+      // depth-1 high path and a depth-2 low path.
       store.replaceRefsFor(a, [
         { src_path: a, src_line: 2, symbol_name: "h", def_path: c, def_line: 1, confidence: "high" },
         { src_path: a, src_line: 3, symbol_name: "g", def_path: b, def_line: 1, confidence: "low" },
@@ -310,7 +319,8 @@ describe("storage 行為測試", () => {
       const byName = Object.fromEntries(
         store.traverseCallGraph("h", c, "up").map((n) => [n.name, n]),
       );
-      // x 存在「全 high 路徑」→ MAX 聚合取 high（即使另有 low 路徑）；MIN depth=1
+      // x has an all-high path, so the MAX aggregation gives high even though a low path also exists;
+      // MIN depth = 1
       expect(byName["x"]!.confidence).toBe("high");
       expect(byName["x"]!.depth).toBe(1);
       expect(byName["g"]!.confidence).toBe("high");
@@ -319,14 +329,15 @@ describe("storage 行為測試", () => {
     }
   });
 
-  it("traverseCallGraph：自呼叫不無限遞迴（環防護）", () => {
+  it("traverseCallGraph: a self-call does not recurse forever (cycle guard)", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const a = join(tmpRepo, "a.py");
       store.storeFileSymbols(a, "ha", [sym("function", "f", 1, 10)], 1);
-      // f 在自己 body 內呼叫 f（遞迴）
+      // f calls f inside its own body (recursion)
       store.replaceRefsFor(a, [{ src_path: a, src_line: 5, symbol_name: "f", def_path: a, def_line: 1, confidence: "high" }]);
-      // NOT(s.name=c.name AND s.path=c.path) 過濾自環 → 不回自己、不無限遞迴
+      // NOT(s.name=c.name AND s.path=c.path) filters the self-loop, so it neither returns itself nor
+      // recurses forever
       expect(store.traverseCallGraph("f", a, "up")).toEqual([]);
       expect(store.traverseCallGraph("f", a, "down")).toEqual([]);
     } finally {
@@ -334,13 +345,14 @@ describe("storage 行為測試", () => {
     }
   });
 
-  // ── review 補測：getSymbols() 無參全專案排序（HIGH 盲區）──
-  it("getSymbols() 無參：跨檔 ORDER BY path,line（path 為主排序鍵）", () => {
+  // ── added after review: whole-project ordering from getSymbols() with no argument (a HIGH blind spot) ──
+  it("getSymbols() with no argument: ORDER BY path,line across files, with path as the primary key", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const a = join(tmpRepo, "a.py");
       const b = join(tmpRepo, "b.py");
-      // b.py 的 line 故意比 a.py 小，驗 path 是主鍵（b 的 line1 不會插到 a 的 line9 之前）
+      // b.py's lines are deliberately lower than a.py's, to prove path is the primary key: b's line 1
+      // must not sort ahead of a's line 9
       store.storeFileSymbols(b, "hb", [sym("function", "b2", 2, 3), sym("function", "b1", 1, 1)], 1);
       store.storeFileSymbols(a, "ha", [sym("function", "a9", 9, 9)], 1);
       expect(store.getSymbols().map((s) => [s.path, s.name])).toEqual([
@@ -353,8 +365,8 @@ describe("storage 行為測試", () => {
     }
   });
 
-  // ── review 補測：findSymbolDefinitions 同名多定義排序（MEDIUM 盲區）──
-  it("findSymbolDefinitions：同名多定義按 path,line 排序（粗篩候選契約）", () => {
+  // ── added after review: ordering of same-name definitions from findSymbolDefinitions (a MEDIUM blind spot) ──
+  it("findSymbolDefinitions: same-name definitions sort by path,line (the coarse-candidate contract)", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const a = join(tmpRepo, "a.py");
@@ -371,17 +383,18 @@ describe("storage 行為測試", () => {
     }
   });
 
-  // ── review 補測：空輸入路徑（MEDIUM 盲區）──
-  it("空 symbols 仍登記 files（無頂層符號的檔也計入增量）+ 空 fingerprints 清舊", () => {
+  // ── added after review: the empty-input paths (a MEDIUM blind spot) ──
+  it("empty symbols still registers the file, so a file with no top-level symbols counts for incrementality, and empty fingerprints clear the old ones", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       const fpath = join(tmpRepo, "empty.py");
       store.storeFileSymbols(fpath, "h1", [], 1);
-      // 無符號但 file 已登記：needsReindex false、indexed_files 計入、symbols 0
+      // no symbols but the file is registered: needsReindex false, indexed_files counts it, symbols 0
       expect(store.needsReindex(fpath, "h1")).toBe(false);
       expect(store.stats().indexed_files).toBe(1);
       expect(store.stats().symbols).toBe(0);
-      // 先存非空指紋，再用空陣列清掉（executemany→for-loop 空陣列等價於 no-op + DELETE）
+      // store non-empty fingerprints first, then clear them with an empty array (the executemany →
+      // for-loop port makes an empty array equivalent to a no-op plus the DELETE)
       store.storeFileFingerprints(fpath, [{ name: "x", shape_hash: "S" }], [{ line: 1, fp_value: 9 }]);
       expect(store.stats().fingerprints).toBe(1);
       store.storeFileFingerprints(fpath, [], []);
@@ -391,45 +404,46 @@ describe("storage 行為測試", () => {
     }
   });
 
-  // ── review 補測：getMeta default 分支直測（LOW 盲區）──
-  it("getMeta：default 分支 + 寫入後讀回", () => {
+  // ── added after review: the getMeta default branch, tested directly (a LOW blind spot) ──
+  it("getMeta: the default branch, and reading back what was written", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       expect(store.getMeta("nonexistent")).toBeNull();
       expect(store.getMeta("nonexistent", "fallback")).toBe("fallback");
-      expect(store.getMeta("schema_version")).toBe("3"); // open 時已寫
+      expect(store.getMeta("schema_version")).toBe("3"); // written during open
       expect(store.getMeta("repo_path")).toBe(store.repoPath);
     } finally {
       store.close();
     }
   });
 
-  // ── review 補測：REAL 整數值的 number-vs-float 已知 wire 差異（鎖 TS 行為）──
-  it("REAL 整數值 last_indexed_at 回 number（與 Python float 的已知 wire 差異，見頭部邊界註解）", () => {
+  // ── added after review: the known number-vs-float wire difference for integer REAL values, pinning
+  //    the TypeScript behaviour ──
+  it("an integer REAL last_indexed_at comes back as a number (the known wire difference from Python's float; see the edges note at the top of storage.ts)", () => {
     const store = ProjectStore.open(tmpRepo);
     try {
       store.storeFileSymbols(join(tmpRepo, "a.py"), "h", [sym("function", "f", 1, 2)], 2000);
       expect(store.stats().last_indexed_at).toBe(2000);
-      // JS number 不分 int/float：JSON 序列化成 "2000"（Python 為 "2000.0"）
+      // a JS number does not distinguish int from float, so JSON serializes it as "2000" (Python gives "2000.0")
       expect(JSON.stringify(store.stats().last_indexed_at)).toBe("2000");
     } finally {
       store.close();
     }
   });
 
-  it("listIndexedProjects：列出正常庫 + 壞庫 fail-soft 標 error", () => {
-    // 正常庫：tmpRepo 真實存在 → path_exists true
+  it("listIndexedProjects: lists healthy databases and marks a broken one with error, fail-soft", () => {
+    // healthy database: tmpRepo really exists → path_exists true
     const s1 = ProjectStore.open(tmpRepo);
-    const expectedRepo = s1.repoPath; // = resolve(tmpRepo)，meta 存的 repo_path
+    const expectedRepo = s1.repoPath; // = resolve(tmpRepo), the repo_path stored in meta
     s1.storeFileSymbols(join(tmpRepo, "a.py"), "h1", [
       { kind: "function", name: "f", line: 1, end_line: 2, scope: "" },
     ], 1);
     s1.close();
-    // 壞庫：寫垃圾到一個 .db 檔
+    // broken database: write garbage into a .db file
     writeFileSync(join(tmpHome, "deadbeef.db"), "this is not a sqlite database");
 
     const projects = listIndexedProjects();
-    // 應含 2 筆（正常 + 壞）
+    // two entries expected: the healthy one and the broken one
     expect(projects.length).toBe(2);
     const good = projects.find((p) => p.repo_path)!;
     expect(good.repo_path).toBe(expectedRepo);
@@ -437,7 +451,7 @@ describe("storage 行為測試", () => {
     expect(good.symbols).toBe(1);
     expect(good.path_exists).toBe(true);
     const bad = projects.find((p) => p.error)!;
-    expect(bad.error).toContain("讀庫失敗");
+    expect(bad.error).toContain("failed to read database");
     expect(bad.project_key).toBe("deadbeef");
   });
 });

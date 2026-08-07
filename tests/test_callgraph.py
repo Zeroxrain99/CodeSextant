@@ -1,8 +1,11 @@
-"""競品吸收 queue 1：call hierarchy 傳遞呼叫鏈測試。
+"""Call hierarchy tests covering transitive caller and callee chains.
 
-驗證 storage.traverse_call_graph（refs 表 WITH RECURSIVE CTE）+ engine.call_hierarchy：
-傳遞 callers/callees、max_hops 深度上限、呼叫環不無限遞迴、未索引 fail-loud。
-全自包含（CODESEXTANT_HOME 隔離庫）。
+Exercises storage.traverse_call_graph, which walks the refs table with a
+recursive CTE, together with engine.call_hierarchy. The cases here check
+transitive callers and callees, the max_hops depth cap, call cycles that must
+not recurse forever, and a loud failure when the project was never indexed.
+Everything is self-contained because CODESEXTANT_HOME points at an isolated
+database.
 """
 import os
 import sys
@@ -28,7 +31,7 @@ def _write(root, rel, content):
 
 
 def _setup_chain(tmp_path):
-    """leaf <- mid <- top 三層呼叫鏈；建全圖（對每符號 persist refs 邊）。"""
+    """Build a leaf <- mid <- top chain, persisting refs edges for every symbol."""
     _write(tmp_path, "m.py", """
         def leaf():
             return 1
@@ -54,14 +57,14 @@ class TestCallHierarchy:
         r = engine.call_hierarchy(root, "leaf", direction="up")
         depth = {c["name"]: c["depth"] for c in r["callers"]}
         assert depth.get("mid") == 1, depth
-        assert depth.get("top") == 2, depth  # 傳遞層
+        assert depth.get("top") == 2, depth  # reached transitively
 
     def test_down_transitive_callees(self, tmp_path, db_home):
         root = _setup_chain(tmp_path)
         r = engine.call_hierarchy(root, "top", direction="down")
         depth = {c["name"]: c["depth"] for c in r["callees"]}
         assert depth.get("mid") == 1, depth
-        assert depth.get("leaf") == 2, depth  # 傳遞層
+        assert depth.get("leaf") == 2, depth  # reached transitively
 
     def test_both_directions(self, tmp_path, db_home):
         root = _setup_chain(tmp_path)
@@ -74,11 +77,12 @@ class TestCallHierarchy:
         root = _setup_chain(tmp_path)
         r = engine.call_hierarchy(root, "leaf", direction="up", max_hops=1)
         names = {c["name"] for c in r["callers"]}
-        assert "mid" in names       # depth 1 收
-        assert "top" not in names   # depth 2 超 max_hops=1 不收
+        assert "mid" in names       # depth 1 is inside the cap
+        assert "top" not in names   # depth 2 is past max_hops=1
 
     def test_cycle_no_infinite(self, tmp_path, db_home):
-        # a 與 b 互相呼叫成環——max_hops + CTE 去重須防無限遞迴
+        # a and b call each other, so the graph has a cycle. max_hops plus
+        # the CTE's dedup have to stop the traversal from recursing forever.
         _write(tmp_path, "c.py", """
             def a():
                 return b()
@@ -92,7 +96,8 @@ class TestCallHierarchy:
         for sym in ("a", "b"):
             engine.find_references(root, sym, src_root=root, persist=True)
         r = engine.call_hierarchy(root, "a", direction="up", max_hops=5)
-        # 不爆、有回 b 當 caller、且節點去重（a 自身不重複列為自己的 caller 干擾）
+        # Nothing blows up, b comes back as a caller, and node dedup keeps a
+        # from showing up as its own caller.
         names = {c["name"] for c in r["callers"]}
         assert "b" in names
 
@@ -105,8 +110,8 @@ class TestCallHierarchy:
     def test_has_note_and_reminder(self, tmp_path, db_home):
         root = _setup_chain(tmp_path)
         r = engine.call_hierarchy(root, "leaf", direction="up")
-        assert r.get("note") and "引用邊" in r["note"]
-        assert r.get("verification_reminder") and "動態" in r["verification_reminder"]
+        assert r.get("note") and "reference edges" in r["note"]
+        assert r.get("verification_reminder") and "dynamic" in r["verification_reminder"]
         assert "edges_in_graph" in r
 
     def test_unindexed_raises(self, db_home):
@@ -126,7 +131,7 @@ class TestCallHierarchy:
         assert r["callers"] == [] and r["callees"] == []
 
 
-# ─────────────── 競品吸收 queue 2：blast radius / 改動影響 ───────────────
+# Blast radius: what a change to a symbol reaches.
 class TestIsTestPath:
     def test_test_prefix(self):
         assert engine._is_test_path("E:/x/test_foo.py")
@@ -174,7 +179,8 @@ class TestImpact:
         for k in ("total_confirmed_affected", "direct", "transitive", "test", "prod",
                   "entrypoint", "high_importance", "uncertain"):
             assert k in r["summary"]
-        assert isinstance(r["uncertain_maybe_affected"], list)  # 低信心另列、不混確定集
+        # low-confidence hits get their own list instead of joining the confirmed set
+        assert isinstance(r["uncertain_maybe_affected"], list)
 
     def test_unknown_symbol(self, tmp_path, db_home):
         root = _setup_chain(tmp_path)

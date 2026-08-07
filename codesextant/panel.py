@@ -1,25 +1,29 @@
-"""codesextant C4 — 中文面板（給 daemon GET / 吐出的自包含 HTML）。
+"""codesextant C4: the panel (self-contained HTML served by the daemon's GET /).
 
-一份 HTML 三處共用（設計 §多前端）：
-  - daemon 本身 GET /        （瀏覽器直接開 http://127.0.0.1:8790/）
-  - 獨立 Tauri 殼            （iframe / webview 載入同一個 daemon URL）
-  - AI King 擴充 webview     （iframe 嵌同一個 daemon URL）
+One HTML document serves three places (design §multiple front ends):
+  - the daemon itself, GET /   (open http://127.0.0.1:8790/ in a browser)
+  - a standalone Tauri shell   (iframe / webview pointed at the same daemon URL)
+  - an IDE extension webview (iframe embedding the same daemon URL)
 
-刻意自包含（內嵌 CSS + 原生 JS，零外部 CDN）——對齊 CodeSextant「常駐本機、
-零雲端零金鑰」定位：沒網路也能開面板。面板只是「呈現層」，資料一律由前端
-fetch daemon 既有端點（/health /projects /status /reindex /get_map /find_references），
-所以這份 render_panel() 回傳的是「不含資料的靜態骨架」，不需 server 端字串插值
-（也順帶避開 Python 字串與 CSS/JS 大括號的衝突）。
+Deliberately self-contained (inline CSS + plain JS, no external CDN) to match
+CodeSextant's position as a local-only service with no cloud and no API keys: the
+panel opens without a network connection. The panel is presentation only. Every
+piece of data is fetched by the front end from the daemon's existing endpoints
+(/health /projects /status /reindex /get_map /find_references). render_panel()
+therefore returns a static skeleton with no data in it, which needs no server-side
+string interpolation (and so avoids clashes between Python format strings and
+CSS/JS braces).
 """
 from __future__ import annotations
 
-# 純靜態骨架：所有動態資料由下方 <script> fetch 同源端點後填入。
+# Pure static skeleton: every dynamic value is filled in by the <script> below
+# after it fetches the same-origin endpoints.
 _PANEL_HTML = r"""<!DOCTYPE html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CodeSextant CodeSextant — 代碼地圖總覽</title>
+<title>CodeSextant · Code Map Overview</title>
 <style>
   :root {
     --bg:#0a0e14; --card:#141a22; --card2:#0f141b; --border:#232b36;
@@ -115,41 +119,41 @@ _PANEL_HTML = r"""<!DOCTYPE html>
 <body>
 <div class="wrap">
   <header>
-    <div class="logo">碼</div>
-    <h1>CodeSextant <small>CodeSextant · 代碼地圖總覽</small></h1>
-    <span class="badge"><span id="hdot" class="dot"></span><span id="hstat">連線中…</span></span>
+    <div class="logo">CS</div>
+    <h1>CodeSextant <small>Code Map Overview</small></h1>
+    <span class="badge"><span id="hdot" class="dot"></span><span id="hstat">Connecting…</span></span>
   </header>
-  <div class="sub">常駐本機、零雲端零金鑰的代碼地圖服務——所有 AI 代理共用同一份「真 import 解析」全局關聯圖。</div>
+  <div class="sub">A local-only code map service with no cloud and no API keys. Every AI agent shares one global graph built from real import resolution.</div>
 
   <div class="card">
-    <h2>服務狀態</h2>
-    <div id="health" class="grid"><div class="muted">載入中 <span class="spin"></span></div></div>
+    <h2>Service status</h2>
+    <div id="health" class="grid"><div class="muted">Loading <span class="spin"></span></div></div>
   </div>
 
   <div class="card">
-    <h2>已索引專案 <span class="n" id="pcount">—</span></h2>
+    <h2>Indexed projects <span class="n" id="pcount">&mdash;</span></h2>
     <div class="toolbar">
       <span class="muted" id="dbdir"></span>
       <span class="spacer"></span>
-      <button onclick="loadAll()">↻ 重新整理</button>
+      <button onclick="loadAll()">↻ Refresh</button>
     </div>
-    <div id="projects"><div class="empty">載入中 <span class="spin"></span></div></div>
-    <div class="hint">「重建」＝重新索引（只重算改過的檔，增量很快）。「看地圖」＝列該專案 token 預算內最重要的符號。「查引用」＝某符號被誰呼叫。</div>
+    <div id="projects"><div class="empty">Loading <span class="spin"></span></div></div>
+    <div class="hint">"Reindex" re-runs indexing (only changed files are recomputed, so it is fast). "Map" lists the most important symbols that fit the token budget. "References" shows who calls a given symbol.</div>
   </div>
 
   <div class="card">
-    <h2>md 連結衛生 <span class="n" id="lgstat">—</span></h2>
+    <h2>Markdown link hygiene <span class="n" id="lgstat">&mdash;</span></h2>
     <div class="toolbar">
-      <span class="muted">memory / HANDOFF / kb / SKILL / cbua 的 wiki 連結死鏈與孤兒（唯讀·只列不刪）</span>
+      <span class="muted">Dangling wiki links and orphans across memory / HANDOFF / kb / SKILL / cbua (read-only: it lists, it never deletes)</span>
       <span class="spacer"></span>
-      <button class="primary" onclick="loadLinks()">掃描</button>
+      <button class="primary" onclick="loadLinks()">Scan</button>
     </div>
-    <div id="linkgraph"><div class="empty">按「掃描」現算（唯讀·約 1 秒·按需不自動跑）。</div></div>
-    <div class="hint">dangling＝指向不存在節點的 [[連結]]（該修）；orphan＝索引缺連非 dead（advisory ⛔只列不刪；skill/cbua 孤兒多屬正常）。SSOT：LLM_WIKI優化AI環境_紅藍CBUA最佳解_2026-07-09.md</div>
+    <div id="linkgraph"><div class="empty">Press "Scan" to compute (read-only, about 1 second, on demand; it does not run by itself).</div></div>
+    <div class="hint">dangling = a [[link]] pointing at a node that does not exist (fix these); orphan = missing from the index, which is not the same as dead (advisory, ⛔ listed only, never deleted; orphans under skill/cbua are usually fine).</div>
   </div>
 
   <div class="sub muted" style="text-align:center;margin-top:28px">
-    CodeSextant daemon · <span id="footport"></span> · 此面板由 daemon <code>GET /</code> 提供，可嵌入 Tauri 殼或 AI King 擴充。
+    CodeSextant daemon · <span id="footport"></span> · This panel is served by the daemon's <code>GET /</code> and can be embedded in a Tauri shell or an IDE extension webview.
   </div>
 </div>
 
@@ -159,17 +163,17 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"'`]/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;","`":"&#96;"}[c]));
 
 function fmtTime(epoch) {
-  if (!epoch) return "—";
+  if (!epoch) return "-";
   const d = new Date(epoch * 1000);
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 function fmtUptime(sec) {
-  if (sec == null) return "—";
+  if (sec == null) return "-";
   sec = Math.floor(sec);
-  if (sec < 60) return sec + " 秒";
-  if (sec < 3600) return Math.floor(sec/60) + " 分 " + (sec%60) + " 秒";
-  return Math.floor(sec/3600) + " 小時 " + Math.floor((sec%3600)/60) + " 分";
+  if (sec < 60) return sec + "s";
+  if (sec < 3600) return Math.floor(sec/60) + "m " + (sec%60) + "s";
+  return Math.floor(sec/3600) + "h " + Math.floor((sec%3600)/60) + "m";
 }
 
 async function api(path, opts) {
@@ -183,23 +187,23 @@ async function loadHealth() {
   try {
     const h = await api("/health");
     $("hdot").className = "dot ok";
-    $("hstat").textContent = h["狀態"] || "就緒";
+    $("hstat").textContent = h["status_text"] || "Ready";
     $("footport").textContent = "127.0.0.1:" + h.port;
     const rows = [
-      ["產品 / 服務", (h.product||"CodeSextant") + " / " + (h.service||"codesextant")],
-      ["進程 PID", h.pid],
-      ["連接埠 port", h.port],
-      ["已運行", fmtUptime(h.uptime_sec)],
-      ["引擎版本", h.engine_version || "—"],
-      ["庫目錄", h["庫目錄"]],
-      ["log 檔", h["log檔"]],
+      ["Product / service", (h.product||"CodeSextant") + " / " + (h.service||"codesextant")],
+      ["Process PID", h.pid],
+      ["Port", h.port],
+      ["Uptime", fmtUptime(h.uptime_sec)],
+      ["Engine version", h.engine_version || "-"],
+      ["Database directory", h["db_dir"]],
+      ["Log file", h["log_file"]],
     ];
     $("health").innerHTML = rows.map(([k,v]) =>
       `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("");
   } catch (e) {
     $("hdot").className = "dot err";
-    $("hstat").textContent = "離線";
-    $("health").innerHTML = `<div class="err-line">無法連上 daemon：${esc(e.message)}</div>`;
+    $("hstat").textContent = "Offline";
+    $("health").innerHTML = `<div class="err-line">Cannot reach the daemon: ${esc(e.message)}</div>`;
   }
 }
 
@@ -207,26 +211,28 @@ async function loadProjects() {
   try {
     const d = await api("/projects");
     $("pcount").textContent = d.count;
-    $("dbdir").textContent = "庫目錄：" + d.db_dir;
+    $("dbdir").textContent = "Database directory: " + d.db_dir;
     window.__projects = d.projects;
     if (!d.projects.length) {
-      $("projects").innerHTML = `<div class="empty">尚無已索引專案。任一代理觸發 codesextant（或呼叫 /reindex）後會出現在這裡。</div>`;
+      $("projects").innerHTML = `<div class="empty">No projects indexed yet. One will appear here once any agent triggers codesextant (or calls /reindex).</div>`;
       return;
     }
-    const head = `<tr><th>專案路徑</th><th>檔</th><th>符號</th><th>引用邊</th><th>最後索引</th><th>操作</th></tr>`;
-    // 用 project_key（sha1，全機唯一、與位置無關）當每列的 key——任何重排都不會錯位，
-    // 與本專案「sha1 分庫不混線」紀律一致（位置下標在背景刷新後會對到錯的專案）。
+    const head = `<tr><th>Project path</th><th>Files</th><th>Symbols</th><th>Reference edges</th><th>Last indexed</th><th>Actions</th></tr>`;
+    // Key each row by project_key (a sha1: unique per machine and independent of
+    // position), so no reordering can misalign a row. This matches the project's
+    // "one sha1 database per project, never crossed" discipline. A positional
+    // index would point at the wrong project after a background refresh.
     const body = d.projects.map((p) => {
       if (p.error) {
         return `<tr><td class="path">${esc(p.db_file)}</td><td colspan="5" class="err-line">${esc(p.error)}</td></tr>`;
       }
       const k = esc(p.project_key);
       const gone = p.path_exists === false;
-      const pathCell = esc(p.repo_path || p.db_file) + (gone ? `<span class="tag gone">路徑已不存在</span>` : "");
+      const pathCell = esc(p.repo_path || p.db_file) + (gone ? `<span class="tag gone">path no longer exists</span>` : "");
       const acts = `<div class="actions">
-        <button class="primary" data-act="reindex" data-key="${k}" ${gone?"disabled":""}>重建</button>
-        <button data-act="map" data-key="${k}" ${gone?"disabled":""}>看地圖</button>
-        <button data-act="refs" data-key="${k}" ${gone?"disabled":""}>查引用</button>
+        <button class="primary" data-act="reindex" data-key="${k}" ${gone?"disabled":""}>Reindex</button>
+        <button data-act="map" data-key="${k}" ${gone?"disabled":""}>Map</button>
+        <button data-act="refs" data-key="${k}" ${gone?"disabled":""}>References</button>
       </div>`;
       return `<tr class="${gone?"gone":""}">
         <td class="path">${pathCell}</td>
@@ -242,7 +248,7 @@ async function loadProjects() {
       b.onclick = () => onAction(b.dataset.act, b.dataset.key, b);
     });
   } catch (e) {
-    $("projects").innerHTML = `<div class="err-line">讀取專案列表失敗：${esc(e.message)}</div>`;
+    $("projects").innerHTML = `<div class="err-line">Failed to load the project list: ${esc(e.message)}</div>`;
   }
 }
 
@@ -255,8 +261,10 @@ function showDetail(key, html) {
 }
 
 async function refreshRowStats(key) {
-  // reindex 後只更新該列數字（不整表重建）——保留其他已展開的 detail，
-  // 也保留本列剛顯示的「重建完成」訊息（整表重建會把它清掉，M4）。
+  // After a reindex, update only this row's numbers instead of rebuilding the whole
+  // table. That keeps other expanded detail panes open, and keeps the "reindex
+  // complete" message that was just shown on this row (rebuilding the table would
+  // wipe it; M4).
   try {
     const d = await api("/projects");
     window.__projects = d.projects;
@@ -265,51 +273,51 @@ async function refreshRowStats(key) {
     const set = (id, v) => { const el = $(id + "-" + key); if (el) el.textContent = v; };
     set("files", p.indexed_files); set("syms", p.symbols);
     set("refs", p.refs); set("time", fmtTime(p.last_indexed_at));
-  } catch (e) { /* 局部刷新失敗不影響已顯示的完成訊息 */ }
+  } catch (e) { /* a failed partial refresh must not disturb the completion message already shown */ }
 }
 
 async function onAction(act, key, btn) {
   const p = projByKey(key);
   if (!p) return;
   if (act === "reindex") {
-    const old = btn.textContent; btn.disabled = true; btn.innerHTML = '重建中 <span class="spin"></span>';
+    const old = btn.textContent; btn.disabled = true; btn.innerHTML = 'Reindexing <span class="spin"></span>';
     try {
       const r = await api("/reindex", { method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ project: p.repo_path }) });
-      showDetail(key, `<div class="row"><span class="rk">重建完成</span><span>新索引 ${r.indexed} 檔 · 略過 ${r.skipped} · 移除 ${r.removed} · 符號 ${r.symbols_total} · 耗時 ${r.elapsed_sec}s</span></div>`);
+      showDetail(key, `<div class="row"><span class="rk">Reindex complete</span><span>${r.indexed} files indexed · ${r.skipped} skipped · ${r.removed} removed · ${r.symbols_total} symbols · ${r.elapsed_sec}s</span></div>`);
       await refreshRowStats(key);
-    } catch (e) { showDetail(key, `<div class="err-line">重建失敗：${esc(e.message)}</div>`); }
+    } catch (e) { showDetail(key, `<div class="err-line">Reindex failed: ${esc(e.message)}</div>`); }
     finally { btn.disabled = false; btn.textContent = old; }
   } else if (act === "map") {
-    showDetail(key, `<span class="muted">載入地圖 <span class="spin"></span></span>`);
+    showDetail(key, `<span class="muted">Loading map <span class="spin"></span></span>`);
     try {
       const r = await api(`/get_map?project=${encodeURIComponent(p.repo_path)}&budget=1500`);
       const note = r.note ? `<div class="hint">${esc(r.note)}</div>` : "";
       const rows = (r.symbols||[]).map(s =>
         `<div class="row"><span class="rk">${esc(s.kind)} ${esc(s.name)}</span><span class="muted">${esc(shortPath(s.path, p.repo_path))}:${s.line}</span></div>`).join("");
-      showDetail(key, `<div class="muted" style="margin-bottom:6px">最重要的 ${r.count} 個符號（約 ${r.approx_tokens} token）</div>${rows||'<div class="muted">無</div>'}${note}`);
-    } catch (e) { showDetail(key, `<div class="err-line">看地圖失敗：${esc(e.message)}</div>`); }
+      showDetail(key, `<div class="muted" style="margin-bottom:6px">Top ${r.count} symbols by importance (about ${r.approx_tokens} tokens)</div>${rows||'<div class="muted">None</div>'}${note}`);
+    } catch (e) { showDetail(key, `<div class="err-line">Failed to load the map: ${esc(e.message)}</div>`); }
   } else if (act === "refs") {
     showDetail(key, `<div style="display:flex;gap:8px;align-items:center">
-      <input type="text" id="sym-${key}" placeholder="符號名（例：check）" style="flex:1">
-      <button class="primary" id="symgo-${key}">查</button></div>
-      <div id="symres-${key}" class="hint">輸入要查的函數 / 類別名稱，看它被哪些檔呼叫。</div>`);
+      <input type="text" id="sym-${key}" placeholder="symbol name (e.g. check)" style="flex:1">
+      <button class="primary" id="symgo-${key}">Find</button></div>
+      <div id="symres-${key}" class="hint">Enter a function or class name to see which files call it.</div>`);
     const go = async () => {
       const sym = $("sym-"+key).value.trim();
       if (!sym) return;
-      const res = $("symres-"+key); res.innerHTML = `<span class="muted">jedi 解析中 <span class="spin"></span></span>`;
+      const res = $("symres-"+key); res.innerHTML = `<span class="muted">jedi is resolving <span class="spin"></span></span>`;
       try {
         const r = await api("/find_references", { method:"POST", headers:{"Content-Type":"application/json"},
           body: JSON.stringify({ project: p.repo_path, symbol: sym }) });
         const hi = r.high_confidence || [], lo = r.low_confidence || [];
         const cand = (r.candidate_definitions||[]).length;
         const hiRows = hi.slice(0,40).map(x =>
-          `<div class="row"><span class="rk">${esc(shortPath(x.src_path, p.repo_path))}:${x.line}</span><span class="muted">高信心</span></div>`).join("");
+          `<div class="row"><span class="rk">${esc(shortPath(x.src_path, p.repo_path))}:${x.line}</span><span class="muted">high confidence</span></div>`).join("");
         let warn = "";
         if (hi.length === 0 && lo.length > 0)
-          warn = `<div class="hint">全部低信心——多半是 src-root 沒對（採 src/ 佈局的專案要指到 .../src），或此符號非定義在本專案。</div>`;
-        res.innerHTML = `<div class="muted" style="margin-bottom:6px">候選定義 ${cand} 處 · 高信心引用 ${hi.length} · 低信心 ${lo.length}</div>${hiRows||'<div class="muted">無高信心引用</div>'}${warn}`;
-      } catch (e) { res.innerHTML = `<div class="err-line">查引用失敗：${esc(e.message)}</div>`; }
+          warn = `<div class="hint">Everything came back low confidence. Usually the src-root is wrong (a project using a src/ layout must point at .../src), or this symbol is not defined in this project.</div>`;
+        res.innerHTML = `<div class="muted" style="margin-bottom:6px">${cand} candidate definitions · ${hi.length} high-confidence references · ${lo.length} low-confidence</div>${hiRows||'<div class="muted">No high-confidence references</div>'}${warn}`;
+      } catch (e) { res.innerHTML = `<div class="err-line">Reference lookup failed: ${esc(e.message)}</div>`; }
     };
     $("symgo-"+key).onclick = go;
     $("sym-"+key).addEventListener("keydown", ev => { if (ev.key === "Enter") go(); });
@@ -323,31 +331,32 @@ function shortPath(full, root) {
 }
 
 async function loadLinks() {
-  // Phase 1（wiki linkgraph·2026-07-09）：按需現算，⛔不進 loadAll（裁決：按需除錯工具、不推到眼前）
+  // Phase 1 (wiki linkgraph, 2026-07-09): computed on demand. ⛔ Do not add this to
+  // loadAll; it is an on-demand debugging tool and must not be pushed in the user's face.
   const box = $("linkgraph");
-  box.innerHTML = `<div class="empty">掃描中 <span class="spin"></span></div>`;
+  box.innerHTML = `<div class="empty">Scanning <span class="spin"></span></div>`;
   try {
     const d = await api("/links");
-    if (!d.available) { $("lgstat").textContent = "不可用"; box.innerHTML = `<div class="err-line">${esc(d.reason || "linkgraph 不可用")}</div>`; return; }
+    if (!d.available) { $("lgstat").textContent = "unavailable"; box.innerHTML = `<div class="err-line">${esc(d.reason || "linkgraph unavailable")}</div>`; return; }
     const dang = d.dangling || [], orph = d.orphans_by_ns || {};
-    $("lgstat").textContent = `${d.nodes} 節點`;
+    $("lgstat").textContent = `${d.nodes} nodes`;
     const dRows = dang.slice(0, 60).map(x =>
-      `<div class="row"><span class="rk">[${esc(x.from_ns)}] ${esc(x.from)}</span><span class="err-line">→ [[${esc(x.to)}]] 不存在</span></div>`).join("");
+      `<div class="row"><span class="rk">[${esc(x.from_ns)}] ${esc(x.from)}</span><span class="err-line">→ [[${esc(x.to)}]] does not exist</span></div>`).join("");
     const oRows = Object.entries(orph).map(([ns, lst]) =>
-      `<div class="row"><span class="rk">[${esc(ns)}]${(ns === "skill" || ns === "cbua") ? "（多屬正常）" : "（★該進索引？）"}</span><span class="muted">${lst.slice(0, 14).map(esc).join("、")}${lst.length > 14 ? " …+" + (lst.length - 14) : ""}</span></div>`).join("");
+      `<div class="row"><span class="rk">[${esc(ns)}]${(ns === "skill" || ns === "cbua") ? " (usually fine)" : " (★ should this be indexed?)"}</span><span class="muted">${lst.slice(0, 14).map(esc).join(", ")}${lst.length > 14 ? " …+" + (lst.length - 14) : ""}</span></div>`).join("");
     const disc = d.discipline_tail === null
-      ? `<div class="row"><span class="rk">紀律源</span><span class="muted">未設定（可選源·設環境變數 CODESEXTANT_DISCIPLINE_LOG 指向逐行 JSON 稽核檔）</span></div>`
-      : `<div class="row"><span class="rk">紀律源 tail</span><span class="muted">${(d.discipline_tail || []).length} 筆 · ${esc(d.discipline_source || "來源未回報")}</span></div>`;
+      ? `<div class="row"><span class="rk">Discipline source</span><span class="muted">not configured (optional: set the CODESEXTANT_DISCIPLINE_LOG environment variable to a line-delimited JSON audit file)</span></div>`
+      : `<div class="row"><span class="rk">Discipline source tail</span><span class="muted">${(d.discipline_tail || []).length} entries · ${esc(d.discipline_source || "source not reported")}</span></div>`;
     box.innerHTML = `<div class="detail">
-      <div class="row"><span class="rk">🔗 dangling 死連結</span><span>${dang.length ? dang.length + " 條（該修）" : "0（乾淨 ✓）"}</span></div>${dRows}
-      <div class="row"><span class="rk">🟡 orphans 孤兒</span><span class="muted">advisory·⛔只列不刪</span></div>${oRows}
+      <div class="row"><span class="rk">🔗 dangling links</span><span>${dang.length ? dang.length + " (fix these)" : "0 (clean ✓)"}</span></div>${dRows}
+      <div class="row"><span class="rk">🟡 orphans</span><span class="muted">advisory · ⛔ listed only, never deleted</span></div>${oRows}
       ${disc}</div>`;
-  } catch (e) { $("lgstat").textContent = "失敗"; box.innerHTML = `<div class="err-line">掃描失敗：${esc(e.message)}</div>`; }
+  } catch (e) { $("lgstat").textContent = "failed"; box.innerHTML = `<div class="err-line">Scan failed: ${esc(e.message)}</div>`; }
 }
 
 async function loadAll() { await Promise.all([loadHealth(), loadProjects()]); }
 loadAll();
-setInterval(loadHealth, 5000);  // 服務狀態每 5 秒自動刷新（uptime / 離線偵測）
+setInterval(loadHealth, 5000);  // refresh service status every 5s (uptime / offline detection)
 </script>
 </body>
 </html>
@@ -355,5 +364,5 @@ setInterval(loadHealth, 5000);  // 服務狀態每 5 秒自動刷新（uptime / 
 
 
 def render_panel() -> str:
-    """回傳完整的中文面板 HTML（自包含、無外部依賴）。"""
+    """Return the complete panel HTML (self-contained, no external dependencies)."""
     return _PANEL_HTML

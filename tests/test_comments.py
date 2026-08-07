@@ -1,7 +1,11 @@
-"""功能 B 註解管理測試 — comments.py 抽取 + engine 查詢層（覆蓋率/標記索引/精確過濾）。
+"""Comment management tests: extraction in comments.py plus the engine query
+layer that reports coverage, indexes tags and filters them.
 
-涵蓋：Python docstring owner_line 對齊／block 逐行 marker 真實行號（FIX-3b）／Rust /// 去重+owner
-近似對齊／覆蓋率 JOIN/SKIP_PRIVATE/密度／TODO 索引真實行號+過濾／get_comments 過濾／env 開關／未索引 fail-soft。
+What is covered here: owner_line alignment for Python docstrings, real source
+line numbers for markers buried inside a block comment, Rust /// dedup with
+approximate owner alignment, the coverage JOIN together with SKIP_PRIVATE and
+density, real line numbers and filtering in the TODO index, get_comments
+filters, the env switch, and a soft failure when the project is not indexed.
 """
 import os
 import sys
@@ -30,7 +34,7 @@ def _write(repo, rel, content):
     return p
 
 
-# ─────────────── 抽取層（extract_comments_from_source） ───────────────
+# Extraction layer: extract_comments_from_source.
 
 def test_python_docstring_owner_line_and_kinds():
     src = textwrap.dedent('''
@@ -44,16 +48,17 @@ def test_python_docstring_owner_line_and_kinds():
     ''').encode("utf-8")
     cs = comments.extract_comments_from_source(src, "python")
     docs = [c for c in cs if c["is_doc"]]
-    # module doc owner=None；foo doc owner=def foo 行
+    # the module doc has owner=None, while foo's doc points at the def foo line
     assert any(c["owner_line"] is None and c["kind"] == "doc" for c in docs)  # module
     foo_doc = next(c for c in cs if c["is_doc"] and c["owner_line"] is not None)
     assert foo_doc["text"].strip('"').startswith("Foo doc")
-    # line comment 抓到
+    # the inline line comment was picked up too
     assert any(c["kind"] == "line" and "inline" in c["text"] for c in cs)
 
 
 def test_block_comment_marker_real_line():
-    """FIX-3b：多行 docstring 內 marker 回真實源碼行（base_line+offset），非起始行。"""
+    """A marker inside a multi-line docstring reports its real source line
+    (base_line plus offset), not the line the docstring opens on."""
     src = textwrap.dedent('''
         def foo():
             """Line1.
@@ -66,12 +71,14 @@ def test_block_comment_marker_real_line():
     doc = next(c for c in cs if c["is_doc"])
     tags = comments.scan_tags_in_text(doc["text"], doc["line"])
     assert tags and tags[0]["tag"] == "TODO"
-    # TODO 在 docstring 第 3 行內容（doc 起始行 + offset），不是 doc["line"]
+    # the marker sits on the docstring's third line, so its line is the
+    # docstring's opening line plus an offset
     assert tags[0]["line"] > doc["line"]
 
 
 def test_rust_doc_dedup_and_owner_align():
-    """Rust /// 巢狀(line_comment 含 doc_comment)只收一筆 + owner 對齊下方符號。"""
+    """A nested Rust /// (a line_comment wrapping a doc_comment) is collected
+    once, and its owner aligns to the symbol below it."""
     src = textwrap.dedent('''
         /// Doc for add.
         fn add(a: i32, b: i32) -> i32 {
@@ -80,11 +87,11 @@ def test_rust_doc_dedup_and_owner_align():
     ''').encode("utf-8")
     cs = comments.extract_comments_from_source(src, "rust")
     docs = [c for c in cs if c["is_doc"]]
-    assert len(docs) == 1                      # 去重：不重複收 line_comment + doc_comment
-    assert docs[0]["owner_line"] is not None   # 緊鄰回填對齊下方 add
+    assert len(docs) == 1                      # dedup: not counted as both kinds
+    assert docs[0]["owner_line"] is not None   # backfilled onto the adjacent add
 
 
-# ─────────────── engine 查詢層 ───────────────
+# Engine query layer.
 
 def test_comment_overview_coverage(project):
     _write(project, "m.py", '''
@@ -114,11 +121,11 @@ def test_comment_overview_skip_private(project, monkeypatch):
             return 2
     ''')
     engine.index_project(project, force=True)
-    # 預設 skip_private=on → _private_helper 不算進分母
+    # skip_private defaults to on, which keeps _private_helper out of the denominator
     ov = engine.get_comment_overview(project)
     fn = ov["docstring_coverage"]["by_kind"]["function"]
-    assert fn["total"] == 1                        # 只算 public_api
-    # 關掉 skip_private → 分母含 _private_helper
+    assert fn["total"] == 1                        # public_api is the only one counted
+    # turn skip_private off and _private_helper joins the denominator
     monkeypatch.setenv("CODESEXTANT_COMMENT_COVERAGE_SKIP_PRIVATE", "off")
     ov2 = engine.get_comment_overview(project)
     assert ov2["docstring_coverage"]["by_kind"]["function"]["total"] == 2
@@ -138,7 +145,7 @@ def test_find_comment_tags_real_line_and_filter(project):
     tg = engine.find_comment_tags(project)
     tags = {f["tag"] for f in tg["findings"]}
     assert "FIXME" in tags and "TODO" in tags
-    # 過濾只要 FIXME
+    # narrow the query to FIXME only
     only = engine.find_comment_tags(project, tags=["FIXME"])
     assert all(f["tag"] == "FIXME" for f in only["findings"])
     assert only["count_by_tag"].get("FIXME", 0) >= 1
@@ -159,7 +166,8 @@ def test_get_comments_filters(project):
 
 
 def test_comments_disabled_env(project, monkeypatch):
-    """CODESEXTANT_COMMENTS_DISABLED=1 → index 不抽註解、查詢回空。"""
+    """With CODESEXTANT_COMMENTS_DISABLED=1 the indexer extracts no comments
+    and queries come back empty."""
     monkeypatch.setenv("CODESEXTANT_COMMENTS_DISABLED", "1")
     _write(project, "m.py", 'def foo():\n    """doc."""\n    return 1\n')
     engine.index_project(project, force=True)
@@ -172,7 +180,9 @@ def test_comment_overview_unindexed(project):
 
 
 def test_rust_inner_doc_not_attributed(project):
-    """紅隊 L3-MEDIUM：Rust //! 內部文件（文件化 enclosing 模組）不回填下方符號、不灌高覆蓋率。"""
+    """Raised in adversarial review: a Rust //! inner doc documents the
+    enclosing module, so it must not be backfilled onto the symbol below it
+    and must not inflate the coverage figure."""
     src = b"//! Module level doc.\nfn helper() {\n    let x = 1;\n}\n"
     inner = [c for c in comments.extract_comments_from_source(src, "rust")
              if c["text"].lstrip().startswith("//!")]
@@ -180,7 +190,9 @@ def test_rust_inner_doc_not_attributed(project):
 
 
 def test_overview_tag_counts_multi_marker(project):
-    """紅隊 L3-MEDIUM：overview.tag_counts 逐行掃，多標記 block 不漏算（與 find_comment_tags 一致）。"""
+    """Raised in adversarial review: overview.tag_counts scans line by line, so
+    a block holding several markers is counted in full and agrees with what
+    find_comment_tags reports."""
     _write(project, "m.py", '''
         def foo():
             """Doc.

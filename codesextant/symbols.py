@@ -1,20 +1,27 @@
-"""符號抽取模組 — tree-sitter 多語言全量快速符號表（C1 Python + C5 跨語言）。
+"""Symbol extraction module - a fast, full-coverage, multi-language tree-sitter symbol table (C1 Python + C5 cross-language).
 
-設計來源（PoC 已坐實，務必照做、別重踩）：
-  - tree-sitter parse API 坑：固定用 `get_language(<grammar>)` +
-    `tree_sitter.Parser(lang).parse(bytes)`。
-    ⛔ 別用 tree_sitter_language_pack 的 `get_parser()`——它回傳的 native
-    Parser 與本機 tree_sitter 0.25 wrapper 不相容（對 bytes 報錯）。
-  - 全量符號表走 tree-sitter（實測 ~5 ms/檔），不走 jedi（jedi 是 references 的事）。
-  - C5 多語言：tree-sitter-language-pack 內建多語言 grammar，各語言的「定義」節點型別
-    不同（2026-06-18 `_probe.py` 實測每語言節點型別、name field 全部坐實），用一張
-    per-language table 描述，加語言只加一筆、加符號種類只改表（對齊 code skill OCP）。
+Design provenance (confirmed by a PoC - follow it, do not re-learn the hard way):
+  - tree-sitter parse API pitfall: always use `get_language(<grammar>)` +
+    `tree_sitter.Parser(lang).parse(bytes)`.
+    Do not use tree_sitter_language_pack's `get_parser()` - the native Parser
+    it returns is not compatible with the local tree_sitter 0.25 wrapper
+    (raises an error on bytes input).
+  - Full symbol-table extraction goes through tree-sitter (measured ~5 ms/file),
+    not jedi (jedi handles references, a different concern).
+  - C5 multi-language: tree-sitter-language-pack bundles multi-language grammars;
+    each language's "definition" node types differ (confirmed on 2026-06-18 by
+    `_probe.py`, which empirically verified every language's node types and name
+    fields). Described via a per-language table - adding a language is one new
+    entry, adding a symbol kind is one table edit (aligned with the code skill's
+    Open/Closed Principle).
 
-職責（單一）：吃一個檔路徑或一段原始碼，吐出該檔的符號定義清單
-（函數 / 類別 / 方法 / 型別 / 模組層級變數 + 行號 + 所屬範圍）。
-不碰 SQLite、不碰 jedi、不碰排序——那些是別的模組的事。
+Responsibility (single): given a file path or a chunk of source, emit that
+file's symbol-definition list (function / class / method / type / module-level
+variable + line number + enclosing scope). Does not touch SQLite, does not
+touch jedi, does not touch sorting - those are other modules' concerns.
 
-回傳一律是「可直接轉 JSON 的 dict/list」，方便 C2 daemon 包成 HTTP。
+The return value is always a "directly JSON-serializable" dict/list, so the C2
+daemon can wrap it as HTTP.
 """
 from __future__ import annotations
 
@@ -23,22 +30,26 @@ import os
 import tree_sitter
 from tree_sitter_language_pack import get_language
 
-# ── per-language spec（table-driven） ──
-#   language : tree-sitter-language-pack 的 grammar 名
-#   exts     : 副檔名（小寫、含點）
-#   always   : {tree-sitter 節點型別: 符號 kind}
-#              「結構定義」——不論巢狀深度一律收（function/class/method/型別…），
-#              並把自己的名字 push 進 scope（讓 method/巢狀標出歸屬）。
-#   vars     : {節點型別: kind}
-#              「變數定義」——只在模組頂層（scope 為空）收，避免區域變數噪音。
-#   py_assignment : Python 特例旗標（模組層級 assignment.left → variable，無 name field）。
-# 所有節點型別均用 child_by_field_name("name") 抓名字（_probe.py 2026-06-18 實測坐實）。
+# -- per-language spec (table-driven) --
+#   language : the grammar name in tree-sitter-language-pack
+#   exts     : file extensions (lowercase, with dot)
+#   always   : {tree-sitter node type: symbol kind}
+#              "structural definitions" - always collected regardless of nesting
+#              depth (function/class/method/type/...), and their own name is
+#              pushed onto the scope (so methods/nested items show their owner).
+#   vars     : {node type: kind}
+#              "variable definitions" - only collected at module top level
+#              (empty scope), to avoid local-variable noise.
+#   py_assignment : Python-specific flag (module-level assignment.left ->
+#              variable, since assignment has no name field).
+# Every node type gets its name via child_by_field_name("name") (confirmed
+# empirically by `_probe.py` on 2026-06-18).
 LANGUAGE_SPECS: dict[str, dict] = {
     "python": {
         "language": "python",
         "exts": [".py", ".pyi"],
         "always": {"function_definition": "function", "class_definition": "class"},
-        "vars": {},                       # Python 變數走 assignment 特例
+        "vars": {},                       # Python variables go through the assignment special case
         "py_assignment": True,
     },
     "javascript": {
@@ -57,7 +68,7 @@ LANGUAGE_SPECS: dict[str, dict] = {
         "always": {
             "function_declaration": "function",
             "class_declaration": "class",
-            "abstract_class_declaration": "class",       # abstract class Foo（_probe2 坐實）
+            "abstract_class_declaration": "class",       # abstract class Foo (confirmed by _probe2)
             "method_definition": "method",
             "abstract_method_signature": "method",        # abstract m(): void
             "interface_declaration": "interface",
@@ -102,11 +113,14 @@ LANGUAGE_SPECS: dict[str, dict] = {
             "trait_item": "trait",
         },
         "vars": {"const_item": "variable", "static_item": "variable"},
-        # impl 區塊本身不算符號，但要把目標型別 push 進 scope，讓內部 fn 標出歸屬
-        # （否則 impl MyStruct 內的 method scope 全空、與全域同名函數混淆，_probe2 坐實）。
+        # An impl block itself does not count as a symbol, but its target type is
+        # pushed onto the scope so inner fns show their owner (otherwise a
+        # method's scope inside `impl MyStruct` would be empty and get confused
+        # with a top-level function of the same name; confirmed by _probe2).
         "scope_only": {"impl_item": "type"},
     },
-    # ── 2026-06-22 主流語言一批（tools/_probe_langs.py 全節點型別/name field 實測坐實，無腦推）──
+    # -- 2026-06-22 mainstream-language batch (every node type / name field
+    # confirmed empirically by tools/_probe_langs.py, not guessed) --
     "csharp": {
         "language": "csharp",
         "exts": [".cs"],
@@ -115,13 +129,13 @@ LANGUAGE_SPECS: dict[str, dict] = {
             "struct_declaration": "struct",
             "interface_declaration": "interface",
             "enum_declaration": "enum",
-            "record_declaration": "class",          # record 語意近 class，referenceable 收 class
+            "record_declaration": "class",          # record is close enough to class in meaning; classified as class for referenceability
             "delegate_declaration": "type",
             "method_declaration": "method",
             "constructor_declaration": "constructor",
             "property_declaration": "property",
         },
-        "vars": {},                                  # 頂層無變數（field 在 class 內、無 name field）
+        "vars": {},                                  # no top-level variables (fields live inside a class and have no name field)
     },
     "java": {
         "language": "java",
@@ -139,12 +153,12 @@ LANGUAGE_SPECS: dict[str, dict] = {
     },
     "c": {
         "language": "c",
-        "exts": [".c", ".h"],                        # .h 預設歸 C（C++ header 走 .hpp/.hh/.hxx）
+        "exts": [".c", ".h"],                        # .h defaults to C (C++ headers use .hpp/.hh/.hxx)
         "always": {
-            "function_definition": "function",       # 名字埋在 declarator 鏈 → c_declarator
+            "function_definition": "function",       # name is buried in the declarator chain -> c_declarator
             "struct_specifier": "struct",
             "enum_specifier": "enum",
-            "union_specifier": "struct",             # union 併入 struct kind
+            "union_specifier": "struct",             # union is folded into the struct kind
         },
         "vars": {},
         "name_rules": {"function_definition": "c_declarator"},
@@ -153,7 +167,7 @@ LANGUAGE_SPECS: dict[str, dict] = {
         "language": "cpp",
         "exts": [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"],
         "always": {
-            "function_definition": "function",       # Widget::doIt → c_declarator 取末段 doIt
+            "function_definition": "function",       # Widget::doIt -> c_declarator takes the last segment, doIt
             "class_specifier": "class",
             "struct_specifier": "struct",
             "enum_specifier": "enum",
@@ -164,12 +178,13 @@ LANGUAGE_SPECS: dict[str, dict] = {
     "kotlin": {
         "language": "kotlin",
         "exts": [".kt", ".kts"],
-        # ⚠ Kotlin grammar 的定義節點「無 name field」（名字在 type_identifier/simple_identifier
-        #    子節點），故全走 name_rules 的 child:<type> 策略（_probe 坐實）。
+        # Kotlin grammar's definition nodes have "no name field" (the name lives
+        # in a type_identifier/simple_identifier child node), so everything uses
+        # the name_rules "child:<type>" strategy (confirmed by _probe).
         "always": {
-            "class_declaration": "class",            # enum class / data class 都是 class_declaration
+            "class_declaration": "class",            # enum class / data class are both class_declaration
             "object_declaration": "class",
-            "function_declaration": "function",      # 類內函數 kind=function、scope 標出類名歸屬
+            "function_declaration": "function",      # a function inside a class gets kind=function, scope marks its owning class
         },
         "vars": {},
         "name_rules": {
@@ -181,8 +196,10 @@ LANGUAGE_SPECS: dict[str, dict] = {
     "swift": {
         "language": "swift",
         "exts": [".swift"],
-        # ⚠ Swift grammar 把 enum/struct/class/actor 全 parse 成 class_declaration（無法細分）→
-        #    一律標 class，誠實記錄此限制（_probe 坐實 enum Color/struct Point 皆 class_declaration）。
+        # Swift grammar parses enum/struct/class/actor all as class_declaration
+        # (cannot be distinguished further) -> all classified as class; this
+        # limitation is honestly documented here (confirmed by _probe:
+        # `enum Color`/`struct Point` are both class_declaration).
         "always": {
             "class_declaration": "class",
             "protocol_declaration": "protocol",
@@ -220,25 +237,26 @@ LANGUAGE_SPECS: dict[str, dict] = {
     "bash": {
         "language": "bash",
         "exts": [".sh", ".bash"],
-        "always": {"function_definition": "function"},   # explicit_fn() 與 function explicit_fn 皆此型別
-        "vars": {},                                       # 頂層變數 name field 非 identifier、walk 不收（誠實留空）
+        "always": {"function_definition": "function"},   # both `explicit_fn()` and `function explicit_fn` are this type
+        "vars": {},                                       # top-level variable name fields are not identifiers, so walk() does not collect them (honestly left empty)
     },
     "lua": {
         "language": "lua",
         "exts": [".lua"],
-        "always": {"function_declaration": "function"},   # global/local/M.method 皆 function_declaration（name 含點 OK）
+        "always": {"function_declaration": "function"},   # global/local/M.method are all function_declaration (a dotted name is fine)
         "vars": {},
     },
 }
 
-# 副檔名 → lang key（反查表），給 engine 掃描 / 找引用判語言用。
+# extension -> lang key (reverse lookup table), used by the engine for scanning /
+# determining a file's language when resolving references.
 _EXT_TO_LANG: dict[str, str] = {
     ext: name for name, spec in LANGUAGE_SPECS.items() for ext in spec["exts"]
 }
 SUPPORTED_EXTENSIONS = frozenset(_EXT_TO_LANG)
 
 
-# ── tree-sitter Language 物件 lazy cache（用到才載、各語言只載一次共享） ──
+# -- tree-sitter Language object lazy cache (loaded on first use, shared per language) --
 _lang_obj_cache: dict[str, tree_sitter.Language] = {}
 
 
@@ -251,38 +269,42 @@ def _ts_language(grammar: str) -> tree_sitter.Language:
 
 
 def language_for_file(file_path: str) -> str | None:
-    """副檔名 → 語言 key（不支援回 None）。"""
+    """Extension -> language key (returns None if unsupported)."""
     return _EXT_TO_LANG.get(os.path.splitext(file_path)[1].lower())
 
 
 def parse_source(source: bytes, lang_key: str):
-    """parse 一段原始碼成 tree-sitter tree。
+    """Parse a chunk of source into a tree-sitter tree.
 
-    紅隊 L4-MEDIUM：給 index_project 一檔 parse 一次、symbols/comments/fingerprints 三者共用同一
-    tree（傳 tree= 進各自的 *_from_source），省掉每檔重複 parse 三次的冗餘。lang_key 不支援 → ValueError。
+    Per adversarial review L4-MEDIUM: index_project parses each file once and
+    shares that same tree across symbols/comments/fingerprints (by passing
+    tree= into each module's *_from_source), avoiding the redundancy of
+    re-parsing the same file three times. Unsupported lang_key -> ValueError.
     """
     spec = LANGUAGE_SPECS.get(lang_key)
     if spec is None:
-        raise ValueError(f"parse_source 不支援的語言 '{lang_key}'")
+        raise ValueError(f"parse_source: unsupported language '{lang_key}'")
     parser = tree_sitter.Parser(_ts_language(spec["language"]))
     return parser.parse(bytes(source))
 
 
 def _node_text(src: bytes, node) -> str:
-    """取節點對應的原始位元組片段，解成 str。"""
+    """Get the raw byte span for a node and decode it to str."""
     return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
 
 
 def _name_of(src: bytes, node) -> str:
-    """從定義節點抓名字（name 子節點）。抓不到回 '<anon>'（不靜默 None）。"""
+    """Get the name from a definition node (its "name" child). Returns '<anon>' if not found (never silently returns None)."""
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return "<anon>"
     return _node_text(src, name_node)
 
 
-# C/C++ declarator 鏈：function_definition 名字不在 name field，埋在 (pointer/reference/...)
-# → function_declarator → identifier / qualified_identifier（取末段）。2026-06-22 _probe 坐實。
+# C/C++ declarator chain: a function_definition's name is not in the name field,
+# it is buried in (pointer/reference/...) -> function_declarator ->
+# identifier / qualified_identifier (take the last segment). Confirmed by
+# _probe on 2026-06-22.
 _C_DECLARATOR_WRAPPERS = {
     "function_declarator", "pointer_declarator", "reference_declarator",
     "parenthesized_declarator", "array_declarator",
@@ -290,15 +312,17 @@ _C_DECLARATOR_WRAPPERS = {
 
 
 def _c_declarator_name(src: bytes, node) -> str:
-    """C/C++ function_definition：往下穿過 declarator wrapper 找 function_declarator，
-    取被宣告名（qualified_identifier 如 Widget::doIt 取末段 identifier）。抓不到回 '<anon>'。"""
-    # 找第一層 declarator wrapper
+    """C/C++ function_definition: drill down through the declarator wrapper chain to
+    find the function_declarator, then take the declared name (for a
+    qualified_identifier like Widget::doIt, take the last segment). Returns
+    '<anon>' if not found."""
+    # find the first-level declarator wrapper
     decl = None
     for c in node.children:
         if c.type in _C_DECLARATOR_WRAPPERS:
             decl = c
             break
-    # 穿過 pointer/reference 等 wrapper 直到 function_declarator
+    # drill through pointer/reference and other wrappers until function_declarator
     seen = 0
     while decl is not None and decl.type != "function_declarator" and seen < 8:
         seen += 1
@@ -310,12 +334,12 @@ def _c_declarator_name(src: bytes, node) -> str:
         decl = nxt
     if decl is None:
         return "<anon>"
-    # function_declarator 的第一個非 parameter_list 子 = 被宣告名
+    # function_declarator's first non-parameter_list child = the declared name
     for c in decl.children:
         if c.type == "parameter_list":
             continue
         if c.type == "qualified_identifier":
-            # namespace::name → 取最後一段 identifier/field_identifier
+            # namespace::name -> take the last segment (identifier/field_identifier)
             for q in reversed(c.children):
                 if q.type in ("identifier", "field_identifier", "destructor_name"):
                     return _node_text(src, q)
@@ -325,10 +349,11 @@ def _c_declarator_name(src: bytes, node) -> str:
 
 
 def _extract_name(src: bytes, node, rule: str | None) -> str:
-    """依 name_rules 策略取定義節點的名字。rule=None → 預設 child_by_field_name('name')。
+    """Get a definition node's name per the name_rules strategy. rule=None -> default child_by_field_name('name').
 
-    "child:<type>" → 取第一個該型別的直接子節點文字（Kotlin 名字在 type_identifier/simple_identifier）。
-    "c_declarator" → C/C++ declarator 鏈（見 _c_declarator_name）。
+    "child:<type>" -> takes the text of the first direct child of that type
+    (Kotlin's name lives in type_identifier/simple_identifier).
+    "c_declarator" -> the C/C++ declarator chain (see _c_declarator_name).
     """
     if rule is None:
         return _name_of(src, node)
@@ -345,50 +370,53 @@ def _extract_name(src: bytes, node, rule: str | None) -> str:
 
 def extract_symbols_from_source(source: bytes, lang_key: str = "python", *,
                                 file_path: str = "<memory>", tree=None) -> list[dict]:
-    """從一段原始碼（bytes）抽出符號定義清單。
+    """Extract the symbol-definition list from a chunk of source (bytes).
 
-    參數
-    ----
+    Parameters
+    ----------
     source : bytes
-        檔案原始位元組（一律傳 bytes，不傳 str——對齊 PoC 的 parse(bytes) 路徑）。
+        The file's raw bytes (always pass bytes, not str - matches the PoC's
+        parse(bytes) path).
     lang_key : str
-        語言 key（LANGUAGE_SPECS 的鍵；預設 "python" 保持 C1 相容）。
+        Language key (a key of LANGUAGE_SPECS; defaults to "python" to keep C1 compatibility).
     file_path : str
-        僅用於錯誤訊息與回傳標記，不會讀檔。
+        Used only for error messages and the return marker; the file is not read.
 
-    回傳
-    ----
-    list[dict]，每符號一筆，欄位：
+    Returns
+    -------
+    list[dict], one entry per symbol, with fields:
       - kind  : "function" / "class" / "method" / "interface" / "type" / "enum"
-                / "struct" / "trait" / "variable"（依語言）
-      - name  : 符號名稱
-      - line / end_line : 定義起訖行號（1-based）
-      - scope : 所屬範圍（如 "MyClass" 表示 method 在 MyClass 內；"" 表示模組頂層）
-    依出現順序排列。
+                / "struct" / "trait" / "variable" (depends on language)
+      - name  : the symbol's name
+      - line / end_line : the definition's start/end line numbers (1-based)
+      - scope : the enclosing scope (e.g. "MyClass" means the method is inside
+                MyClass; "" means module top level)
+    Listed in order of appearance.
 
-    fail-loud：source 不是 bytes 直接 TypeError；lang_key 不支援直接 ValueError。
+    fail-loud: source not being bytes raises TypeError directly; an unsupported
+    lang_key raises ValueError directly.
     """
     if not isinstance(source, (bytes, bytearray)):
         raise TypeError(
-            f"extract_symbols_from_source 需要 bytes，收到 {type(source).__name__}"
-            f"（file_path={file_path}）。請先讀成 bytes 再傳入。"
+            f"extract_symbols_from_source requires bytes, got {type(source).__name__}"
+            f" (file_path={file_path}). Read the file as bytes before passing it in."
         )
     spec = LANGUAGE_SPECS.get(lang_key)
     if spec is None:
         raise ValueError(
-            f"extract_symbols_from_source 不支援的語言 '{lang_key}'"
-            f"（file_path={file_path}）。可用：{sorted(LANGUAGE_SPECS)}"
+            f"extract_symbols_from_source: unsupported language '{lang_key}'"
+            f" (file_path={file_path}). Available: {sorted(LANGUAGE_SPECS)}"
         )
 
-    if tree is None:    # 紅隊 L4-MEDIUM：index 可傳入已 parse 的 tree、三模組共用省重複 parse
+    if tree is None:    # per adversarial review L4-MEDIUM: index_project may pass in an already-parsed tree, shared across the three modules to skip redundant re-parsing
         parser = tree_sitter.Parser(_ts_language(spec["language"]))
         tree = parser.parse(bytes(source))
     root = tree.root_node
 
     always: dict = spec["always"]
     varkinds: dict = spec["vars"]
-    scope_only: dict = spec.get("scope_only", {})   # 只 push scope、不當符號（如 Rust impl）
-    name_rules: dict = spec.get("name_rules", {})   # 無 name field 節點的取名策略（C/C++/Kotlin）
+    scope_only: dict = spec.get("scope_only", {})   # only pushes scope, does not count as a symbol (e.g. Rust impl)
+    name_rules: dict = spec.get("name_rules", {})   # name-extraction strategy for nodes without a name field (C/C++/Kotlin)
     py_assignment: bool = spec.get("py_assignment", False)
 
     symbols: list[dict] = []
@@ -397,9 +425,11 @@ def extract_symbols_from_source(source: bytes, lang_key: str = "python", *,
         node_type = node.type
         child_scope = scope_parts
 
-        # tree-sitter 關鍵字/標點是 unnamed token，其 type 可能與定義節點型別撞名
-        # （Ruby `module`/`class` keyword token 的 type == 定義節點 type "module"/"class"），
-        # 只有 is_named 的節點才是真正的符號定義 → 擋掉 keyword token 誤收成 <anon>。
+        # A tree-sitter keyword/punctuation is an unnamed token whose type can
+        # collide with a definition node's type (Ruby's `module`/`class` keyword
+        # tokens have type == the definition node type "module"/"class"); only an
+        # is_named node is actually a symbol definition -> this filters out
+        # keyword tokens that would otherwise be miscollected as <anon>.
         if node.is_named and node_type in always:
             name = _extract_name(source, node, name_rules.get(node_type))
             symbols.append({
@@ -409,19 +439,25 @@ def extract_symbols_from_source(source: bytes, lang_key: str = "python", *,
                 "end_line": node.end_point[0] + 1,
                 "scope": ".".join(scope_parts),
             })
-            # 進到定義內部時把自己加進 scope，讓 method/巢狀函數標出歸屬
+            # when descending into the definition, add its own name to the scope
+            # so methods/nested functions show their owner
             child_scope = scope_parts + [name]
 
         elif node_type in scope_only:
-            # 容器節點（如 Rust impl_item）：用指定 field 當 scope 名 push 下去、自己不算符號，
-            # 讓內部方法標出所屬型別（否則 impl 內 fn 的 scope 全空、與全域同名函數混淆）。
+            # a container node (e.g. Rust's impl_item): pushes the designated
+            # field as a scope name and does not itself count as a symbol, so
+            # inner methods show their owning type (otherwise an fn's scope
+            # inside impl would be empty and get confused with a global function
+            # of the same name).
             field_node = node.child_by_field_name(scope_only[node_type])
             if field_node is not None:
                 child_scope = scope_parts + [_node_text(source, field_node)]
 
         elif node_type in varkinds and not scope_parts:
-            # 變數只收模組頂層，且名字必須是單一識別字——解構 `const {a,b}=…` 的 name field
-            # 是 object_pattern/array_pattern，跳過免吐 "{a, b}" 這種垃圾符號名。
+            # variables are only collected at module top level, and the name
+            # must be a single identifier - a destructuring `const {a,b}=...`'s
+            # name field is object_pattern/array_pattern, which is skipped to
+            # avoid emitting a junk symbol name like "{a, b}".
             name_node = node.child_by_field_name("name")
             if name_node is not None and name_node.type == "identifier":
                 symbols.append({
@@ -433,7 +469,8 @@ def extract_symbols_from_source(source: bytes, lang_key: str = "python", *,
                 })
 
         elif py_assignment and node_type == "assignment" and not scope_parts:
-            # Python 特例：模組層級 identifier 賦值當變數（assignment 無 name field）
+            # Python special case: a module-level identifier assignment counts
+            # as a variable (assignment has no name field)
             left = node.child_by_field_name("left")
             if left is not None and left.type == "identifier":
                 symbols.append({
@@ -452,20 +489,21 @@ def extract_symbols_from_source(source: bytes, lang_key: str = "python", *,
 
 
 def extract_symbols(file_path: str) -> list[dict]:
-    """讀一個原始碼檔，按副檔名選語言、抽出符號定義清單。
+    """Read a source file, select the language by extension, and extract its symbol-definition list.
 
-    這是對外主要入口（讀檔 + 抽符號）。副檔名不支援 → ValueError（fail-loud）；
-    檔讀不到 → FileNotFoundError。回傳同 extract_symbols_from_source。
+    This is the main external entry point (read file + extract symbols). An
+    unsupported extension -> ValueError (fail-loud); a file that can't be read
+    -> FileNotFoundError. The return value matches extract_symbols_from_source.
     """
     lang_key = language_for_file(file_path)
     if lang_key is None:
         raise ValueError(
-            f"抽符號失敗：不支援的副檔名 {file_path}"
-            f"（支援：{sorted(SUPPORTED_EXTENSIONS)}）"
+            f"symbol extraction failed: unsupported extension {file_path}"
+            f" (supported: {sorted(SUPPORTED_EXTENSIONS)})"
         )
     try:
         with open(file_path, "rb") as f:
             source = f.read()
     except OSError as exc:
-        raise FileNotFoundError(f"抽符號失敗：讀不到檔 {file_path}（{exc}）") from exc
+        raise FileNotFoundError(f"symbol extraction failed: could not read file {file_path} ({exc})") from exc
     return extract_symbols_from_source(source, lang_key, file_path=file_path)

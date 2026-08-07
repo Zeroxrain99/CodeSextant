@@ -2,7 +2,7 @@
 
 Sharding the HTTP routes without moving the watcher would split admission into
 two coordinators that cannot see each other: the watcher's reindex would escape
-the global concurrency budget, and — worse — it would stop coalescing with an
+the global concurrency budget, and (worse) it would stop coalescing with an
 HTTP ``/reindex`` for the same repository, so one project could run two full
 reindexes at once.  That is exactly the contention the 2026-07-16 work removed.
 """

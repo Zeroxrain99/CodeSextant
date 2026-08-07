@@ -1,22 +1,27 @@
-"""註解管理 — tree-sitter 抽 comment 節點 + 行號 + 歸屬符號（功能 B 第二半）。
+"""Comment management: tree-sitter extracts comment nodes + line numbers + owning symbol (Feature B, second half).
 
-定位（設計 §3.B）：「一次看全 vs 只看該看的 + 知道哪行」——docstring 覆蓋率 / TODO·FIXME
-在哪行 / 註解密度，給 repo 摘要 + 精確定位。**輕量、不踩四陷阱、給線索非決策**。
+Positioning (design doc §3.B): "see everything at once vs. see only what matters + know which
+line": docstring coverage / where each TODO·FIXME sits / comment density, feeding both a repo
+summary and precise navigation. **Lightweight, avoids the four pitfalls, gives a clue, not a verdict.**
 
-職責單一：吃一個檔路徑或一段原始碼，吐該檔的註解清單。不混進 extract_symbols（守 symbols.py
-單一職責），但共用 symbols 的 `_ts_language()` grammar cache 與 LANGUAGE_SPECS 的定義節點表
-（拿來標 scope + 找 Python docstring 的 body field）。
+Single responsibility: takes a file path or a chunk of source, emits that file's comment list.
+Not folded into extract_symbols (keeps symbols.py's single responsibility), but shares symbols'
+`_ts_language()` grammar cache and the LANGUAGE_SPECS definition-node table (used to tag scope
+and to find the body field for a Python docstring).
 
-誠實邊界（設計 §6）：
-  - docstring 偵測限「block/module 第一個 named child 為 string」（Python）：被條件式包住、賦值
-    給變數、非首位的字串會漏判。
-  - 其他語言 doc（Rust ///、Go/TS /** */）靠「緊鄰下方符號」近似對齊 owner_line，巢狀/跨空行多
-    可能對不準——覆蓋率對非 Python 是盡力而為。
-  - 覆蓋率/密度是結構統計線索，不評斷註解是否正確/過時/同步（那是語義，看不到）。
+Honest boundaries (design doc §6):
+  - docstring detection is limited to "the first named child of a block/module is a string node"
+    (Python): a string wrapped in a conditional, assigned to a variable, or not in first position
+    will be missed.
+  - Doc comments in other languages (Rust ///, Go/TS /** */) are approximately aligned to
+    owner_line by "immediately precedes the symbol below it"; nesting or several blank lines in
+    between can throw this off; coverage for non-Python languages is best-effort.
+  - Coverage/density are structural statistical clues, not a judgment on whether a comment is
+    correct, stale, or in sync with the code (that's semantics, which this can't see).
 
-開關（L0 鐵律 #6，皆 .lower() 容錯）：
-  - CODESEXTANT_COMMENTS_DISABLED        整功能 opt-out
-  - CODESEXTANT_COMMENT_MARKERS          標記集（預設 TODO,FIXME,HACK,XXX,BUG,NOTE）
+Switches (L0 hard rule #6, all tolerant of .lower() case):
+  - CODESEXTANT_COMMENTS_DISABLED        opt out of the whole feature
+  - CODESEXTANT_COMMENT_MARKERS          marker set (default TODO,FIXME,HACK,XXX,BUG,NOTE)
 """
 from __future__ import annotations
 
@@ -27,7 +32,7 @@ import tree_sitter
 
 from . import symbols
 
-# 各語言 comment 節點型別（2026-06-19 設計 R2 tree-sitter probe 坐實）。rust 三種、其餘統一 comment。
+# Comment node type per language (proved out by the design doc's R2 tree-sitter probe on 2026-06-19). Rust has three; the rest use a single "comment" type.
 _COMMENT_TYPES: dict[str, set[str]] = {
     "python": {"comment"},
     "javascript": {"comment"},
@@ -35,7 +40,7 @@ _COMMENT_TYPES: dict[str, set[str]] = {
     "tsx": {"comment"},
     "go": {"comment"},
     "rust": {"line_comment", "block_comment", "doc_comment"},
-    # 2026-06-22 主流語言一批（tools/_probe_extra.py 坐實 comment 節點型別）：
+    # 2026-06-22, a batch of mainstream languages added (comment node types proved out by tools/_probe_extra.py):
     "csharp": {"comment"},
     "java": {"line_comment", "block_comment"},
     "c": {"comment"},
@@ -48,8 +53,9 @@ _COMMENT_TYPES: dict[str, set[str]] = {
     "swift": {"comment", "multiline_comment"},
 }
 
-# doc 判定 text 前綴（Rust /// 不同 grammar 版本解成 line_comment 或 doc_comment、TS jsdoc /** 仍歸
-# comment，故節點型別 + text-prefix 雙重判定，FIX 設計 §3.B.1）。
+# Text prefixes used to decide "is this a doc comment" (Rust /// parses as line_comment or
+# doc_comment depending on the grammar version; TS jsdoc /** still parses as a plain comment --
+# hence the double check on node type + text prefix, per design doc fix §3.B.1).
 _DOC_PREFIXES = ("///", "//!", "/**", "#'")
 
 
@@ -89,8 +95,9 @@ def _node_text(src: bytes, node) -> str:
 
 
 def _docstring_string_node(def_node, src: bytes):
-    """function/class 定義節點的 docstring string 節點（body 第一個 named child 若 string；
-    含 expression_statement 包裹一層的相容處理）。非 string → None。"""
+    """The docstring string node for a function/class definition node (the body's first named
+    child, if it's a string; handles the case where it's wrapped one level in expression_statement).
+    Not a string -> None."""
     body = def_node.child_by_field_name("body")
     if body is None or body.named_child_count == 0:
         return None
@@ -108,41 +115,43 @@ def _docstring_string_node(def_node, src: bytes):
 
 def extract_comments_from_source(source: bytes, lang_key: str = "python", *,
                                  file_path: str = "<memory>", tree=None) -> list[dict]:
-    """從一段原始碼（bytes）抽註解清單。
+    """Extract the comment list from a chunk of source code (bytes).
 
-    回 list[dict]，每筆：{kind(line/block/doc), text, line, end_line, scope, tag(第一 marker 或 None),
-    is_doc(bool), owner_line(doc 所屬符號定義行，無則 None)}。依出現順序。
+    Returns list[dict], each entry: {kind(line/block/doc), text, line, end_line, scope,
+    tag(first marker or None), is_doc(bool), owner_line(the doc's owning symbol's definition
+    line, or None)}. In order of appearance.
 
-    fail-loud：source 非 bytes → TypeError；lang_key 不支援 → ValueError。
+    fail-loud: source not bytes -> TypeError; unsupported lang_key -> ValueError.
     """
     if not isinstance(source, (bytes, bytearray)):
         raise TypeError(
-            f"extract_comments_from_source 需要 bytes，收到 {type(source).__name__}（{file_path}）")
+            f"extract_comments_from_source requires bytes, got {type(source).__name__} ({file_path})")
     spec = symbols.LANGUAGE_SPECS.get(lang_key)
     if spec is None:
         raise ValueError(
-            f"extract_comments_from_source 不支援的語言 '{lang_key}'（{file_path}）。"
-            f"可用：{sorted(symbols.LANGUAGE_SPECS)}")
+            f"extract_comments_from_source: unsupported language '{lang_key}' ({file_path}). "
+            f"Available: {sorted(symbols.LANGUAGE_SPECS)}")
 
     comment_types = _COMMENT_TYPES.get(lang_key, {"comment"})
     always: dict = spec["always"]
     is_python = lang_key == "python"
     marker_re = _marker_re()
 
-    if tree is None:    # 紅隊 L4-MEDIUM：index 共用 tree 省重複 parse
+    if tree is None:    # Red team L4-MEDIUM: index shares the tree to avoid re-parsing
         parser = tree_sitter.Parser(symbols._ts_language(spec["language"]))
         tree = parser.parse(bytes(source))
     root = tree.root_node
 
     out: list[dict] = []
-    # pending doc comment（給非 Python 語言「doc comment 緊鄰下方符號」近似回填 owner_line）
-    pending_doc: list[dict] = []  # 用 list 當可變單元素 box（閉包寫入）
+    # pending doc comment (for non-Python languages, approximates owner_line backfill via "doc comment immediately precedes the symbol below it")
+    pending_doc: list[dict] = []  # a list used as a mutable single-element box (written from a closure)
 
     def _add_pending_owner(def_line: int) -> None:
         if pending_doc and pending_doc[0] is not None:
             d = pending_doc[0]
-            # 緊鄰才回填（定義行 - doc end_line ∈ [0,2]，容 tree-sitter comment 含尾換行的
-            # off-by-one〔end_point 落在下一行開頭〕+ 一個空行）
+            # only backfill when immediately adjacent (definition line - doc end_line ∈ [0,2],
+            # allowing for tree-sitter comment nodes whose trailing newline causes an off-by-one
+            # [end_point lands at the start of the next line] plus one blank line)
             if 0 <= def_line - d["end_line"] <= 2:
                 d["owner_line"] = def_line
         pending_doc.clear()
@@ -166,25 +175,28 @@ def extract_comments_from_source(source: bytes, lang_key: str = "python", *,
                 "owner_line": None,
             }
             out.append(rec)
-            # 紅隊 L3-MEDIUM：Rust `//!`/`/*!` 是「內部文件註解」、文件化的是所在 enclosing 項目
-            # （module/crate），⛔不該回填到下方 sibling 符號（否則放檔首的 //! 會被誤算成下方 fn 的
-            # docstring、系統性灌高覆蓋率）。只有 outer doc（///、/**）才進 pending_doc 對齊下方符號。
+            # Red team L3-MEDIUM: Rust `//!`/`/*!` is an "inner doc comment"; it documents the
+            # enclosing item (module/crate), and must not be backfilled onto the sibling symbol
+            # below it (otherwise a `//!` at the top of a file would get misattributed as the
+            # docstring for the fn below it, systematically inflating coverage). Only an outer
+            # doc (///, /**) goes into pending_doc to align with the symbol below it.
             is_inner = text.lstrip().startswith(("//!", "/*!"))
             if doc and not is_inner:
-                pending_doc[:] = [rec]   # outer doc：記為待對齊（下個定義節點若緊鄰就回填）
+                pending_doc[:] = [rec]   # outer doc: record as pending alignment (backfilled if the next definition node is adjacent)
             else:
-                pending_doc.clear()      # 非 doc / inner doc 都打斷緊鄰鏈
-            # comment 節點不再下鑽：Rust `///` 解成 line_comment 內含 doc_comment（巢狀），
-            # 下鑽會把同一個 `///` 重複收兩筆（外 line_comment + 內 doc_comment）。
+                pending_doc.clear()      # both non-doc and inner-doc comments break the adjacency chain
+            # Don't descend into comment nodes: Rust `///` parses as a line_comment containing a
+            # nested doc_comment; descending would collect the same `///` twice (the outer
+            # line_comment plus the inner doc_comment).
             return
 
         if node_type in always:
             name = symbols._name_of(source, node)
             def_line = node.start_point[0] + 1
-            # 非 Python：doc comment 緊鄰下方符號 → 回填 owner_line（近似）
+            # non-Python: doc comment immediately precedes the symbol below it -> backfill owner_line (approximate)
             if not is_python:
                 _add_pending_owner(def_line)
-            # Python：body 第一個 string = docstring（精確 owner_line）
+            # Python: the body's first string = the docstring (precise owner_line)
             if is_python:
                 ds = _docstring_string_node(node, source)
                 if ds is not None:
@@ -201,16 +213,18 @@ def extract_comments_from_source(source: bytes, lang_key: str = "python", *,
                 pending_doc.clear()
             child_scope = scope_parts + [name]
         else:
-            # 撞到非 comment / 非定義的實質節點 → 打斷 doc 緊鄰鏈（非 Python）
+            # hit a substantive node that's neither a comment nor a definition -> breaks the doc adjacency chain (non-Python)
             if not is_python and node_type not in ("ERROR",) and node.is_named \
                     and node_type not in comment_types:
-                # 只在「有 byte 內容的實質節點」打斷，避免容器節點誤清；保守：定義/comment 以外清
-                pass  # 不在此處激進清除，交給 _add_pending_owner 的行距判斷把關
+                # only break on "a substantive node with actual byte content", to avoid clearing
+                # on a mere container node by mistake; conservative: clear on anything besides a
+                # definition/comment
+                pass  # not cleared aggressively here; left to _add_pending_owner's line-distance check to gate it
 
         for child in node.children:
             walk(child, child_scope)
 
-    # module docstring（Python module root 第一個 named child 若 string）
+    # module docstring (Python module root's first named child, if it's a string)
     if is_python and root.named_child_count > 0:
         first = root.named_child(0)
         ms = None
@@ -225,42 +239,45 @@ def extract_comments_from_source(source: bytes, lang_key: str = "python", *,
                 "kind": "doc", "text": mtext,
                 "line": ms.start_point[0] + 1, "end_line": ms.end_point[0] + 1,
                 "scope": "", "tag": _first_marker(mtext, marker_re),
-                "is_doc": True, "owner_line": None,   # module 級無符號 owner
+                "is_doc": True, "owner_line": None,   # no symbol owner at module level
             })
 
     walk(root, [])
-    # 依行號排序（module docstring 可能後加，保持輸出按出現順序）
+    # sort by line number (the module docstring may be appended later; keep output in appearance order)
     out.sort(key=lambda c: (c["line"], c["end_line"]))
     return out
 
 
 def extract_comments(file_path: str) -> list[dict]:
-    """讀一個原始碼檔，按副檔名抽註解。副檔名不支援 → ValueError；讀不到 → FileNotFoundError。"""
+    """Read a source file and extract its comments based on file extension. Unsupported extension -> ValueError; unreadable -> FileNotFoundError."""
     lang_key = symbols.language_for_file(file_path)
     if lang_key is None:
         raise ValueError(
-            f"抽註解失敗：不支援的副檔名 {file_path}（支援：{sorted(symbols.SUPPORTED_EXTENSIONS)}）")
+            f"extract_comments failed: unsupported file extension {file_path} (supported: {sorted(symbols.SUPPORTED_EXTENSIONS)})")
     try:
         with open(file_path, "rb") as f:
             source = f.read()
     except OSError as exc:
-        raise FileNotFoundError(f"抽註解失敗：讀不到檔 {file_path}（{exc}）") from exc
+        raise FileNotFoundError(f"extract_comments failed: cannot read file {file_path} ({exc})") from exc
     return extract_comments_from_source(source, lang_key, file_path=file_path)
 
 
 def scan_tags_in_text(text: str, base_line: int, marker_re=None) -> list[dict]:
-    """對一段註解 text **逐行掃 marker** 回 [{tag, line(真實源碼行), text(該行)}]。
+    """**Scan a chunk of comment text line by line for markers**, returning [{tag, line(the real source line), text(that line's text)}].
 
-    FIX-3b（設計 §3.B.1，「知道哪行」核心賣點）：多行 block/doc 的 marker 必須回真實源碼行
-    （base_line + 相對行 offset），不是 block 起始行。base_line=該註解節點的起始行（1-based）。
+    Fix 3b (design doc §3.B.1, the core selling point of "know which line"): a marker inside a
+    multi-line block/doc comment must map back to the real source line (base_line + relative line
+    offset), not the block's starting line. base_line = that comment node's starting line (1-based).
     """
     if marker_re is None:
         marker_re = _marker_re()
     if marker_re is None:
         return []
     found: list[dict] = []
-    # 紅隊 L3-LOW：用 split("\n") 而非 splitlines()——後者對 U+2028/\v/\f/\x85 等 Unicode 行分隔符
-    # 多斷行，跟 tree-sitter 只認 \n 的行號模型不一致 → marker 回的源碼行對不上（跳轉跳錯）。
+    # Red team L3-LOW: uses split("\n") rather than splitlines(), because the latter also splits on
+    # Unicode line separators like U+2028/\v/\f/\x85, which disagrees with tree-sitter's line
+    # numbering model (which only recognizes \n) -> markers would map to the wrong source line
+    # (jumping to the wrong place).
     for offset, line_text in enumerate(text.split("\n")):
         m = marker_re.search(line_text)
         if m:

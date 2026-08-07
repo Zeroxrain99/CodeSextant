@@ -1,17 +1,23 @@
-"""ai-usage 掃描層 — 「這個 repo 用了哪些 AI/LLM + dispatch_policy 合規維度」。
+"""ai-usage scan layer: "which AI/LLM providers does this repo use, and how does it score
+on the dispatch_policy compliance axis".
 
-吃 engine 傳來的 file iterator（只含 SUPPORTED_EXTENSIONS、已跳雜訊目錄），逐檔逐行
-regex 偵測 AI/LLM 呼叫點，per-file 先收集 imports/base_url 當上下文再解析每個呼叫的
-provider 與通道（cli/direct/local），最後聚成二分圖 {file 節點, provider 節點, edge}
-給 ai_usage_html 渲染成深色 HUD 關聯圖。
+Consumes the file iterator the engine hands over (SUPPORTED_EXTENSIONS only, noise
+directories already skipped), regex-scans file by file, line by line for AI/LLM call
+sites. Per file, first collects imports/base_url as context, then resolves each call's
+provider and channel (cli/direct/local), and finally assembles a bipartite graph
+{file node, provider node, edge} for ai_usage_html to render as a dark HUD relationship
+graph.
 
-三通道（對齊 dispatch_policy 既有代碼審計 + user 2026-07-16）：
-  cli   ＝合規（Claude Code CLI / <x>-cli subprocess，CC subscription 通道）
-  direct＝違規（直呼遠端 metered API：Anthropic / OpenAI / Google 等）
-  local ＝中性（本地模型 ollama localhost，無計費）
+Three channels (aligned with dispatch_policy's existing-code-audit + the user's
+2026-07-16 directive):
+  cli   = compliant (Claude Code CLI / <x>-cli subprocess, the CC subscription channel)
+  direct= violation (calling a remote metered API directly: Anthropic / OpenAI / Google, etc.)
+  local = neutral (a local model on ollama localhost, unmetered)
 
-⛔ 頂層不 import engine（engine 反向 lazy import 本模組，避免循環）。
-⚠ 名稱級 regex＝行級線索非執行證明（read_code_advisory 誠實攤盲區）。
+⛔ The top level does not import engine (engine lazy-imports this module in reverse, to
+avoid a cycle).
+⚠ Name-level regex = a line-level clue, not proof of execution (read_code_advisory honestly
+lays out the blind spot).
 """
 from __future__ import annotations
 
@@ -30,11 +36,12 @@ from .ai_usage_patterns import (
     provider_meta,
 )
 
-_SEVERITY = {"direct": 3, "local": 2, "cli": 1}  # edge/provider 取「最嚴重」通道
+_SEVERITY = {"direct": 3, "local": 2, "cli": 1}  # an edge/provider takes its "most severe" channel
 
 
 def _host_of(url: str) -> str:
-    """從 base_url 取 host[:port]（帶 scheme 才 urlparse，裸 host 直接切）。"""
+    """Extract host[:port] from a base_url (urlparse only if a scheme is present; a bare
+    host is sliced directly)."""
     u = url.strip()
     try:
         net = urlparse(u).netloc if "://" in u else u.split("/", 1)[0]
@@ -44,7 +51,8 @@ def _host_of(url: str) -> str:
 
 
 def _detect_base_url(text: str) -> tuple[str | None, bool]:
-    """掃全檔 base_url，回 (compat_provider, is_local)。多個取第一個有效的。"""
+    """Scan the whole file for base_url, return (compat_provider, is_local). If there are
+    multiple, take the first valid one."""
     base_provider: str | None = None
     base_local = False
     for m in BASE_URL_RE.finditer(text):
@@ -58,7 +66,8 @@ def _detect_base_url(text: str) -> tuple[str | None, bool]:
 
 
 def _detect_imports(text: str) -> set[str]:
-    """該檔拉了哪家 base SDK（供共用呼叫簽名解析 provider 的 FP 護欄）。"""
+    """Which base SDK this file pulls in (feeds the false-positive guard used when
+    resolving a provider from a shared call signature)."""
     found: set[str] = set()
     for rx, marker in IMPORT_MARKERS:
         if rx.search(text):
@@ -68,10 +77,13 @@ def _detect_imports(text: str) -> set[str]:
 
 def _resolve_openai_call(imports: set[str], base_provider: str | None,
                          base_local: bool) -> tuple[str | None, str]:
-    """openai-style 呼叫（OpenAI ctor / chat.completions.create）解析真 provider+通道。
+    """Resolve the real provider+channel for an openai-style call (OpenAI ctor /
+    chat.completions.create).
 
-    base_url 是 OpenAI-compat 分家的權威：localhost→ollama/local、compat host→該廠/direct、
-    皆無→純 OpenAI/direct。少了這步，DeepSeek/Groq/Ollama 騎 openai SDK 會全誤判成 OpenAI。
+    base_url is the authority for telling OpenAI-compat providers apart: localhost ->
+    ollama/local, a compat host -> that vendor/direct, neither -> plain OpenAI/direct.
+    Without this step, DeepSeek/Groq/Ollama riding the openai SDK would all be
+    misclassified as OpenAI.
     """
     if base_local:
         return "ollama", "local"
@@ -84,7 +96,8 @@ def _resolve_openai_call(imports: set[str], base_provider: str | None,
 
 def _resolve(kind: str, match, imports: set[str], base_provider: str | None,
              base_local: bool) -> tuple[str | None, str]:
-    """kind → (provider, channel)。provider=None 表示無足夠上下文、該呼叫略過。"""
+    """kind -> (provider, channel). provider=None means there isn't enough context and this
+    call should be skipped."""
     if kind in ("cc_sdk", "cc_agent", "claude_subprocess"):
         return "anthropic", "cli"
     if kind == "generic_cli":
@@ -105,29 +118,33 @@ def _resolve(kind: str, match, imports: set[str], base_provider: str | None,
 
 
 def _file_desc(text: str, rel: str) -> str:
-    """一行灰字功能敘述：優先取 module docstring/檔頭註解首句，否則由目錄推斷。"""
+    """A one-line gray description of the file's purpose: prefers the first sentence of the
+    module docstring/header comment, otherwise infers one from the directory."""
     for raw in text.splitlines()[:40]:
         s = raw.strip()
         if not s:
             continue
-        # Python module docstring / JS-TS 檔頭註解首句
+        # First sentence of a Python module docstring / JS-TS header comment
         for pre in ('"""', "'''", "//", "/*", "*", "#"):
             if s.startswith(pre):
                 s = s.lstrip('"\'/*# ').strip()
                 break
         else:
-            # 撞到第一行實碼（非註解）→ 停止找 docstring，走目錄推斷
+            # Hit the first line of real code (not a comment) -> stop looking for a
+            # docstring, fall back to directory inference
             s = ""
-        # 去尾端 docstring/註解收尾標記（單行 docstring 如 \"\"\"desc.\"\"\"）
+        # Strip trailing docstring/comment closing marks (single-line docstring like
+        # \"\"\"desc.\"\"\")
         s = s.rstrip().rstrip('"\'').rstrip("*/").rstrip('"\'').strip()
         if s and len(s) >= 4 and not s.startswith(("import ", "from ", "package ")):
             return s[:48]
     parent = os.path.basename(os.path.dirname(rel)) or "root"
-    return f"{parent} · AI 消費端"
+    return f"{parent} · AI consumer"
 
 
 def _scan_one_file(abs_path: str, rel: str) -> list[dict]:
-    """掃單檔 → sites[{line, provider, channel, snippet, compliance}]（無命中回 []）。"""
+    """Scan a single file -> sites[{line, provider, channel, snippet, compliance}] (returns
+    [] on no match)."""
     try:
         with open(abs_path, encoding="utf-8", errors="replace") as f:
             text = f.read()
@@ -140,7 +157,7 @@ def _scan_one_file(abs_path: str, rel: str) -> list[dict]:
     base_provider, base_local = _detect_base_url(text)
 
     sites: list[dict] = []
-    seen: set[tuple[int, str, str]] = set()  # (line, provider, channel) 去重
+    seen: set[tuple[int, str, str]] = set()  # (line, provider, channel) dedup
     for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line:
@@ -150,10 +167,11 @@ def _scan_one_file(abs_path: str, rel: str) -> list[dict]:
             if not m:
                 continue
             if need_import and need_import not in imports:
-                continue  # FP 護欄：缺對應 import 不算（.generate_content 撞測試名等）
+                continue  # FP guard: doesn't count without the matching import (e.g.
+                # .generate_content colliding with a test name)
             provider, channel = _resolve(kind, m, imports, base_provider, base_local)
             if not provider:
-                continue  # 無足夠上下文解析 provider → 誠實略過
+                continue  # not enough context to resolve a provider -> skip honestly
             key = (lineno, provider, channel)
             if key in seen:
                 break
@@ -165,20 +183,22 @@ def _scan_one_file(abs_path: str, rel: str) -> list[dict]:
                 "compliance": COMPLIANCE_LABEL.get(channel, channel),
                 "snippet": " ".join(line.split())[:140],
             })
-            break  # 每行取第一個命中，避免同行重複計
+            break  # take the first match per line, to avoid double-counting the same line
     return sites
 
 
 def scan_ai_usage(root: str, iter_files, *, scope_file: str | None = None) -> dict:
-    """掃 repo 用了哪些 AI/LLM + dispatch_policy 合規維度。
+    """Scan which AI/LLM providers a repo uses, plus its dispatch_policy compliance axis.
 
-    root      : repo 絕對路徑（入 meta / 相對路徑計算）。
-    iter_files: 可疊代的檔案絕對路徑（engine 傳 _iter_source_files(root)；測試可傳 list）。
-    scope_file: 給了才只掃該檔（除錯用）。
+    root      : the repo's absolute path (goes into meta / used for relative-path math).
+    iter_files: an iterable of absolute file paths (engine passes
+                _iter_source_files(root); tests may pass a list).
+    scope_file: if given, scan only that file (for debugging).
 
-    回 dict（可 json.dumps）：{meta, nodes, edges, stats, read_code_advisory, verification_reminder}
-      - nodes/edges ＝ ai_usage_html 直接吃的二分圖（file 節點 + provider 節點）
-      - stats       ＝ CLI 文字 formatter / JSON 消費者用（site 級計數）
+    Returns a dict (json.dumps-able): {meta, nodes, edges, stats, read_code_advisory, verification_reminder}
+      - nodes/edges = the bipartite graph (file nodes + provider nodes) that ai_usage_html
+        consumes directly
+      - stats       = for the CLI text formatter / JSON consumers (site-level counts)
     """
     scope_abs = os.path.abspath(scope_file) if scope_file else None
 
@@ -193,22 +213,24 @@ def scan_ai_usage(root: str, iter_files, *, scope_file: str | None = None) -> di
             rel = os.path.relpath(abs_path, root).replace("\\", "/")
             file_sites[rel] = sites
 
-    # ── 組節點/邊 ──
+    # ── assemble nodes/edges ──
     nodes: list[dict] = []
     edges: list[dict] = []
-    prov_channels: dict[str, list[str]] = {}   # provider → 出現過的通道
-    prov_files: dict[str, set[str]] = {}        # provider → 消費它的檔 rel
+    prov_channels: dict[str, list[str]] = {}   # provider -> channels it has appeared on
+    prov_files: dict[str, set[str]] = {}        # provider -> rel paths of files consuming it
 
     cli_sites = direct_sites = local_sites = 0
     for fid, (rel, sites) in enumerate(sorted(file_sites.items()), 1):
-        # 讀原檔取 desc（已在 scan 讀過一次，這裡再讀 40 行成本可忽略；出錯給空）
+        # Re-read the original file to get desc (already read once during scan; re-reading
+        # 40 lines here is negligible cost; give empty on error)
         abs_p = os.path.join(root, rel)
         try:
             with open(abs_p, encoding="utf-8", errors="replace") as f:
                 head = f.read()
         except OSError:
             head = ""
-        # per-file → provider 聚合，取每個 (file,provider) pair 的最嚴重通道當 edge
+        # aggregate per-file -> provider, take each (file,provider) pair's most severe
+        # channel as its edge
         pair_channel: dict[str, str] = {}
         for s in sites:
             p, ch = s["provider"], s["channel"]
@@ -236,7 +258,7 @@ def scan_ai_usage(root: str, iter_files, *, scope_file: str | None = None) -> di
         for p, ch in pair_channel.items():
             edges.append({"from": node_id, "to": p, "channel": ch})
 
-    # provider 節點（channel＝其所有 site 的最嚴重通道）
+    # provider nodes (channel = the most severe channel across all its sites)
     for p in sorted(prov_channels):
         chans = prov_channels[p]
         worst = max(chans, key=lambda c: _SEVERITY[c])
@@ -268,14 +290,17 @@ def scan_ai_usage(root: str, iter_files, *, scope_file: str | None = None) -> di
         "edges": edges,
         "stats": stats,
         "read_code_advisory": [
-            "AI 用量掃描是名稱級 regex 行級線索、非執行證明：字串拼接 base_url / 動態 import / "
-            "經 wrapper 間接 hit API 會漏；判 direct（違規）前務必人工讀碼確認確實走 metered "
-            "endpoint 而非 CLI 通道。",
-            "本地模型（ollama localhost）標為 local（無計費·非違規）；direct 才是 dispatch_policy "
-            "關切的計費通道。",
+            "The AI-usage scan is a name-level regex line-level clue, not proof of "
+            "execution: a concatenated base_url string, a dynamic import, or hitting the "
+            "API indirectly through a wrapper can all slip past it. Before flagging "
+            "something as direct (a violation), read the code yourself to confirm it "
+            "really hits a metered endpoint and not a CLI channel.",
+            "Local models (ollama on localhost) are labeled local (unmetered, not a "
+            "violation); direct is the metered channel dispatch_policy cares about.",
         ],
         "verification_reminder": (
-            "AI 用量掃描給的是帶通道分級的線索、非合規定論：計費通道最終看 runtime 實際打哪個 "
-            "endpoint。cli=合規 / direct=違規 / local=本地無計費。"
+            "The AI-usage scan gives channel-graded clues, not a compliance verdict: the "
+            "billing channel ultimately depends on which endpoint the runtime actually "
+            "hits. cli=compliant / direct=violation / local=local, unmetered."
         ),
     }

@@ -1,23 +1,33 @@
-"""FieldRead-lite — CodeSextant 的輸出壓縮層（MIT、零依賴自持實作）。
+"""FieldRead-lite: CodeSextant's output compression layer (MIT, self-contained,
+zero dependencies).
 
-緣起：CodeSextant 的長輸出（callgraph 傳遞鏈／impact 一堆 caller／map 一堆符號）會吃 token。
-採用的壓縮思路來自 **FieldRead**：「按語意命名空間分比例配預算 ＋ 超預算的部分用
-麵包屑（breadcrumb，只留一行路徑摘要）省略、需要時再展開」。
+Why it exists: CodeSextant's long outputs (callgraph transitive chains, impact
+with a pile of callers, map with a pile of symbols) eat tokens. The compression
+idea comes from **FieldRead**: split the budget proportionally across semantic
+namespaces, elide whatever exceeds the budget behind a breadcrumb (a one-line
+path summary), and expand it on demand.
 
-為何自己實作一份，而不是相依於既有的 FieldRead 套件（2026-06-19 定案）：
-  - 授權會傳染：該套件是 **AGPL-3.0**（強傳染式開源授權），相依會把 CodeSextant
-    從 MIT 一路傳染成 AGPL，直接打死「任何人／任何 agent 都能拿去用」的定位——
-    AGPL 會卡住商用與閉源整合。
-  - 依賴會爆肥：它連帶要求兩家 LLM SDK ＋ 一整套 web 框架。一個代碼地圖工具
-    不該為了「把輸出變短」而扛這些。
-  - 演算法本身很簡單（純字串／條目處理），自持一份的成本遠低於上面兩個代價。
+Why this is a local reimplementation rather than a dependency on the existing
+FieldRead package (decided 2026-06-19):
+  - Licences are contagious. That package is **AGPL-3.0** (a strong copyleft
+    licence). Depending on it would pull CodeSextant from MIT to AGPL and kill
+    the "anyone, and any agent, can use this" position outright. AGPL blocks
+    commercial and closed-source integration.
+  - The dependency tree balloons. It transitively requires two LLM SDKs and a
+    full web framework. A code-map tool should not carry that just to make its
+    output shorter.
+  - The algorithm itself is simple (plain string and item handling), so carrying
+    our own copy costs far less than either of the above.
 
-⛔ 這裡的取捨對後人的一般化教訓：借「想法」不會傳染授權，借「程式碼」會。
-   工具型專案想保持任何人都能用，相依清單就是它的定位聲明。
+⛔ The general lesson here: borrowing an *idea* does not spread a licence,
+   borrowing *code* does. For a tool that wants to stay usable by anyone, the
+   dependency list is a statement of position.
 
-⛔ 不抄 aider TreeContext（只壓代碼顯示）；用 FieldRead 的「語意分區」思路，但分區是**代碼語意**
-（high 信心／low／test／prod／entrypoint／UNKNOWN）。純顯示層壓縮——engine 仍回完整 dict，
---json/--full 拿全部，壓的只是給人看的摘要。
+⛔ Do not copy aider's TreeContext (it only compresses code display). Use
+FieldRead's semantic-partition idea, but partition by **code semantics**
+(high confidence / low / test / prod / entrypoint / UNKNOWN). This is display-layer
+compression only. The engine still returns the complete dict, --json/--full still
+return everything, and only the human-readable summary is compressed.
 """
 from __future__ import annotations
 
@@ -26,9 +36,11 @@ from dataclasses import dataclass
 
 @dataclass
 class Section:
-    """一個語意分區的待壓內容。
+    """The pending content of one semantic partition.
 
-    priority 高＝優先保留 + 分更多預算；min_keep＝至少保留幾個（重要分區設高，確保不被擠掉）。
+    Higher priority means kept first and given more budget. min_keep is how many
+    items are kept no matter what. Set it high on important partitions so they
+    cannot be squeezed out.
     """
     name: str
     label: str
@@ -42,18 +54,24 @@ class CompressedSection:
     name: str
     label: str
     shown: list
-    elided: int   # 省略幾個（麵包屑）
+    elided: int   # how many were elided (behind the breadcrumb)
     total: int
 
 
 def compress(sections: list[Section], *, budget: int, full: bool = False) -> list[CompressedSection]:
-    """按語意分區比例預算壓縮 + 麵包屑可展開（FieldRead-lite 核心）。
+    """Compress by proportional per-partition budget, with an expandable breadcrumb
+    (the core of FieldRead-lite).
 
-    full=True 或總條目 <= budget → 全給不壓。否則：
-      ① 各分區先給 min_keep（保證重要分區不被擠掉）；
-      ② 剩餘預算按 priority×剩餘量 加權分給各分區（高 priority 先吃、分更多）；
-      ③ 超分配的截斷、記 elided（麵包屑「…另 N 個省略」）。
-    回 list[CompressedSection]（維持原分區順序）。budget<=0 視為只留 min_keep。
+    full=True, or a total item count <= budget, returns everything uncompressed.
+    Otherwise:
+      1. give every partition its min_keep first (so important ones cannot be
+         squeezed out);
+      2. distribute the remaining budget weighted by priority × remaining items
+         (higher priority is served first and gets more);
+      3. truncate whatever exceeds its allocation and record it in elided (the
+         "…N more elided" breadcrumb).
+    Returns list[CompressedSection] in the original partition order. budget <= 0 is
+    treated as "keep min_keep only".
     """
     secs = list(sections)
     total = sum(len(s.items) for s in secs)
@@ -62,12 +80,13 @@ def compress(sections: list[Section], *, budget: int, full: bool = False) -> lis
 
     alloc: dict[str, int] = {s.name: 0 for s in secs}
 
-    # ① min_keep 先保（硬下限——即使撐破 budget 也保重要分區；min_keep 是「絕對要看到」的保證）
+    # 1. min_keep first, a hard floor. Important partitions are kept even if that
+    #    overruns the budget; min_keep is the "must be visible" guarantee.
     for s in secs:
         alloc[s.name] = min(s.min_keep, len(s.items))
     remaining = budget - sum(alloc.values())
 
-    # ② 剩餘按 priority×剩餘量 加權分配（高 priority 先吃）
+    # 2. Distribute the rest weighted by priority × remaining items (higher priority served first).
     while remaining > 0:
         hungry = [s for s in secs if alloc[s.name] < len(s.items)]
         if not hungry:
@@ -96,17 +115,19 @@ def compress(sections: list[Section], *, budget: int, full: bool = False) -> lis
 
 def render(sections: list[Section], *, budget: int, full: bool = False,
            item_fmt=str, indent: str = "  ") -> list[str]:
-    """壓縮 + 渲染成文字行（各分區標題 + 條目 + 麵包屑）。回 list[str]。
+    """Compress, then render to text lines (partition heading + items + breadcrumb).
+    Returns list[str].
 
-    item_fmt：把單個條目轉成顯示字串的函數（預設 str）。空分區（total=0）不印。
+    item_fmt is the function that turns a single item into its display string
+    (default str). Empty partitions (total=0) are not printed.
     """
     lines: list[str] = []
     for cs in compress(sections, budget=budget, full=full):
         if cs.total == 0:
             continue
-        head = f"{indent}{cs.label}：{cs.total} 個"
+        head = f"{indent}{cs.label}: {cs.total}"
         if cs.elided:
-            head += f"（顯示 {len(cs.shown)}、另 {cs.elided} 省略，--full 看全部）"
+            head += f" (showing {len(cs.shown)}, {cs.elided} elided; use --full to see all)"
         lines.append(head)
         for it in cs.shown:
             lines.append(f"{indent}  {item_fmt(it)}")

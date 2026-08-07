@@ -1,15 +1,20 @@
-"""序3 死碼線索層測試 — 紅藍 CBUA 最佳解的安全閘回歸。
+"""Dead-code clue layer: regression tests for the safety gates.
 
-核心要守的不變式（紅隊定調）：
-  - 紅隊 B2：真解析引擎不可用時，⛔ 不可有任何 LIKELY_UNUSED（否則把無引擎的專案每個
-    export 標可刪＝災難）→ 全 UNKNOWN_NO_RESOLVER。
-  - 假陽性回歸（2026-06-19 序3 實跑 daemon.py SERVICE_NAME）：jedi 二段式定位不到的 module
-    級變數，high=0 不代表真沒引用 → 必須 UNKNOWN_UNRESOLVED、⛔ 不可 LIKELY_UNUSED。
-  - 無 linter（ruff/eslint）→ UNKNOWN_NO_LINTER（誠實），⛔ 不退化成自造 AST 假陽性。
-  - entrypoint（pages/test_/裝飾器/__all__）→ PUBLIC_API、永不進刪除候選。
-  - 只有「真解析 + 定位到定義 + high=0」才敢給 LIKELY_UNUSED🟡。
+The invariants these tests hold, several of them settled during adversarial review:
+  - When no real resolver engine is available, nothing may come back as LIKELY_UNUSED.
+    Every orphan falls back to UNKNOWN_NO_RESOLVER. Without that gate, a project with
+    no engine would see every export marked deletable.
+  - False-positive regression (found on a real run against daemon.py's SERVICE_NAME):
+    a module-level variable that jedi's two-stage lookup cannot locate must be
+    UNKNOWN_UNRESOLVED, never LIKELY_UNUSED. high=0 does not prove nobody references it.
+  - No linter (ruff or eslint) means UNKNOWN_NO_LINTER, which is the honest answer. The
+    scanner does not fall back to a hand-rolled AST pass that invents false positives.
+  - Entrypoints (pages, test_ files, decorators, __all__) are PUBLIC_API and never enter
+    the deletion candidate list.
+  - LIKELY_UNUSED needs all three: real resolution, a located definition, and high=0.
 
-全自包含、可重複（照 test_hardening.py 風格：CODESEXTANT_HOME 隔離庫）。
+Self-contained and repeatable, following the style of test_hardening.py: CODESEXTANT_HOME
+is redirected to a temporary database per test.
 """
 import os
 import shutil
@@ -25,7 +30,7 @@ from codesextant import deadcode, engine  # noqa: E402
 
 @pytest.fixture()
 def db_home(tmp_path, monkeypatch):
-    """隔離庫目錄，避免污染真實 ~/.codesextant。"""
+    """Redirect the database directory so tests never touch the real ~/.codesextant."""
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
 
 
@@ -40,7 +45,7 @@ def _by_name(result):
     return {o["name"]: o["verdict"] for o in result["orphans"]}
 
 
-# ─────────────── classify_orphan 純單元（最快、最直接守不變式）───────────────
+# ---- classify_orphan, pure unit tests: the fastest guard on the invariants ----
 class TestClassifyOrphan:
     def test_entry_always_public(self):
         v = deadcode.classify_orphan({"engine": "jedi", "definition": None},
@@ -48,7 +53,7 @@ class TestClassifyOrphan:
         assert v["verdict"] == "PUBLIC_API"
 
     def test_no_engine_unknown_no_resolver(self):
-        # 安全閘①：無真解析引擎 → 不判可刪
+        # Safety gate 1: no real resolver, so deletability is not judged.
         v = deadcode.classify_orphan({}, is_entry=False, entry_reason=None)
         assert v["verdict"] == "UNKNOWN_NO_RESOLVER"
 
@@ -58,8 +63,9 @@ class TestClassifyOrphan:
         assert v["verdict"] == "UNKNOWN_NO_RESOLVER"
 
     def test_error_unknown_unresolved(self):
-        # 安全閘②：真解析了但 error（沒定位到定義）→ UNKNOWN，不是 LIKELY_UNUSED
-        v = deadcode.classify_orphan({"engine": "jedi", "error": "找不到 def/class 定義行"},
+        # Safety gate 2: resolution ran but errored (no definition located), so the
+        # verdict is UNKNOWN, not LIKELY_UNUSED.
+        v = deadcode.classify_orphan({"engine": "jedi", "error": "no def/class definition line found"},
                                      is_entry=False, entry_reason=None)
         assert v["verdict"] == "UNKNOWN_UNRESOLVED"
 
@@ -77,14 +83,14 @@ class TestClassifyOrphan:
         assert v["verdict"] == "KEEP"
 
     def test_zero_high_with_def_likely_unused(self):
-        # 只有「真解析 + 有定義 + high=0」才敢 LIKELY_UNUSED
+        # LIKELY_UNUSED only when all three hold: real resolution, a definition, high=0.
         v = deadcode.classify_orphan(
             {"engine": "jedi", "definition": {"path": "x", "line": 1}, "high_confidence": []},
             is_entry=False, entry_reason=None)
         assert v["verdict"] == "LIKELY_UNUSED"
 
 
-# ─────────────── is_entrypoint 純單元 ───────────────
+# ---- is_entrypoint, pure unit tests ----
 class TestIsEntrypoint:
     def test_pages_route(self):
         ok, _ = deadcode.is_entrypoint("E:/x/pages/index.tsx")
@@ -125,14 +131,14 @@ class TestIsEntrypoint:
     def test_extra_env(self, monkeypatch):
         monkeypatch.setenv("CODESEXTANT_DEADCODE_ENTRYPOINT_EXTRA", "myroutes")
         ok, reason = deadcode.is_entrypoint("E:/x/myroutes/h.py")
-        assert ok and "使用者指定" in reason
+        assert ok and "user-specified" in reason
 
 
-# ─────────────── unused-import（ruff）───────────────
+# ---- unused imports, via ruff ----
 class TestUnusedImport:
     def test_ruff_catches_unused(self, tmp_path, db_home):
         if shutil.which("ruff") is None:
-            pytest.skip("ruff 未裝，跳過真值測試")
+            pytest.skip("ruff is not installed, skipping the ground-truth test")
         f = _write(tmp_path, "mod.py", """
             import os
             import sys
@@ -144,7 +150,7 @@ class TestUnusedImport:
         ui = r["unused_imports"]
         assert ui["available"] is True
         codes = [x["code"] for x in ui["findings"]]
-        assert "F401" in codes  # os 未使用
+        assert "F401" in codes  # os is imported but never used
 
     def test_linter_off_switch(self, tmp_path, db_home, monkeypatch):
         monkeypatch.setenv("CODESEXTANT_DEADCODE_LINTER", "off")
@@ -153,7 +159,8 @@ class TestUnusedImport:
         assert r["unused_imports"]["available"] is False
 
     def test_no_linter_unknown_not_fabricated(self, tmp_path, db_home, monkeypatch):
-        # ruff 不在 PATH → UNKNOWN_NO_LINTER（誠實），⛔ 不假裝掃乾淨、不自造 AST
+        # ruff missing from PATH gives UNKNOWN_NO_LINTER, the honest answer. It must not
+        # pretend the scan came back clean, nor fall back to a hand-rolled AST pass.
         monkeypatch.setattr(deadcode.shutil, "which", lambda name: None)
         f = _write(tmp_path, "mod.py", "import os\n")
         r = engine.find_deadcode(str(tmp_path), scope_file=f)
@@ -162,10 +169,10 @@ class TestUnusedImport:
         assert ui.get("verdict") == "UNKNOWN_NO_LINTER"
 
 
-# ─────────────── orphan 分級（Python jedi 真解析）───────────────
+# ---- orphan grading, with jedi doing the real Python resolution ----
 class TestOrphanPython:
     def test_real_orphan_likely_unused(self, tmp_path, db_home):
-        # 驗收(d)：真死 function（零引用）→ LIKELY_UNUSED；被呼叫的 → KEEP
+        # A genuinely dead function (zero references) grades LIKELY_UNUSED; a called one KEEP.
         f = _write(tmp_path, "mod.py", """
             def used():
                 return 1
@@ -183,7 +190,8 @@ class TestOrphanPython:
         assert by["used"] == "KEEP"
 
     def test_module_var_unknown_not_likely(self, tmp_path, db_home):
-        # 假陽性回歸（序3 daemon.py SERVICE_NAME）：module 級變數 → UNKNOWN_UNRESOLVED
+        # False-positive regression (daemon.py SERVICE_NAME): a module-level variable
+        # grades UNKNOWN_UNRESOLVED.
         f = _write(tmp_path, "consts.py", """
             SERVICE = "x"
 
@@ -197,7 +205,8 @@ class TestOrphanPython:
         assert by["SERVICE"] != "LIKELY_UNUSED"
 
     def test_entrypoint_decorator_public_api(self, tmp_path, db_home):
-        # 驗收(c)：帶 @app.route → PUBLIC_API（即使靜態零引用也不進刪除候選）
+        # An @app.route decorator makes it PUBLIC_API. Zero static references still does
+        # not put it in the deletion candidate list.
         f = _write(tmp_path, "api.py", """
             app = object()
 
@@ -211,7 +220,7 @@ class TestOrphanPython:
         assert by["handler"] == "PUBLIC_API"
 
     def test_entrypoint_filename_public_api(self, tmp_path, db_home):
-        # 驗收(c)：test_*.py 的符號 → PUBLIC_API
+        # Symbols inside test_*.py grade PUBLIC_API.
         f = _write(tmp_path, "test_thing.py", """
             def test_something():
                 assert True
@@ -234,12 +243,13 @@ class TestOrphanPython:
         assert by["exported"] == "PUBLIC_API"
 
 
-# ─────────────── 紅隊 B2：無真解析引擎 → 零 LIKELY_UNUSED（最關鍵安全閘）───────────────
+# ---- the most important safety gate: no real resolver means zero LIKELY_UNUSED ----
 class TestB2SafetyGate:
     def test_ts_without_tsmorph_no_likely_unused(self, tmp_path, db_home, monkeypatch):
-        # 紅隊 B2 核心：ts-morph 不可用時，TS 檔 orphan 必須全 UNKNOWN_NO_RESOLVER，
-        # ⛔ 不可有任何 LIKELY_UNUSED（否則把無引擎的 TS 專案每個 export 標可刪＝災難）。
-        monkeypatch.setenv("CODESEXTANT_TS_MORPH_DISABLED", "1")  # 強制 ts-morph 不可用
+        # When ts-morph is unavailable, every orphan in a TS file must come back
+        # UNKNOWN_NO_RESOLVER. A single LIKELY_UNUSED here would mark every export of an
+        # engine-less TS project as deletable.
+        monkeypatch.setenv("CODESEXTANT_TS_MORPH_DISABLED", "1")  # force ts-morph off
         f = _write(tmp_path, "mod.ts", """
             export function deadFn() { return 1; }
             export const X = 2;
@@ -248,7 +258,7 @@ class TestB2SafetyGate:
         engine.index_project(str(tmp_path))
         r = engine.find_deadcode(str(tmp_path), scope_file=f)
         verdicts = [o["verdict"] for o in r["orphans"]]
-        assert verdicts, "應有頂層符號被分級"
+        assert verdicts, "expected top-level symbols to be graded"
         assert "LIKELY_UNUSED" not in verdicts, verdicts
         assert all(v == "UNKNOWN_NO_RESOLVER" for v in verdicts), verdicts
 
@@ -266,7 +276,7 @@ class TestB2SafetyGate:
         assert not ok
 
 
-# ─────────────── find_deadcode 整體契約 ───────────────
+# ---- the overall find_deadcode contract ----
 class TestFindDeadcodeContract:
     def test_has_verification_reminder(self, tmp_path, db_home):
         f = _write(tmp_path, "mod.py", "def f():\n    return 1\n")
@@ -278,7 +288,7 @@ class TestFindDeadcodeContract:
     def test_no_scope_file_skips_orphan(self, tmp_path, db_home):
         _write(tmp_path, "mod.py", "import os\ndef f():\n    return 1\n")
         engine.index_project(str(tmp_path))
-        r = engine.find_deadcode(str(tmp_path))  # 不給 scope_file
+        r = engine.find_deadcode(str(tmp_path))  # no scope_file given
         assert r["orphans"] == []
         assert r["scope_file"] is None
 
@@ -287,16 +297,17 @@ class TestFindDeadcodeContract:
             engine.find_deadcode("E:/__no_such_dir_codesextant__")
 
 
-# ─────────────── 序4+5：TS 真解析 / barrel re-export / batch（需 node+ts-morph）───────────────
+# ---- real TS resolution, barrel re-exports and batch queries (needs node + ts-morph) ----
 class TestSeq4Seq5TsMorph:
     @pytest.fixture(autouse=True)
     def _need_tsmorph(self):
         from codesextant import references
         if not references.ts_morph_available():
-            pytest.skip("node/ts-morph 不可用，跳過 TS 真解析測試")
+            pytest.skip("node/ts-morph unavailable, skipping the real TS resolution tests")
 
     def test_reexport_only(self, tmp_path, db_home):
-        # 序4：符號只被 barrel re-export（無真消費）→ REEXPORT_ONLY、⛔ 不誤判 LIKELY_UNUSED
+        # A symbol only re-exported through a barrel, with no real consumer, grades
+        # REEXPORT_ONLY rather than being misjudged as LIKELY_UNUSED.
         _write(tmp_path, "foo.ts", "export function onlyReexported() { return 1; }\n")
         _write(tmp_path, "barrel.ts", "export { onlyReexported } from './foo';\n")
         engine.index_project(str(tmp_path))
@@ -304,7 +315,7 @@ class TestSeq4Seq5TsMorph:
         assert _by_name(r)["onlyReexported"] == "REEXPORT_ONLY"
 
     def test_real_consumer_keep(self, tmp_path, db_home):
-        # 真被 import 消費 → KEEP（即使也被 re-export）
+        # Actually imported and consumed grades KEEP, even when it is also re-exported.
         _write(tmp_path, "bar.ts", "export function reallyUsed() { return 2; }\n")
         _write(tmp_path, "consumer.ts",
                "import { reallyUsed } from './bar';\n"
@@ -314,14 +325,15 @@ class TestSeq4Seq5TsMorph:
         assert _by_name(r)["reallyUsed"] == "KEEP"
 
     def test_true_orphan_ts_likely_unused(self, tmp_path, db_home):
-        # TS 真死（export 了、沒人 import、沒 re-export）→ LIKELY_UNUSED
+        # Genuinely dead TS: exported, nobody imports it, nobody re-exports it.
         _write(tmp_path, "dead.ts", "export function deadTs() { return 3; }\n")
         engine.index_project(str(tmp_path))
         r = engine.find_deadcode(str(tmp_path), scope_file=str(tmp_path / "dead.ts"))
         assert _by_name(r)["deadTs"] == "LIKELY_UNUSED"
 
     def test_batch_matches_single(self, tmp_path, db_home):
-        # 序5：batch 一次查多符號的結果，與逐符號單查一致（同一引用數）
+        # Querying several symbols in one batch gives the same reference counts as
+        # querying them one at a time.
         from codesextant import references
         _write(tmp_path, "m.ts",
                "export function a() { return 1; }\n"
@@ -331,10 +343,11 @@ class TestSeq4Seq5TsMorph:
         single_a = references.ts_morph_references(root, "a", def_path=deffile)
         assert batch is not None and single_a is not None
         assert len(batch["a"]["high_confidence"]) == len(single_a["high_confidence"])
-        assert batch["a"]["high_confidence"], "a 被 b 呼叫，應有高信心引用"
+        assert batch["a"]["high_confidence"], "b calls a, so a needs a high-confidence reference"
 
     def test_batch_unknown_when_disabled(self, tmp_path, db_home, monkeypatch):
-        # ts-morph 關閉時 batch 回 None（呼叫端據此走 UNKNOWN，不假裝有結果）
+        # With ts-morph off the batch call returns None, which the caller turns into
+        # UNKNOWN instead of pretending it got an answer.
         from codesextant import references
         monkeypatch.setenv("CODESEXTANT_TS_MORPH_DISABLED", "1")
         _write(tmp_path, "m.ts", "export function a() { return 1; }\n")
@@ -342,7 +355,7 @@ class TestSeq4Seq5TsMorph:
             str(tmp_path), str(tmp_path / "m.ts"), ["a"]) is None
 
 
-# ─────────────── 序6：自我邊界感知（reliability 自評 + read_code_advisory 盲區攤開）───────────────
+# ---- knowing its own limits: the reliability rating and the blind-spot advisory ----
 class TestSeq6Boundary:
     def test_refs_reliability_present(self, tmp_path, db_home):
         _write(tmp_path, "m.py", "def used():\n    return 1\n\n\ndef caller():\n    return used()\n")
@@ -353,7 +366,8 @@ class TestSeq6Boundary:
         assert r["reliability"].get("advice")
 
     def test_reliability_name_match_low(self):
-        # name-match 引擎（無真解析）→ low，務必讀碼
+        # The name-match engine does no real resolution, so reliability is low and you
+        # have to read the code.
         rel = engine._refs_reliability(
             {"engine": "name-match", "definition": {"path": "x"}, "high_confidence": [{"x": 1}]})
         assert rel["level"] == "low"
@@ -364,7 +378,8 @@ class TestSeq6Boundary:
         assert rel["level"] == "low"
 
     def test_reliability_zero_refs_medium(self):
-        # 真解析零引用 → medium（可能動態/反射呼叫看不到，讀碼確認）
+        # Real resolution with zero references is medium: dynamic or reflective calls are
+        # invisible to it, so confirm by reading the code.
         rel = engine._refs_reliability(
             {"engine": "jedi", "definition": {"path": "x"},
              "high_confidence": [], "low_confidence": []})
@@ -386,15 +401,15 @@ class TestSeq6Boundary:
         notes = deadcode.read_code_advisory(
             {"available": True},
             [{"verdict": "UNKNOWN_UNRESOLVED"}, {"verdict": "UNKNOWN_NO_RESOLVER"}])
-        assert any("判不出" in n for n in notes)
+        assert any("cannot decide" in n for n in notes)
 
     def test_advisory_flags_likely_unused(self):
         notes = deadcode.read_code_advisory({"available": True}, [{"verdict": "LIKELY_UNUSED"}])
-        assert any("線索非定論" in n for n in notes)
+        assert any("a clue, not a verdict" in n for n in notes)
 
     def test_advisory_flags_no_linter(self):
-        notes = deadcode.read_code_advisory({"available": False, "reason": "無 ruff"}, [])
-        assert any("無法判定" in n for n in notes)
+        notes = deadcode.read_code_advisory({"available": False, "reason": "no ruff"}, [])
+        assert any("could not be determined" in n for n in notes)
 
     def test_advisory_flags_reexport(self):
         notes = deadcode.read_code_advisory({"available": True}, [{"verdict": "REEXPORT_ONLY"}])

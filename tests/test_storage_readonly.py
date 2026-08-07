@@ -1,4 +1,4 @@
-"""Read-only store access — the prerequisite for out-of-process query workers.
+"""Read-only store access: the prerequisite for out-of-process query workers.
 
 ``ProjectStore.open`` writes on every call (schema script, column migration and
 two meta rows, then a commit).  That is correct for the single writer, but it

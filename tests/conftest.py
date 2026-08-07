@@ -2,7 +2,7 @@
 
 Both ``storage.default_db_dir()`` and ``supervisor._logger()`` resolve through
 ``CODESEXTANT_HOME``.  Without this fixture a plain ``pytest`` run writes into
-``~/.codesextant`` — most visibly by appending fabricated
+``~/.codesextant``, most visibly by appending fabricated
 ``heavy job stuck ... pid=7 ... active_for_sec=5400.0`` ERROR lines to the real
 ``supervisor.log`` (from the recycle tests), which then reads like a production
 incident during a postmortem.  Spawned daemon subprocesses inherit the variable,

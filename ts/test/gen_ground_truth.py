@@ -1,12 +1,15 @@
-"""黃金測試 ground truth 生成器（全 TS 重寫 P1）。
+"""Ground-truth generator for the golden tests (full TypeScript rewrite, P1).
 
-用「凍結的 Python 版 codesextant v0.15.0」對 fixtures/samples/ 下每個語言樣本抽符號，
-生成 fixtures/expected/<name>.json 當 ground truth。symbols.test.ts 用 TS 版抽同樣本後
-deep-equal 對照——一致即證 TS 版與 Python 版抽符號 parity。
+Runs the frozen Python codesextant v0.15.0 over every language sample under fixtures/samples/ and
+writes fixtures/expected/<name>.json as the ground truth. symbols.test.ts extracts the same samples
+with the TypeScript version and deep-equals the results. Agreement proves symbol parity between the
+two versions.
 
-樣本或 spec 改動後重跑本檔即可重生 ground truth：
-    python ts/test/gen_ground_truth.py      （在 CodeSextant 專案根跑，或任意 cwd 皆可，路徑自動相對定位）
-⚠ 用 C:/Python311（本機 codesextant 的 Python），且 Python 版需可 import（tree-sitter + tree-sitter-language-pack 已裝）。
+After changing a sample or a spec, rerun this file to regenerate the ground truth:
+    python ts/test/gen_ground_truth.py   (from the CodeSextant project root or any cwd; paths resolve
+                                          relative to this file)
+Note: use C:/Python311, the Python that has codesextant installed locally, and make sure the Python
+version imports (tree-sitter and tree-sitter-language-pack must be present).
 """
 import glob
 import json
@@ -16,7 +19,7 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
 HERE = os.path.dirname(os.path.abspath(__file__))          # .../CodeSextant/ts/test
-ROOT = os.path.dirname(os.path.dirname(HERE))              # .../CodeSextant（含 codesextant/ 套件）
+ROOT = os.path.dirname(os.path.dirname(HERE))              # .../CodeSextant (holds the codesextant/ package)
 sys.path.insert(0, ROOT)
 from codesextant.symbols import extract_symbols  # noqa: E402
 
@@ -38,4 +41,4 @@ for f in sorted(glob.glob(os.path.join(samples_dir, "*"))):
     total += len(syms)
     print(f"  {name}: {len(syms)} symbols -> expected/{name}.json")
 
-print(f"=== 共 {total} 符號，ground truth 生成完畢 ===")
+print(f"=== {total} symbols in total; ground truth generated ===")

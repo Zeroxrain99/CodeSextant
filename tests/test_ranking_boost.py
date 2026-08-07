@@ -1,6 +1,7 @@
-"""競品吸收 queue 4+5：query-aware PageRank（personalization）+ 邊權重符號品質 multipliers。
+"""Query-aware PageRank (personalization) plus the symbol quality multipliers
+that scale edge weights.
 
-純算法單元測試（不碰 SQLite/daemon）。
+Pure algorithm unit tests. Nothing here touches SQLite or the daemon.
 """
 import os
 import sys
@@ -18,7 +19,7 @@ def _sym(name, line, path="a.py"):
             "scope": "", "kind": "function"}
 
 
-# ─────────────── queue 5：符號品質係數 ───────────────
+# Symbol quality coefficients.
 class TestSymbolQuality:
     def test_private_underscore_low(self):
         assert ranking._symbol_quality_mult("_helper", 1) < 1.0
@@ -27,11 +28,12 @@ class TestSymbolQuality:
         assert ranking._symbol_quality_mult("calculate_total", 1) > 1.0
 
     def test_common_symbol_low(self):
-        # 過於常見（>門檻 檔定義）→ 打折，即使 well-named
+        # a name defined in more files than the threshold is discounted, even
+        # when it is well named
         assert ranking._symbol_quality_mult("calculate_total", 10) < ranking._symbol_quality_mult("calculate_total", 1)
 
     def test_short_plain_neutral(self):
-        # 短名、非私有、非常見、非 well-named → 1.0
+        # short, public, uncommon, and not well named, so the multiplier is 1.0
         assert ranking._symbol_quality_mult("run", 1) == 1.0
 
     def test_env_tunable(self, monkeypatch):
@@ -56,7 +58,7 @@ class TestWellNamed:
         assert not ranking._well_named("run")
 
 
-# ─────────────── queue 4：personalization / query-aware ───────────────
+# Personalization and query-aware ranking.
 class TestPersonalization:
     def test_none_when_no_focus(self):
         assert ranking._build_personalization([_sym("x", 1)], None, None) is None
@@ -74,7 +76,8 @@ class TestPersonalization:
 
 class TestQueryAwarePageRank:
     def test_focus_raises_rank(self):
-        # 無引用邊時純 teleport 決定排序——focus 符號 rank 應高於無 focus
+        # with no reference edges the teleport vector alone decides the order,
+        # so a focused symbol must outrank the same symbol unfocused
         syms = [_sym("alpha", 1), _sym("beta", 3)]
         refs = []
         base = ranking.compute_pagerank(syms, refs)
@@ -85,7 +88,8 @@ class TestQueryAwarePageRank:
         assert focused[aid] > base[aid]
 
     def test_no_personalization_backward_compat(self):
-        # 不傳 personalization＝原靜態行為（分數和 ~1.0、決定性）
+        # leaving personalization out keeps the original static behaviour:
+        # scores sum to roughly 1.0 and stay deterministic
         syms = [_sym("a", 1), _sym("b", 3)]
         scores = ranking.compute_pagerank(syms, [])
         assert len(scores) == 2
@@ -94,10 +98,11 @@ class TestQueryAwarePageRank:
     def test_rank_symbols_focus_param(self):
         syms = [_sym("alpha", 1), _sym("beta", 3)]
         ranked = ranking.rank_symbols(syms, [], focus_symbols=["alpha"])
-        assert ranked[0]["name"] == "alpha"  # focus 的排最前
+        assert ranked[0]["name"] == "alpha"  # the focused symbol sorts first
 
     def test_repeated_name_edges_are_aggregated_before_iteration(self):
-        """名稱圖的重複 occurrence 只應改權重，不該讓每輪重走五萬筆。"""
+        """Repeated occurrences in the name graph should only change the edge
+        weight. They must not make every iteration walk 50,000 rows again."""
         syms = [_sym("caller", 1, "caller.py"), _sym("target", 1, "target.py")]
         edge = {
             "src_path": "caller.py", "src_line": 1,
@@ -112,7 +117,8 @@ class TestQueryAwarePageRank:
         assert elapsed < 2.0, f"duplicate edges were replayed each iteration ({elapsed:.2f}s)"
 
     def test_aggregated_multiplicity_matches_expanded_occurrences(self):
-        """namegraph 可先折邊，但 multiplicity 必須保持原本 occurrence 權重。"""
+        """namegraph may collapse edges up front, but multiplicity has to carry
+        the same weight the original occurrences had."""
         syms = [
             _sym("caller", 1, "caller.py"),
             _sym("target_a", 1, "a.py"),
@@ -132,7 +138,9 @@ class TestQueryAwarePageRank:
         assert aggregated == expanded
 
     def test_sparse_graph_does_not_iterate_every_isolated_node(self):
-        """大型索引多數節點無邊時，PageRank 每輪只能走 active graph，不得掃十萬孤點。"""
+        """When most nodes in a large index carry no edges, each PageRank
+        iteration walks the active graph only, leaving the 100,000 isolated
+        nodes alone."""
         syms = [
             _sym("caller", 1, "caller.py"),
             _sym("target", 1, "target.py"),
@@ -153,7 +161,8 @@ class TestQueryAwarePageRank:
         assert elapsed < 1.5, f"isolated nodes were revisited every iteration ({elapsed:.2f}s)"
 
     def test_sparse_math_matches_dense_reference(self):
-        """active/inactive 聚合必須與舊 dense 公式一致，含 dangling、focus 與外部入流。"""
+        """The active/inactive aggregation has to agree with the older dense
+        formula, dangling nodes, focus and external inflow included."""
         syms = [
             _sym("caller", 1, "caller.py"),
             _sym("a", 1, "a.py"),
@@ -186,7 +195,7 @@ class TestQueryAwarePageRank:
                     new[target] += damping * score[source] * portion
             for i in range(4):
                 new[i] += damping * dangling * p[i]
-            new[1] += damping / len(refs)  # missing.py → a 的 external inflow
+            new[1] += damping / len(refs)  # external inflow from missing.py into a
             delta = sum(abs(new[i] - score[i]) for i in range(4))
             score = new
             if delta < 1e-12:

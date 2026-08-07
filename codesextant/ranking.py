@@ -1,15 +1,22 @@
-"""重要度排序模組 — PageRank 給「最重要的 N 個符號」。
+"""Importance ranking module: PageRank for "the N most important symbols".
 
-設計來源（抄 PoC / aider repomap 思路）：
-  - 把「被定義的符號」當圖的節點，引用邊（誰用了誰）當連結。
-  - 一個符號被越多「本身也重要」的符號引用 → 它越重要（PageRank 的遞迴定義）。
-  - aider 的 repomap 用同樣的 graph-rank 思路挑 token 預算內最該給 LLM 看的符號。
+Design origin (borrowed from the PoC / aider repomap approach):
+  - Treat each "defined symbol" as a graph node, and each reference edge
+    (who uses whom) as a link.
+  - A symbol referenced by more symbols that are themselves important is
+    more important (PageRank's recursive definition).
+  - aider's repomap uses the same graph-rank idea to pick which symbols
+    are worth showing the LLM within a token budget.
 
-實作刻意用純 Python power iteration（冪迭代），不引入 networkx/scipy 依賴
-（保持引擎輕量、好被 daemon 打包；符號數即使上萬，這個規模冪迭代也夠快）。
+The implementation deliberately uses plain Python power iteration instead
+of pulling in a networkx/scipy dependency (keeps the engine lightweight
+and easy to bundle into the daemon; power iteration at this scale is fast
+enough even with tens of thousands of symbols).
 
-職責（單一）：吃「符號清單 + 引用邊清單」，吐出帶 rank 分數、由高到低排序的符號。
-不碰 SQLite、不碰 jedi。所有狀態都在函數內局部，重入安全、無全域污染。
+Single responsibility: take a symbol list + a reference-edge list, emit
+symbols sorted high to low by rank score. Does not touch SQLite, does not
+touch jedi. All state is local to the functions, which makes them reentrant and
+free of global pollution.
 """
 from __future__ import annotations
 
@@ -18,7 +25,8 @@ from bisect import bisect_right
 from collections import Counter
 from heapq import nlargest
 
-# 高信心引用邊的權重（jedi 確認的指向比名稱比對可信，給更高權重）
+# Weight of high-confidence reference edges (a jedi-confirmed target is more trustworthy
+# than a name match, so it gets a higher weight)
 _CONFIDENCE_WEIGHT = {"high": 1.0, "low": 0.25}
 
 
@@ -37,17 +45,19 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _well_named(name: str) -> bool:
-    """命名規範的公開符號（含底線分隔或大小寫混合＝snake/camel/Pascal）。"""
+    """Well-formed public symbol (underscore-separated or mixed case = snake/camel/Pascal)."""
     if name.startswith("_"):
         return False
     return ("_" in name) or (name != name.lower() and name != name.upper())
 
 
 def _symbol_quality_mult(name: str, defines_count: int) -> float:
-    """queue 5（邊權重符號品質係數，aider 啟發式）——凸顯架構性公開 API、壓低低訊號/氾濫符號。
+    """queue 5 (edge-weight symbol-quality factor, an aider-inspired heuristic): surfaces
+    architecturally significant public APIs and downweights low-signal/generic symbols.
 
-    well-named 公開符號(len>=門檻) ×WELLNAMED；私有 _開頭 ×PRIVATE；在 >N 檔重複定義(過於常見、
-    如 utils/handle/run 氾濫名) ×COMMON。全做 config（L0 鐵律 #6 可調）。
+    Well-named public symbols (len>=threshold) get ×WELLNAMED; private, underscore-prefixed
+    symbols get ×PRIVATE; symbols redefined in >N files (overly generic names like
+    utils/handle/run) get ×COMMON. All configurable (L0 hard rule #6).
     """
     mult = 1.0
     if name.startswith("_"):
@@ -61,11 +71,15 @@ def _symbol_quality_mult(name: str, defines_count: int) -> float:
 
 def _build_personalization(symbols: list[dict], focus_symbols=None,
                            focus_files=None) -> dict | None:
-    """queue 4（query-aware PageRank）——把呼叫端顯式傳入的 focus set 轉成 personalization 向量。
+    """queue 4 (query-aware PageRank): turns a caller-supplied focus set into a
+    personalization vector.
 
-    ⛔ boost 來源是「呼叫端顯式說我在改 X」(focus_symbols/focus_files)，**非監聽對話/接 LLM**
-    （守零雲端/不接 LLM 鐵則；aider 是聊天前端才監聽對話，CodeSextant 是被呼叫的導航工具）。
-    focus 命中符號的 teleport 權重 +boost 倍。無 focus 回 None（退均勻 teleport＝原靜態行為）。
+    ⛔ The boost NEVER comes from listening to a conversation or calling an LLM. It only
+    comes from the caller explicitly saying "I'm working on X" (focus_symbols/focus_files).
+    This holds the zero-cloud / no-LLM hard rule: aider listens to chat because it is a chat
+    frontend, CodeSextant is a tool that gets called, not one that eavesdrops.
+    Symbols matching focus get their teleport weight boosted by `boost`x. No focus returns
+    None (falls back to uniform teleport = the original static behavior).
     """
     fs = set(focus_symbols or [])
     ff = {_norm(f) for f in (focus_files or [])}
@@ -84,8 +98,9 @@ def _build_personalization(symbols: list[dict], focus_symbols=None,
 
 
 def _symbol_id(sym: dict) -> str:
-    """符號的唯一識別：path::scope::name::line。
-    用 line 一起當 id，避免同檔同名（如多個同名 getter/setter）互相蓋掉。
+    """The symbol's unique identifier: path::scope::name::line.
+    Including the line in the id avoids same-file same-name symbols (e.g. multiple
+    getters/setters sharing a name) overwriting each other.
     """
     return f"{sym['path']}::{sym.get('scope', '')}::{sym['name']}::{sym['line']}"
 
@@ -99,26 +114,34 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
                              tol: float = 1.0e-6,
                              personalization: dict[str, float] | None = None
                              ) -> list[float]:
-    """對符號圖跑 PageRank，回傳與 symbols 同順序的 score list。
+    """Run PageRank on the symbol graph, return a score list in the same order as symbols.
 
-    邊方向：src（引用端所在檔的代表符號）→ def（被引用的符號定義）。
-    PageRank 讓分數從引用端流向被引用端，所以「被很多重要符號引用」的符號得高分。
-    src 對應不到某個符號節點時（如模組頂層呼叫），當作「外部入流」均攤計入。
+    Edge direction: src (the representative symbol of the file containing the reference) ->
+    def (the referenced symbol's definition). PageRank flows score from the referencing end
+    to the referenced end, so a symbol referenced by many important symbols scores high.
+    When src can't be mapped to a symbol node (e.g. a module-level top-level call), it is
+    counted as "external inflow" distributed evenly.
 
-    queue 5：邊權重疊「被引用符號的品質係數」（well-named 公開 ×10 / 私有 ×0.1 / 過於常見 ×0.1）。
-    queue 4：personalization（{symbol_id: 偏好權重}）灌進 teleport 向量＝query-aware 排序；
-             None 退均勻 teleport（原靜態行為，向後相容）。
+    queue 5: edge weight is further multiplied by the referenced symbol's quality factor
+    (well-named public ×10 / private ×0.1 / overly generic ×0.1).
+    queue 4: personalization ({symbol_id: preference weight}) feeds the teleport vector for
+    query-aware ranking; None falls back to uniform teleport (the original static behavior,
+    backward compatible).
 
-    symbols 為空回 []。內部以 list index 當 node id；公開 compute_pagerank 最後才轉字串 id，
-    rank_symbols 則直接消費 list，避免大型 map 為 57 萬節點建立兩份巨型字串 dict。
+    Returns [] for empty symbols. Uses list index as the internal node id; the public
+    compute_pagerank only converts to string ids at the very end, while rank_symbols
+    consumes the list directly, which avoids building two giant string dicts for a graph
+    with 570K nodes.
     """
     if not symbols:
         return []
 
     n = len(symbols)
 
-    # namegraph 已可用 multiplicity 折疊同一行的重複 occurrence；db 舊邊沒有此欄位則視為 1。
-    # 先聚合再建圖，既保留原本權重，也讓後續只處理 unique edge。
+    # namegraph can already fold repeated occurrences on the same line via multiplicity;
+    # older db edges lacking this field are treated as 1.
+    # Aggregating before building the graph preserves the original weights while letting
+    # everything downstream work with unique edges only.
     collapsed_refs: dict[tuple, int] = {}
     for e in refs:
         key = (e.get("src_path"), e.get("src_line"), e.get("def_path"),
@@ -131,8 +154,10 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
             multiplicity = 1
         collapsed_refs[key] = collapsed_refs.get(key, 0) + multiplicity
 
-    # path 正規化在 Windows 不便宜；57 萬符號通常只分布在數萬個檔，依原字串快取可避免
-    # 同一 path 在 defines/by_pos/by_body 三層被 os.path.abspath 重算數十次。
+    # Path normalization is not cheap on Windows; 570K symbols are typically spread across
+    # tens of thousands of files, so caching by the original string avoids the same path
+    # being recomputed by os.path.abspath dozens of times across the defines/by_pos/by_body
+    # layers.
     norm_cache: dict[object, str] = {}
 
     def _norm_cached(path) -> str:
@@ -156,8 +181,9 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
         if sp
     }
 
-    # 只為實際引用邊的 target/source 建定位表。舊版對 57 萬符號全部建 by_pos/by_body，
-    # 即使圖上只有數千條邊也付出全圖巨量 dict/list 成本。
+    # Build the position tables only for the target/source of actual reference edges. The
+    # old version built by_pos/by_body for all 570K symbols, paying the full-graph dict/list
+    # cost even when the graph only had a few thousand edges.
     by_pos: dict[tuple, int] = {}
     target_name_of: dict[int, str] = {}
     file_rep: dict[str, int] = {}
@@ -183,8 +209,9 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
     body_starts = {path: [row[0] for row in rows] for path, rows in by_body.items()}
     src_node_cache: dict[tuple[str, int], int | None] = {}
 
-    # queue 5：只計算真正成為 edge target 的名稱在幾個 distinct 檔定義；其他 57 萬節點
-    # 不會用到品質係數，無須建立全量 name→file 集合。
+    # queue 5: only compute, for names that actually become edge targets, how many distinct
+    # files define them; the other 570K nodes never use the quality factor, so there's no
+    # need to build a full name->file set.
     target_names = set(target_name_of.values())
     _seen_np: set = set()
     defines: Counter[str] = Counter()
@@ -199,8 +226,10 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
                 defines[name] += 1
 
     def _src_node(src_path, src_line):
-        """src_line 映射到「包含它的最內層符號」當來源節點；無 src_line / 找不到 → fallback
-        file_rep（向後相容：db 高信心邊有 src_line＝更精確的 caller；src_line=0 退 file_rep）。"""
+        """Maps src_line to "the innermost symbol that contains it" as the source node; no
+        src_line / not found -> falls back to file_rep (backward compatible: db
+        high-confidence edges carry src_line = a more precise caller; src_line=0 falls back
+        to file_rep)."""
         np = _norm_cached(src_path) if src_path else ""
         cache_key = (np, int(src_line or 0))
         if cache_key in src_node_cache:
@@ -218,10 +247,13 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
         src_node_cache[cache_key] = result
         return result
 
-    # 建稀疏加權鄰接 out_targets[i] = {j: summed_weight}；只有有邊的來源才占一個 dict。
-    # namegraph 會保留每次 occurrence 來表達引用次數，但同一 caller→target 可能因此有數萬筆
-    # 重複邊。PageRank 只需要總權重：先聚合可保持完全相同的數學語義，又避免每次迭代重走
-    # 全部 occurrence（大型 TS repo 曾因此讓 /get_map 超過 client 30s timeout）。
+    # Build the sparse weighted adjacency out_targets[i] = {j: summed_weight}; only sources
+    # with an edge occupy a dict entry.
+    # namegraph keeps every occurrence to express reference counts, so the same
+    # caller->target pair can end up with tens of thousands of duplicate edges. PageRank
+    # only needs the total weight: aggregating first preserves the exact same math while
+    # avoiding walking every occurrence on every iteration (a large TS repo once made
+    # /get_map exceed the client's 30s timeout because of this).
     out_targets: dict[int, dict[int, float]] = {}
     external_inflow: dict[int, float] = {}
     quality_cache: dict[tuple[str, int], float] = {}
@@ -233,7 +265,8 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
         if j is None:
             continue
         w = _CONFIDENCE_WEIGHT.get(confidence, 0.25) * multiplicity
-        # queue 5：疊被引用符號的品質係數（well-named 公開 ×10 / 私有 ×0.1 / 過於常見 ×0.1）
+        # queue 5: multiply in the referenced symbol's quality factor (well-named public
+        # ×10 / private ×0.1 / overly generic ×0.1)
         tname = target_name_of.get(j, "")
         quality_key = (tname, defines.get(tname, 1))
         try:
@@ -253,14 +286,16 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
         edges[j] = edges.get(j, 0.0) + w
 
     n_refs = max(1, sum(collapsed_refs.values()))
-    # queue 4：personalization teleport 向量 P（focus 偏好）；無則均勻 1/n（原靜態行為，向後相容）
+    # queue 4: personalization teleport vector P (focus preference); otherwise uniform 1/n
+    # (original static behavior, backward compatible)
     if personalization:
         raw_p = [personalization.get(_symbol_id(s), 1.0) for s in symbols]
         tot_p = sum(raw_p) or 1.0
         P = [value / tot_p for value in raw_p]
     else:
         P = [1.0 / n] * n
-    # 預先正規化稀疏 transition。沒有可用邊/外部入流時 P 本身就是固定點。
+    # Pre-normalize the sparse transition. When there are no usable edges/external inflow,
+    # P itself is the fixed point.
     transitions: dict[int, list[tuple[int, float]]] = {}
     for i, edges in out_targets.items():
         total_w = sum(edges.values())
@@ -273,8 +308,10 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
     if not active:
         return P
 
-    # 對無任何入/出邊的孤立節點，分數永遠是同一 scalar × P[j]。把數十萬孤點聚合成
-    # inactive_factor 一個狀態；每輪只走 active endpoints，結束才 materialize 全部結果。
+    # For isolated nodes with no in/out edges at all, the score is always the same
+    # scalar x P[j]. Aggregate hundreds of thousands of isolated nodes into a single
+    # inactive_factor state; each round only walks active endpoints, and the full result
+    # is materialized only at the end.
     active_p_sum = sum(P[i] for i in active)
     inactive_p_sum = max(0.0, 1.0 - active_p_sum)
     inactive_factor = 1.0
@@ -312,7 +349,7 @@ def compute_pagerank(symbols: list[dict], refs: list[dict],
                      *, damping: float = 0.85, max_iter: int = 100,
                      tol: float = 1.0e-6,
                      personalization: dict[str, float] | None = None) -> dict[str, float]:
-    """公開相容層：對符號圖跑 PageRank，回傳 {symbol_id: score}。"""
+    """Public compatibility layer: run PageRank on the symbol graph, return {symbol_id: score}."""
     scores = _compute_pagerank_scores(
         symbols, refs, damping=damping, max_iter=max_iter, tol=tol,
         personalization=personalization)
@@ -320,7 +357,7 @@ def compute_pagerank(symbols: list[dict], refs: list[dict],
 
 
 def _line_of(sid: str) -> int:
-    """從 symbol_id 取出 line（id 格式 path::scope::name::line）。"""
+    """Extract the line from a symbol_id (id format path::scope::name::line)."""
     try:
         return int(sid.rsplit("::", 1)[1])
     except (IndexError, ValueError):
@@ -329,17 +366,21 @@ def _line_of(sid: str) -> int:
 
 def rank_symbols(symbols: list[dict], refs: list[dict], *, top_n: int | None = None,
                  damping: float = 0.85, focus_symbols=None, focus_files=None) -> list[dict]:
-    """對符號排重要度，回傳帶 "rank" 分數、由高到低排序的符號清單。
+    """Rank symbols by importance, return a symbol list with a "rank" score, sorted high to low.
 
-    每個回傳 dict = 原符號欄位 + "rank"（float 分數）。top_n 給了就只回前 N 個。
-    focus_symbols/focus_files（queue 4 query-aware）：呼叫端顯式傳入「在改/在問的符號/檔」，
-    讓排序偏向相關處（轉成 personalization 向量）；不傳＝原靜態結構中心度排序。
+    Each returned dict = the original symbol fields + "rank" (a float score). If top_n is
+    given, only the top N are returned.
+    focus_symbols/focus_files (queue 4, query-aware): the caller explicitly passes "the
+    symbols/files being edited or asked about" to bias ranking toward relevant areas
+    (converted into a personalization vector); omitted = the original static
+    structural-centrality ranking.
     """
     personalization = _build_personalization(symbols, focus_symbols, focus_files)
     scores = _compute_pagerank_scores(
         symbols, refs, damping=damping, personalization=personalization)
     if top_n is not None:
-        # map 通常只要前 100~200 個；不要先複製 57 萬 dict 再全排序。
+        # A map usually only needs the top 100~200; don't copy all 570K dicts and sort
+        # everything first.
         chosen = nlargest(
             top_n, enumerate(symbols),
             key=lambda item: (scores[item[0]], -item[0]),

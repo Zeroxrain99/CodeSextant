@@ -1,7 +1,11 @@
-"""2026-06-22 主流語言一批抽符號測試（csharp/java/c/cpp/kotlin/swift/php/ruby/bash/lua）。
+"""Symbol extraction across the mainstream languages: csharp, java, c, cpp,
+kotlin, swift, php, ruby, bash and lua.
 
-節點型別/name field 全部 tools/_probe_langs.py 實測坐實（無腦推）。每語言驗證
-(kind, name) 集合含預期符號 + scope 歸屬；含 Ruby keyword-token 撞名回歸測試。
+Every node type and name field below was confirmed by running
+tools/_probe_langs.py against the real grammars rather than guessed from
+memory. Each language checks that the (kind, name) set contains the expected
+symbols and that scope is attributed correctly. A Ruby regression covering a
+keyword token that collides with a definition node type is included.
 """
 import os
 import sys
@@ -103,8 +107,8 @@ def test_c():
     ''', "c")
     assert ("struct", "Point") in k
     assert ("enum", "Color") in k
-    assert ("struct", "U") in k          # union 併入 struct kind
-    assert ("function", "helper") in k   # c_declarator 鏈取名
+    assert ("struct", "U") in k          # a union folds into the struct kind
+    assert ("function", "helper") in k   # named by walking the c_declarator chain
     assert ("function", "main") in k
 
 
@@ -121,12 +125,13 @@ def test_cpp():
     assert ("enum", "Color") in k
     assert ("struct", "Point") in k
     assert ("class", "Widget") in k
-    assert ("function", "doIt") in k       # Widget::doIt → c_declarator 取末段 identifier
+    assert ("function", "doIt") in k       # Widget::doIt takes the last identifier of the c_declarator
     assert ("function", "global_fn") in k
 
 
 def test_kotlin():
-    # Kotlin 定義節點「無 name field」、走 name_rules 的 child:<type> 取名
+    # Kotlin definition nodes carry no name field, so naming goes through the
+    # child:<type> entry in name_rules
     k = _kinds('''
         interface IThing { fun doIt() }
         enum class Color { RED, GREEN }
@@ -137,7 +142,7 @@ def test_kotlin():
         }
         fun globalFn(a: Int) = a
     ''', "kotlin")
-    assert ("class", "IThing") in k    # interface / enum class / data class 全 = class_declaration
+    assert ("class", "IThing") in k    # interface, enum class and data class are all class_declaration
     assert ("class", "Color") in k
     assert ("class", "Point") in k
     assert ("class", "Widget") in k
@@ -154,7 +159,9 @@ def test_kotlin_method_scope():
 
 
 def test_swift():
-    # Swift grammar 把 enum/struct/class/actor 全 parse 成 class_declaration → 一律 class（誠實限制）
+    # the Swift grammar parses enum, struct, class and actor all as
+    # class_declaration, so everything lands on class. That is a real limit of
+    # the grammar and the tests state it rather than papering over it.
     k = _kinds('''
         protocol IThing { func doIt() }
         enum Color { case red, green }
@@ -167,8 +174,8 @@ def test_swift():
         func globalFn(_ a: Int) -> Int { return a }
     ''', "swift")
     assert ("protocol", "IThing") in k
-    assert ("class", "Color") in k     # enum 被歸 class（grammar 合一限制）
-    assert ("class", "Point") in k     # struct 被歸 class
+    assert ("class", "Color") in k     # enum lands on class, per the grammar limit above
+    assert ("class", "Point") in k     # struct lands on class too
     assert ("class", "Widget") in k
     assert ("constructor", "init") in k
     assert ("function", "doIt") in k
@@ -198,7 +205,8 @@ def test_php():
 
 
 def test_ruby_no_anon_keyword_token():
-    # Ruby `module`/`class` keyword token type 與定義節點 type 撞名 → 只收 is_named（無 <anon>）
+    # in Ruby the `module` and `class` keyword tokens share a type name with the
+    # definition nodes, so only is_named nodes are collected and no <anon> appears
     syms = _syms('''
         module MyMod
           class Widget
@@ -214,9 +222,10 @@ def test_ruby_no_anon_keyword_token():
     assert ("class", "Widget") in k
     assert ("method", "initialize") in k
     assert ("method", "compute") in k
-    assert ("method", "helper") in k      # def self.helper → singleton_method
+    assert ("method", "helper") in k      # def self.helper parses as singleton_method
     assert ("method", "mod_fn") in k
-    assert not any(s["name"] == "<anon>" for s in syms), "keyword token 不得被誤收成 <anon>"
+    assert not any(s["name"] == "<anon>" for s in syms), \
+        "a keyword token was collected as <anon>"
     widget = next(s for s in syms if s["name"] == "Widget")
     assert widget["scope"] == "MyMod"
 
@@ -229,7 +238,7 @@ def test_bash():
         posix_fn() { echo bye; }
     ''', "bash")
     assert ("function", "explicit_fn") in k
-    assert ("function", "posix_fn") in k    # 兩種 bash 函數語法皆 function_definition
+    assert ("function", "posix_fn") in k    # both bash function syntaxes are function_definition
 
 
 def test_lua():
@@ -242,4 +251,4 @@ def test_lua():
     ''', "lua")
     assert ("function", "global_fn") in k
     assert ("function", "local_fn") in k
-    assert ("function", "M.method") in k    # dotted name 保留
+    assert ("function", "M.method") in k    # the dotted name is kept intact

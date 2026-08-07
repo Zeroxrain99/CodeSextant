@@ -2,7 +2,7 @@
   "name": "codesextant",
   "version": "0.16.0-ts.0",
   "private": true,
-  "description": "CodeSextant — 跨語言代碼地圖 + 規範符合度檢查（spec-conformance）。全 TS 重寫，主語言 TS、語言專屬精度引擎降為可選配件。唯讀導航圖：只看引用關聯/結構，不改碼、線索非決策。",
+  "description": "CodeSextant: a cross-language code map plus spec-conformance checking. Rewritten fully in TypeScript, with language-specific precision engines demoted to optional add-ons. A read-only navigation map: it reads reference relationships and structure, never edits code, and offers leads rather than decisions.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -36,5 +36,5 @@
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },
-  "//": "deps 版本為估值，P0 首次 npm install 時以實際可用版本校正（尤其 web-tree-sitter API 0.20 vs 0.25 不同，PoC 時對齊）。語言精度配件（codesextant-python jedi 橋等）為 optional add-on、不列核心 deps。"
+  "//": "Dependency versions are estimates, corrected against whatever is actually available at the first P0 npm install (the web-tree-sitter API differs between 0.20 and 0.25 in particular, and was pinned down during the PoC). Language precision add-ons, such as the codesextant-python jedi bridge, are optional and are not listed as core dependencies."
 }

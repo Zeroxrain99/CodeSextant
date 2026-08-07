@@ -66,7 +66,7 @@ def test_measure_reports_no_inflation_when_lanes_are_sharded(monkeypatch):
 
 
 def test_measure_survives_a_failing_request(monkeypatch):
-    """A timeout must be reported, not raised — the run has to finish."""
+    """A timeout must be reported rather than raised, so that the run still finishes."""
     def fake_get(_base, _path, _params, _timeout):
         return (0.0, "TimeoutError")
 

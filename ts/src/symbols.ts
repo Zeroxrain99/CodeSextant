@@ -1,64 +1,75 @@
-// 符號抽取模組 — tree-sitter 多語言全量快速符號表（全 TS 重寫 P1，平移自 Python codesextant/symbols.py）。
+// Symbol extraction module: a fast whole-file symbol table across languages via tree-sitter (full
+// TypeScript rewrite, P1; ported from Python codesextant/symbols.py).
 //
-// 平移原則（對照 Python 版黃金測試 ground truth）：
-//   - LANGUAGE_SPECS 16 語言 table 與 Python 版 1:1（tree-sitter 節點型別字串完全相同，可照抄）。
-//   - walk 邏輯（is_named 過濾 + always/scope_only/vars/py_assignment 四分支）逐句平移。
-//   - 輸出欄位沿用 snake_case（kind/name/line/end_line/scope）以對齊 Python 版 JSON 輸出。
+// Porting rules (checked against the Python version's golden-test ground truth):
+//   - The 16-language LANGUAGE_SPECS table is 1:1 with the Python version (the tree-sitter node type
+//     strings are identical and can be copied verbatim).
+//   - The walk logic (is_named filter + the always/scope_only/vars/py_assignment branches) is ported
+//     statement by statement.
+//   - Output fields keep snake_case (kind/name/line/end_line/scope) to match the Python version's JSON.
 //
-// 與 Python 版的刻意差異（不影響輸出 parity）：
-//   - Python 用 bytes + byte-slice 取名；TS 用 web-tree-sitter 的 node.text（string）直接取，
-//     行號用 node.startPosition.row + 1（0-based row）。ASCII / 非 ASCII 識別字、行號皆一致。
-//   - tree-sitter parse API：web-tree-sitter 是 async（Parser.init + Language.load(wasm)），
-//     故對外 parse 路徑為 async；walk 本身純同步。
-//   - wasm 檔名映射：16 語言中唯 csharp 的 wasm 檔名是 tree-sitter-c_sharp.wasm（其餘 grammar
-//     名與 wasm 檔名一致），故 spec 用 grammar 欄記錄 wasm 檔名中段（實測坐實，⛔別腦推）。
+// Deliberate differences from the Python version (no effect on output parity):
+//   - Python reads names from bytes with byte slicing; TypeScript reads node.text (a string) from
+//     web-tree-sitter directly, and takes line numbers from node.startPosition.row + 1 (row is
+//     0-based). ASCII and non-ASCII identifiers, and line numbers, come out the same either way.
+//   - The tree-sitter parse API: web-tree-sitter is async (Parser.init + Language.load(wasm)), so the
+//     outward parse path is async; the walk itself is plain synchronous code.
+//   - wasm filename mapping: of the 16 languages only csharp has a wasm file named
+//     tree-sitter-c_sharp.wasm (every other grammar name matches its wasm filename), so the spec
+//     records the middle part of the wasm filename in its grammar field. ⛔ Measured, don't guess.
 //
-// 職責（單一）：吃一個檔路徑或一段原始碼，吐出該檔的符號定義清單（函數/類別/方法/型別/模組層級變數
-// + 行號 + 所屬範圍）。不碰 SQLite、不碰 ts-morph 找引用、不碰排序——那些是別的模組的事。
+// Single responsibility: take a file path or a piece of source, return that file's symbol definitions
+// (functions/classes/methods/types/module-level variables + line numbers + owning scope). It does not
+// touch SQLite, does not find references via ts-morph, and does not rank; those belong to other modules.
 import { Parser, Language, type Tree, type Node } from "web-tree-sitter";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, extname } from "node:path";
 
-/** 一筆符號定義（欄位名對齊 Python 版輸出，給 storage / daemon 直接轉 JSON）。 */
+/** One symbol definition. Field names match the Python version's output so storage and the daemon can
+ *  serialize them straight to JSON. */
 export interface SymbolDef {
   /** "function" / "class" / "method" / "interface" / "type" / "enum" / "struct" / "trait"
-   *  / "module" / "protocol" / "constructor" / "property" / "variable"（依語言）。 */
+   *  / "module" / "protocol" / "constructor" / "property" / "variable", depending on the language. */
   kind: string;
-  /** 符號名稱（抓不到名字回 "<anon>"，不靜默 null）。 */
+  /** The symbol name. Returns "<anon>" when no name can be read, never a silent null. */
   name: string;
-  /** 定義起訖行號（1-based）。 */
+  /** First and last line of the definition (1-based). */
   line: number;
   end_line: number;
-  /** 所屬範圍（如 "MyClass" 表示 method 在 MyClass 內；"" 表示模組頂層）。 */
+  /** Owning scope, e.g. "MyClass" means the method sits inside MyClass; "" means module top level. */
   scope: string;
 }
 
-/** per-language spec（table-driven，加語言只加一筆）。 */
+/** Per-language spec (table-driven: adding a language is adding one entry). */
 interface LangSpec {
-  /** tree-sitter-wasms 的 wasm 檔名中段（wasm 路徑＝tree-sitter-<grammar>.wasm）。 */
+  /** The middle part of the tree-sitter-wasms filename (the wasm path is tree-sitter-<grammar>.wasm). */
   grammar: string;
-  /** 副檔名（小寫、含點）。 */
+  /** File extensions (lowercase, with the dot). */
   exts: string[];
-  /** {tree-sitter 節點型別: 符號 kind}——結構定義，不論巢狀深度一律收，並 push 自己進 scope。 */
+  /** {tree-sitter node type: symbol kind}. Structural definitions, collected at any nesting depth,
+   *  each one pushing itself onto the scope. */
   always: Record<string, string>;
-  /** {節點型別: kind}——變數定義，只在模組頂層（scope 為空）收，避免區域變數噪音。 */
+  /** {node type: kind}. Variable definitions, collected only at module top level (empty scope), to
+   *  keep local-variable noise out. */
   vars: Record<string, string>;
-  /** 容器節點（如 Rust impl_item）：用指定 field 當 scope 名 push 下去、自己不算符號。 */
+  /** Container nodes (such as Rust impl_item): push the named field onto the scope, but do not count
+   *  the container itself as a symbol. */
   scopeOnly?: Record<string, string>;
-  /** 無 name field 節點的取名策略（C/C++ 的 c_declarator、Kotlin 的 child:<type>）。 */
+  /** Naming strategy for nodes that have no name field (c_declarator for C/C++, child:<type> for Kotlin). */
   nameRules?: Record<string, string>;
-  /** Python 特例：模組層級 assignment.left → variable（assignment 無 name field）。 */
+  /** Python special case: a module-level assignment.left becomes a variable (assignment has no name field). */
   pyAssignment?: boolean;
 }
 
-// ── 16 語言 spec（與 Python 版 LANGUAGE_SPECS 1:1；節點型別/name field 皆 _probe 實測坐實）──
+// ── 16 language specs (1:1 with the Python LANGUAGE_SPECS; node types and name fields were all
+//    measured with _probe) ──
 export const LANGUAGE_SPECS: Record<string, LangSpec> = {
   python: {
     grammar: "python",
     exts: [".py", ".pyi"],
     always: { function_definition: "function", class_definition: "class" },
-    vars: {}, // Python 變數走 assignment 特例
+    vars: {}, // Python variables go through the assignment special case
     pyAssignment: true,
   },
   javascript: {
@@ -122,24 +133,25 @@ export const LANGUAGE_SPECS: Record<string, LangSpec> = {
       trait_item: "trait",
     },
     vars: { const_item: "variable", static_item: "variable" },
-    // impl 區塊本身不算符號，但要把目標型別 push 進 scope，讓內部 fn 標出歸屬。
+    // An impl block is not a symbol itself, but its target type is pushed onto the scope so the
+    // functions inside show what they belong to.
     scopeOnly: { impl_item: "type" },
   },
   csharp: {
-    grammar: "c_sharp", // ⚠ wasm 檔名是 tree-sitter-c_sharp.wasm（唯一與 langKey 不同者）
+    grammar: "c_sharp", // ⚠ the wasm file is tree-sitter-c_sharp.wasm, the only one differing from its langKey
     exts: [".cs"],
     always: {
       class_declaration: "class",
       struct_declaration: "struct",
       interface_declaration: "interface",
       enum_declaration: "enum",
-      record_declaration: "class", // record 語意近 class
+      record_declaration: "class", // a record is close enough to a class
       delegate_declaration: "type",
       method_declaration: "method",
       constructor_declaration: "constructor",
       property_declaration: "property",
     },
-    vars: {}, // 頂層無變數（field 在 class 內、無 name field）
+    vars: {}, // no top-level variables (fields live inside a class and have no name field)
   },
   java: {
     grammar: "java",
@@ -157,12 +169,12 @@ export const LANGUAGE_SPECS: Record<string, LangSpec> = {
   },
   c: {
     grammar: "c",
-    exts: [".c", ".h"], // .h 預設歸 C（C++ header 走 .hpp/.hh/.hxx）
+    exts: [".c", ".h"], // .h defaults to C (C++ headers use .hpp/.hh/.hxx)
     always: {
-      function_definition: "function", // 名字埋在 declarator 鏈 → c_declarator
+      function_definition: "function", // the name is buried in the declarator chain → c_declarator
       struct_specifier: "struct",
       enum_specifier: "enum",
-      union_specifier: "struct", // union 併入 struct kind
+      union_specifier: "struct", // union folds into the struct kind
     },
     vars: {},
     nameRules: { function_definition: "c_declarator" },
@@ -171,7 +183,7 @@ export const LANGUAGE_SPECS: Record<string, LangSpec> = {
     grammar: "cpp",
     exts: [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"],
     always: {
-      function_definition: "function", // Widget::doIt → c_declarator 取末段 doIt
+      function_definition: "function", // Widget::doIt → c_declarator takes the last segment, doIt
       class_specifier: "class",
       struct_specifier: "struct",
       enum_specifier: "enum",
@@ -181,13 +193,14 @@ export const LANGUAGE_SPECS: Record<string, LangSpec> = {
   },
   kotlin: {
     grammar: "kotlin",
-    // ⚠ Kotlin grammar 的定義節點「無 name field」（名字在 type_identifier/simple_identifier
-    //    子節點），故全走 name_rules 的 child:<type> 策略（_probe 坐實）。
+    // ⚠ Definition nodes in the Kotlin grammar have no name field (the name sits in a
+    //    type_identifier/simple_identifier child), so they all go through the child:<type> strategy
+    //    in name_rules. Confirmed with _probe.
     exts: [".kt", ".kts"],
     always: {
-      class_declaration: "class", // enum class / data class 都是 class_declaration
+      class_declaration: "class", // enum class and data class are both class_declaration
       object_declaration: "class",
-      function_declaration: "function", // 類內函數 kind=function、scope 標出類名歸屬
+      function_declaration: "function", // functions inside a class get kind=function, with scope naming the class
     },
     vars: {},
     nameRules: {
@@ -198,8 +211,9 @@ export const LANGUAGE_SPECS: Record<string, LangSpec> = {
   },
   swift: {
     grammar: "swift",
-    // ⚠ Swift grammar 把 enum/struct/class/actor 全 parse 成 class_declaration（無法細分）→
-    //    一律標 class，誠實記錄此限制（_probe 坐實）。
+    // ⚠ The Swift grammar parses enum/struct/class/actor all as class_declaration and offers no way
+    //    to tell them apart, so everything is labelled class. Recording the limitation rather than
+    //    hiding it. Confirmed with _probe.
     exts: [".swift"],
     always: {
       class_declaration: "class",
@@ -238,16 +252,18 @@ export const LANGUAGE_SPECS: Record<string, LangSpec> = {
   bash: {
     grammar: "bash",
     exts: [".sh", ".bash"],
-    always: { function_definition: "function" }, // explicit_fn() 與 function explicit_fn 皆此型別
-    vars: {}, // 頂層變數 name field 非 identifier、walk 不收（誠實留空）
+    always: { function_definition: "function" }, // both explicit_fn() and function explicit_fn are this type
+    vars: {}, // a top-level variable's name field is not an identifier, so the walk skips it; left empty on purpose
   },
   lua: {
     grammar: "lua",
     exts: [".lua"],
-    // ⚠ tree-sitter-wasms 的 lua grammar（Azganoth fork）節點型別與 Python 版 tree-sitter-language-pack
-    //    不同：函數定義是 function_definition_statement / local_function_definition_statement
-    //    （非 language-pack 的 function_declaration）。以 tree-sitter-wasms 為準（probeLang 實測坐實）。
-    //    global/local/M.method 皆有 name field、走預設取名；輸出 SymbolDef 與 Python 版一致。
+    // ⚠ The lua grammar in tree-sitter-wasms (the Azganoth fork) uses different node types from the
+    //    tree-sitter-language-pack the Python version uses: a function definition is
+    //    function_definition_statement / local_function_definition_statement, not language-pack's
+    //    function_declaration. tree-sitter-wasms wins here (measured with probeLang).
+    //    global, local and M.method all have a name field and use the default naming; the SymbolDef
+    //    that comes out matches the Python version.
     always: {
       function_definition_statement: "function",
       local_function_definition_statement: "function",
@@ -256,14 +272,16 @@ export const LANGUAGE_SPECS: Record<string, LangSpec> = {
   },
 };
 
-// 副檔名 → lang key（反查表），給 engine 掃描 / 找引用判語言用。
+// Extension → lang key reverse lookup, used by the engine when scanning and when deciding a file's
+// language during reference finding.
 const EXT_TO_LANG: Record<string, string> = {};
 for (const [name, spec] of Object.entries(LANGUAGE_SPECS)) {
   for (const ext of spec.exts) EXT_TO_LANG[ext] = name;
 }
 export const SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set(Object.keys(EXT_TO_LANG));
 
-// ── wasm 目錄定位（createRequire resolve 套件 package.json → out/，不受 src/dist 深度影響）──
+// ── Locate the wasm directory. createRequire resolves the package's package.json then goes to out/,
+//    so the answer does not depend on how deep src/ or dist/ sits. ──
 const nodeRequire = createRequire(import.meta.url);
 const WASM_DIR = join(dirname(nodeRequire.resolve("tree-sitter-wasms/package.json")), "out");
 
@@ -271,7 +289,8 @@ function wasmPath(grammar: string): string {
   return join(WASM_DIR, `tree-sitter-${grammar}.wasm`);
 }
 
-// ── Parser.init 一次性 guard + Language 物件 lazy cache（各語言只載一次共享）──
+// ── One-shot guard around Parser.init + a lazy cache of Language objects, so each language is loaded
+//    once and shared. ──
 let parserReady: Promise<void> | null = null;
 function ensureInit(): Promise<void> {
   if (parserReady === null) parserReady = Parser.init();
@@ -289,42 +308,45 @@ async function loadLanguage(grammar: string): Promise<Language> {
   return lang;
 }
 
-/** 副檔名 → 語言 key（不支援回 null）。 */
+/** Extension → language key. Returns null for unsupported extensions. */
 export function languageForFile(filePath: string): string | null {
   return EXT_TO_LANG[extname(filePath).toLowerCase()] ?? null;
 }
 
-/** parse 一段原始碼成 tree-sitter tree。lang_key 不支援 → Error。
- *  紅隊 L4-MEDIUM 對齊：給 index 一檔 parse 一次、symbols/comments/fingerprints 共用同一 tree。 */
+/** Parse a piece of source into a tree-sitter tree. An unsupported lang_key throws.
+ *  Addresses red-team L4-MEDIUM: the indexer parses each file once and symbols, comments and
+ *  fingerprints all share that one tree. */
 export async function parseSource(source: string, langKey: string): Promise<Tree> {
   const spec = LANGUAGE_SPECS[langKey];
-  if (spec === undefined) throw new Error(`parseSource 不支援的語言 '${langKey}'`);
+  if (spec === undefined) throw new Error(`parseSource: unsupported language '${langKey}'`);
   const lang = await loadLanguage(spec.grammar);
   const parser = new Parser();
   parser.setLanguage(lang);
   const tree = parser.parse(source);
-  parser.delete(); // tree 獨立於 parser、可在 parser 刪除後續用；省 WASM parser 洩漏
-  if (tree === null) throw new Error(`parseSource: tree-sitter 對 '${langKey}' parse 回 null`);
+  parser.delete(); // the tree outlives the parser and stays usable after this; avoids leaking WASM parsers
+  if (tree === null) throw new Error(`parseSource: tree-sitter returned null for '${langKey}'`);
   return tree;
 }
 
-/** 從定義節點抓名字（name 子節點）。抓不到回 "<anon>"（不靜默 null）。 */
+/** Read the name out of a definition node (its name child). Returns "<anon>" when there is none,
+ *  never a silent null. */
 function nameOf(node: Node): string {
   const nameNode = node.childForFieldName("name");
   return nameNode === null ? "<anon>" : nameNode.text;
 }
 
-// C/C++ declarator 鏈：function_definition 名字不在 name field，埋在
-// (pointer/reference/...) → function_declarator → identifier/qualified_identifier（取末段）。
+// The C/C++ declarator chain: a function_definition's name is not in a name field, it is buried in
+// (pointer/reference/...) → function_declarator → identifier/qualified_identifier (take the last segment).
 const C_DECLARATOR_WRAPPERS: ReadonlySet<string> = new Set([
   "function_declarator", "pointer_declarator", "reference_declarator",
   "parenthesized_declarator", "array_declarator",
 ]);
 
-/** C/C++ function_definition：往下穿過 declarator wrapper 找 function_declarator，取被宣告名
- *  （qualified_identifier 如 Widget::doIt 取末段）。抓不到回 "<anon>"。 */
+/** C/C++ function_definition: descend through the declarator wrappers to the function_declarator and
+ *  take the declared name (for a qualified_identifier such as Widget::doIt, the last segment).
+ *  Returns "<anon>" when nothing is found. */
 function cDeclaratorName(node: Node): string {
-  // 找第一層 declarator wrapper
+  // find the first-level declarator wrapper
   let decl: Node | null = null;
   for (const c of node.children) {
     if (c !== null && C_DECLARATOR_WRAPPERS.has(c.type)) {
@@ -332,7 +354,7 @@ function cDeclaratorName(node: Node): string {
       break;
     }
   }
-  // 穿過 pointer/reference 等 wrapper 直到 function_declarator
+  // walk through pointer/reference and similar wrappers until reaching function_declarator
   let seen = 0;
   while (decl !== null && decl.type !== "function_declarator" && seen < 8) {
     seen += 1;
@@ -346,12 +368,12 @@ function cDeclaratorName(node: Node): string {
     decl = nxt;
   }
   if (decl === null) return "<anon>";
-  // function_declarator 的第一個非 parameter_list 子 = 被宣告名
+  // the first child of function_declarator that is not a parameter_list is the declared name
   for (const c of decl.children) {
     if (c === null) continue;
     if (c.type === "parameter_list") continue;
     if (c.type === "qualified_identifier") {
-      // namespace::name → 取最後一段 identifier/field_identifier
+      // namespace::name → take the last identifier/field_identifier segment
       const kids = c.children;
       for (let i = kids.length - 1; i >= 0; i -= 1) {
         const q = kids[i];
@@ -367,9 +389,10 @@ function cDeclaratorName(node: Node): string {
   return "<anon>";
 }
 
-/** 依 name_rules 策略取定義節點的名字。rule=undefined → 預設 childForFieldName("name")。
- *  "child:<type>" → 取第一個該型別的直接子節點文字（Kotlin）。
- *  "c_declarator"  → C/C++ declarator 鏈。 */
+/** Read a definition node's name according to its name_rules strategy. rule=undefined falls back to
+ *  childForFieldName("name").
+ *  "child:<type>" → the text of the first direct child of that type (Kotlin).
+ *  "c_declarator"  → the C/C++ declarator chain. */
 function extractName(node: Node, rule: string | undefined): string {
   if (rule === undefined) return nameOf(node);
   if (rule.startsWith("child:")) {
@@ -383,7 +406,8 @@ function extractName(node: Node, rule: string | undefined): string {
   return nameOf(node);
 }
 
-/** 純同步核心：走訪已 parse 的 tree 抽符號（黃金測試對照的就是這段邏輯）。 */
+/** The plain synchronous core: walk an already-parsed tree and extract symbols. This is the logic the
+ *  golden tests compare against. */
 function walkSymbols(root: Node, spec: LangSpec): SymbolDef[] {
   const { always, vars: varkinds } = spec;
   const scopeOnly = spec.scopeOnly ?? {};
@@ -395,9 +419,10 @@ function walkSymbols(root: Node, spec: LangSpec): SymbolDef[] {
     const nodeType = node.type;
     let childScope = scopeParts;
 
-    // tree-sitter 關鍵字/標點是 unnamed token，其 type 可能與定義節點型別撞名
-    // （Ruby `module`/`class` keyword token 的 type == 定義節點 type），
-    // 只有 is_named 的節點才是真正的符號定義 → 擋掉 keyword token 誤收成 <anon>。
+    // tree-sitter keywords and punctuation are unnamed tokens, and their type can collide with a
+    // definition node's type (a Ruby `module`/`class` keyword token has the same type as the
+    // definition node). Only is_named nodes are real symbol definitions, which keeps keyword tokens
+    // from being collected as <anon>.
     if (node.isNamed && Object.hasOwn(always, nodeType)) {
       const name = extractName(node, nameRules[nodeType]);
       symbols.push({
@@ -407,15 +432,18 @@ function walkSymbols(root: Node, spec: LangSpec): SymbolDef[] {
         end_line: node.endPosition.row + 1,
         scope: scopeParts.join("."),
       });
-      // 進到定義內部時把自己加進 scope，讓 method/巢狀函數標出歸屬
+      // on the way into a definition, push it onto the scope so methods and nested functions show
+      // what they belong to
       childScope = [...scopeParts, name];
     } else if (Object.hasOwn(scopeOnly, nodeType)) {
-      // 容器節點（如 Rust impl_item）：用指定 field 當 scope 名 push 下去、自己不算符號。
+      // Container nodes (such as Rust impl_item): push the named field onto the scope, but do not
+      // count the container itself as a symbol.
       const fieldNode = node.childForFieldName(scopeOnly[nodeType]!);
       if (fieldNode !== null) childScope = [...scopeParts, fieldNode.text];
     } else if (Object.hasOwn(varkinds, nodeType) && scopeParts.length === 0) {
-      // 變數只收模組頂層，且名字必須是單一識別字——解構 `const {a,b}=…` 的 name field
-      // 是 object_pattern/array_pattern，跳過免吐 "{a, b}" 這種垃圾符號名。
+      // Variables are collected only at module top level, and the name has to be a single
+      // identifier: a destructuring `const {a,b}=…` has an object_pattern/array_pattern as its name
+      // field, and skipping it avoids emitting junk symbol names like "{a, b}".
       const nameNode = node.childForFieldName("name");
       if (nameNode !== null && nameNode.type === "identifier") {
         symbols.push({
@@ -427,7 +455,8 @@ function walkSymbols(root: Node, spec: LangSpec): SymbolDef[] {
         });
       }
     } else if (pyAssignment && nodeType === "assignment" && scopeParts.length === 0) {
-      // Python 特例：模組層級 identifier 賦值當變數（assignment 無 name field）
+      // Python special case: a module-level assignment to an identifier counts as a variable
+      // (assignment has no name field)
       const left = node.childForFieldName("left");
       if (left !== null && left.type === "identifier") {
         symbols.push({
@@ -449,14 +478,15 @@ function walkSymbols(root: Node, spec: LangSpec): SymbolDef[] {
   return symbols;
 }
 
-/** 從一段原始碼抽出符號定義清單。
+/** Extract the symbol definitions from a piece of source.
  *
- * @param source   檔案原始碼（string）。
- * @param langKey  語言 key（LANGUAGE_SPECS 的鍵；預設 "python" 保持相容）。
- * @param opts.filePath  僅用於錯誤訊息與標記，不會讀檔。
- * @param opts.tree      已 parse 的 tree（index 共用省重複 parse）；未給則內部 async parse。
+ * @param source   The file's source text.
+ * @param langKey  Language key (a key of LANGUAGE_SPECS; defaults to "python" for compatibility).
+ * @param opts.filePath  Used only in error messages and labels; no file is read.
+ * @param opts.tree      An already-parsed tree (the indexer shares one to avoid parsing twice); when
+ *                       omitted, this function parses asynchronously itself.
  *
- * fail-loud：source 非 string → TypeError；langKey 不支援 → Error。
+ * Fails loud: a non-string source throws TypeError, an unsupported langKey throws Error.
  */
 export async function extractSymbolsFromSource(
   source: string,
@@ -466,14 +496,14 @@ export async function extractSymbolsFromSource(
   const { filePath = "<memory>", tree: providedTree } = opts;
   if (typeof source !== "string") {
     throw new TypeError(
-      `extractSymbolsFromSource 需要 string，收到 ${typeof source}（filePath=${filePath}）`,
+      `extractSymbolsFromSource expects a string, got ${typeof source} (filePath=${filePath})`,
     );
   }
   const spec = LANGUAGE_SPECS[langKey];
   if (spec === undefined) {
     throw new Error(
-      `extractSymbolsFromSource 不支援的語言 '${langKey}'（filePath=${filePath}）。` +
-        `可用：${Object.keys(LANGUAGE_SPECS).sort().join(", ")}`,
+      `extractSymbolsFromSource: unsupported language '${langKey}' (filePath=${filePath}). ` +
+        `Available: ${Object.keys(LANGUAGE_SPECS).sort().join(", ")}`,
     );
   }
 
@@ -482,25 +512,25 @@ export async function extractSymbolsFromSource(
   try {
     return walkSymbols(tree.rootNode, spec);
   } finally {
-    if (ownTree) tree.delete(); // 自己 parse 的 tree 用完即刪、省 WASM 記憶體；providedTree 不刪
+    if (ownTree) tree.delete(); // delete a tree we parsed ourselves to save WASM memory; a providedTree is left alone
   }
 }
 
-/** 讀一個原始碼檔，按副檔名選語言、抽出符號定義清單（對外主要入口）。
- *  副檔名不支援 → Error；檔讀不到 → Error。 */
+/** Read a source file, pick the language from its extension, and extract the symbol definitions. This
+ *  is the main entry point. An unsupported extension throws; an unreadable file throws. */
 export async function extractSymbols(filePath: string): Promise<SymbolDef[]> {
   const langKey = languageForFile(filePath);
   if (langKey === null) {
     throw new Error(
-      `抽符號失敗：不支援的副檔名 ${filePath}` +
-        `（支援：${[...SUPPORTED_EXTENSIONS].sort().join(", ")}）`,
+      `symbol extraction failed: unsupported extension ${filePath} ` +
+        `(supported: ${[...SUPPORTED_EXTENSIONS].sort().join(", ")})`,
     );
   }
   let source: string;
   try {
     source = readFileSync(filePath, "utf-8");
   } catch (exc) {
-    throw new Error(`抽符號失敗：讀不到檔 ${filePath}（${String(exc)}）`);
+    throw new Error(`symbol extraction failed: cannot read file ${filePath} (${String(exc)})`);
   }
   return extractSymbolsFromSource(source, langKey, { filePath });
 }

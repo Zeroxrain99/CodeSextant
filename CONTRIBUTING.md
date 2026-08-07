@@ -6,12 +6,15 @@ useful contributions are usually specific rather than sweeping.
 ## Getting set up
 
 ```bash
-pip install jedi tree-sitter tree-sitter-languages
+pip install -e ".[test]"
 python -m pytest tests/ -q
 ```
 
+Installing from `pyproject.toml` rather than naming the dependencies here keeps
+this file from drifting out of sync with what the package actually requires.
+
 For high-confidence TypeScript/JavaScript resolution you also need Node and a
-one-time `npm install` inside `ts_bridge/`. Everything still runs without it —
+one-time `npm install` inside `ts_bridge/`. Everything still runs without it:
 TS/JS resolution degrades to name matching and says so.
 
 ## What is most useful
@@ -29,7 +32,7 @@ TS/JS resolution degrades to name matching and says so.
 
 - **Confidence labels are load-bearing.** Anything that cannot be resolved
   through real import resolution must be reported as low confidence. Never
-  present a name match as if it were resolved — agents auto-trust high
+  present a name match as if it were resolved. Agents auto-trust high
   confidence, so a wrong label is worse than no answer.
 - **SQLite is the only source of truth.** Snapshots and in-process caches are
   keyed on index revision and query parameters. If you add a cache, make sure

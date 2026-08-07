@@ -1,4 +1,5 @@
-"""Daemon 單例、自癒與 supervisor 的可靠性回歸測試。"""
+"""Reliability regressions for the daemon: staying a singleton, healing itself,
+and behaving under the supervisor."""
 from __future__ import annotations
 
 import json
@@ -70,7 +71,8 @@ def test_control_plane_logger_does_not_open_daemon_log(tmp_path, monkeypatch):
 
 
 def test_thin_client_import_does_not_load_heavy_engine():
-    """CLI 每次只做 HTTP，不應先載 tree-sitter/engine；daemon 才需要完整引擎。"""
+    """The CLI only speaks HTTP, so importing it must not pull in tree-sitter or
+    the engine. Only the daemon needs the full engine loaded."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     probe = subprocess.run(
         [sys.executable, "-c",
@@ -83,7 +85,8 @@ def test_thin_client_import_does_not_load_heavy_engine():
 
 
 def test_http_server_disables_windows_address_reuse():
-    """HTTPServer 預設 allow_reuse_address=1，Windows 會讓多個 PID 同綁 8790。"""
+    """HTTPServer sets allow_reuse_address=1 by default, which on Windows lets
+    several PIDs bind port 8790 at once."""
     assert daemon._ExclusiveThreadingHTTPServer.allow_reuse_address is False
     assert daemon._ExclusiveThreadingHTTPServer.allow_reuse_port is False
 
@@ -291,7 +294,8 @@ def test_require_project_with_watcher_enabled_still_registers_watch(monkeypatch)
 
 
 def test_concurrent_ensure_spawns_only_once(tmp_path, monkeypatch):
-    """多個代理同時首次呼叫，只能有一個 detached daemon spawn。"""
+    """When several clients make their first call at the same moment, exactly
+    one detached daemon may spawn."""
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "db"))
     state = {"health": None, "spawns": 0}
 
@@ -320,7 +324,8 @@ def test_concurrent_ensure_spawns_only_once(tmp_path, monkeypatch):
 
 def test_ensure_confirms_slow_branded_listener_before_port_conflict(
         tmp_path, monkeypatch):
-    """快速探活逾時但同品牌 listener 稍後可答時，不得誤報外部占埠。"""
+    """A fast probe can time out while our own listener answers a moment later.
+    That must not be reported as some outside process holding the port."""
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "db"))
     timeouts = []
 
@@ -451,7 +456,8 @@ def test_client_connection_failure_restarts_and_retries_once(monkeypatch, tmp_pa
 
 
 def test_client_timeout_does_not_duplicate_a_live_long_query(monkeypatch, tmp_path):
-    """服務仍健康時，查詢逾時不可 ensure 後把同一重查再送一次。"""
+    """While the service is still healthy, a query timeout must not lead to an
+    ensure followed by the same heavy query going out a second time."""
     calls = {"open": 0, "ensure": 0, "health": 0}
 
     def slow_open(*_args, **_kwargs):
@@ -471,14 +477,15 @@ def test_client_timeout_does_not_duplicate_a_live_long_query(monkeypatch, tmp_pa
     monkeypatch.setattr(daemon, "ensure_running", fake_ensure)
 
     c = client.CodesextantClient(project=str(tmp_path), port=18794)
-    with pytest.raises(TimeoutError, match="仍在線"):
+    with pytest.raises(TimeoutError, match="still up"):
         c.status()
     assert calls == {"open": 1, "ensure": 0, "health": 1}
 
 
 def test_client_timeout_does_not_retry_when_ensure_confirms_slow_live_daemon(
         monkeypatch, tmp_path):
-    """1 秒 health 失敗、慢確認成功仍代表原查詢在跑，不可送第二份。"""
+    """A one-second health check that fails, followed by a slower confirmation
+    that succeeds, still means the original query is running. No second copy."""
     calls = {"open": 0, "ensure": 0, "health": 0}
 
     def slow_open(*_args, **_kwargs):
@@ -498,7 +505,7 @@ def test_client_timeout_does_not_retry_when_ensure_confirms_slow_live_daemon(
     monkeypatch.setattr(daemon, "ensure_running", confirm_existing)
 
     c = client.CodesextantClient(project=str(tmp_path), port=18796)
-    with pytest.raises(TimeoutError, match="仍在線"):
+    with pytest.raises(TimeoutError, match="still up"):
         c.status()
     assert calls == {"open": 1, "ensure": 1, "health": 1}
 
@@ -569,7 +576,8 @@ def test_client_impact_uses_shared_heavy_deadline(monkeypatch, tmp_path):
 
 
 def test_send_json_ignores_windows_client_abort():
-    """client timeout 關 socket 的 WinError 10053 是正常取消，不得升成 endpoint 500。"""
+    """WinError 10053, raised when a client closes its socket on timeout, is an
+    ordinary cancellation and must not be escalated into a 500 from the endpoint."""
     class AbortWriter:
         def write(self, _body):
             raise ConnectionAbortedError(10053, "client aborted")
@@ -1271,7 +1279,7 @@ def test_supervisor_leaves_long_but_unstuck_heavy_job_alone(monkeypatch):
 
 
 def test_supervisor_stuck_recovery_switch_off_disables_recycling(monkeypatch):
-    """L0 #6: the feature must be switchable — 0 disables it entirely."""
+    """The feature must be switchable: setting it to 0 disables it entirely."""
     from codesextant import supervisor
 
     monkeypatch.setenv("CODESEXTANT_HEAVY_STUCK_SEC", "0")
@@ -1289,8 +1297,9 @@ def test_supervisor_stuck_recovery_switch_off_disables_recycling(monkeypatch):
 
 
 def test_supervisor_tolerates_health_payload_without_heavy_telemetry(monkeypatch):
-    """An older daemon (no heavy_work field) or garbage telemetry must map to
-    plain healthy — never crash the watchdog, never spurious recycle."""
+    """An older daemon with no heavy_work field, or garbage telemetry, maps to
+    plain healthy. The watchdog must not crash, and it must not recycle the
+    daemon over nothing."""
     from codesextant import supervisor
 
     monkeypatch.setenv("CODESEXTANT_HEAVY_STUCK_SEC", "1800")

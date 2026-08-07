@@ -1,19 +1,23 @@
-"""codesextant C3 預留接口 — 給「接入 Skill / 別代理」一行就能查的瘦客戶端。
+"""codesextant C3 reserved interface: a thin client that lets "any Skill / other agent
+that wires it in" query CodeSextant in one line.
 
-設計 §2④/§8.1 的 C3 要求：「關鍵字觸發 Skill → 自動確保 daemon 在跑（冪等）
-+ 自動帶當前專案 key → 三個查詢介面」。本模組把那三步打包成函數，C3 Skill
-（或 Sancio/Hermes 等代理）import 進去直接用，不必各自重寫 HTTP / ensure 邏輯。
+Implements the C3 requirement from design §2④/§8.1: "a keyword triggers the Skill ->
+automatically ensure the daemon is running (idempotent) + automatically attach the
+current project's key -> three query interfaces". This module packages those three
+steps into functions; a Skill or any other agent just imports it and uses it directly,
+without reimplementing the HTTP and ensure logic itself.
 
-典型用法（C3 Skill 內）：
+Typical usage (inside a C3 Skill):
     from codesextant.client import CodesextantClient
-    c = CodesextantClient(project=os.getcwd())   # 自動 ensure daemon + 綁當前 repo
-    c.ensure()                                # 冪等：沒在跑才背景拉起
+    c = CodesextantClient(project=os.getcwd())   # auto-ensures the daemon + binds the current repo
+    c.ensure()                                # idempotent: only spawns in the background if not already running
     print(c.status())
     print(c.get_map(budget=1500))
     print(c.find_references("check"))
 
-全代理共用：所有 client 打同一個固定 port 的 daemon（單例冪等保證全機一個）。
-不依賴第三方（只用標準庫 urllib），方便塞進任何 Skill / 代理環境。
+Shared across all agents: every client talks to the same daemon on a fixed port (a
+singleton, idempotently guaranteed to be one-per-machine). No third-party dependency
+(stdlib urllib only), so it's easy to drop into any Skill / agent environment.
 """
 from __future__ import annotations
 
@@ -27,13 +31,14 @@ from . import daemon
 
 
 class CodesextantClient:
-    """瘦 HTTP 客戶端 + 自動冪等 ensure + 自動帶 project。
+    """A thin HTTP client with automatic idempotent ensure + automatic project binding.
 
-    參數
-    ----
-    project : 當前 repo 絕對路徑（C3 Skill 自動帶當前專案＝這個）。
-              daemon 端會用 storage.project_key=sha1(abs path) 分庫，不混線。
-    port    : daemon port（預設讀 CODESEXTANT_PORT 或 8790）。
+    Parameters
+    ----------
+    project : the current repo's absolute path (this is what a C3 Skill auto-attaches as
+              the current project). The daemon side shards storage by
+              project_key=sha1(abs path), so projects never cross-contaminate.
+    port    : the daemon's port (defaults to reading CODESEXTANT_PORT, or 8790).
     """
 
     def __init__(self, project: str | None = None, port: int | None = None,
@@ -43,15 +48,16 @@ class CodesextantClient:
         self.timeout = timeout
         self.base = f"http://{daemon.HOST}:{self.port}"
 
-    # ── 冪等確保（C3 Skill 觸發第一步）──
+    # ── idempotent ensure (the first step a C3 Skill triggers) ──
     def ensure(self) -> dict:
-        """確保 daemon 在跑（已在跑就不重開）。回傳 ensure_running 的結果。"""
+        """Ensure the daemon is running (does nothing if it's already up). Returns the
+        result of ensure_running."""
         return daemon.ensure_running(port=self.port)
 
     def is_up(self) -> bool:
         return daemon.http_ping(port=self.port) is not None
 
-    # ── HTTP 基本動作 ──
+    # ── basic HTTP actions ──
     def _open_json(self, request, *, timeout: float | None = None) -> dict:
         """Open once, self-heal a dead daemon, then retry exactly once.
 
@@ -68,11 +74,14 @@ class CodesextantClient:
             except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as exc:
                 reason = getattr(exc, "reason", None)
                 timed_out = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
-                # 長查詢逾時不等於 daemon 掛掉。若 branded /health 仍正常，重送同一查詢只會
-                # 製造第二個昂貴工作、把原本的延遲放大成假死；明確回報逾時並交由呼叫端決定。
+                # A long query timing out does not mean the daemon is down. If the branded
+                # /health still checks out, resending the same query would only create a
+                # second expensive job and amplify the original delay into an apparent
+                # hang; report the timeout explicitly and let the caller decide.
                 if timed_out and daemon.http_ping(port=self.port, timeout=1.0) is not None:
                     raise TimeoutError(
-                        "CodeSextant 查詢逾時，但服務仍在線；已停止自動重送以避免重複重查"
+                        "CodeSextant query timed out, but the service is still up; "
+                        "auto-resend has been stopped to avoid a duplicate re-query"
                     ) from exc
                 if attempt:
                     raise
@@ -83,12 +92,13 @@ class CodesextantClient:
                 # query would duplicate expensive work and amplify the stall.
                 if timed_out and recovered.get("action") == "already-running":
                     raise TimeoutError(
-                        "CodeSextant 查詢逾時，但慢速確認服務仍在線；"
-                        "已停止自動重送以避免重複重查"
+                        "CodeSextant query timed out, but the slow confirmation says the "
+                        "service is still up; auto-resend has been stopped to avoid a "
+                        "duplicate re-query"
                     ) from exc
                 if recovered.get("action") not in ("already-running", "spawned"):
                     raise RuntimeError(
-                        f"CodeSextant daemon 自癒失敗：{recovered.get('action')}"
+                        f"CodeSextant daemon self-heal failed: {recovered.get('action')}"
                     ) from exc
         raise AssertionError("unreachable")
 
@@ -124,16 +134,18 @@ class CodesextantClient:
     def _proj(self, project: str | None) -> str:
         p = project or self.project
         if not p:
-            raise ValueError("CodesextantClient：未指定 project（repo 絕對路徑）")
+            raise ValueError("CodesextantClient: no project specified (repo absolute path)")
         return os.path.abspath(p)
 
-    # ── 三查詢介面 + 維護介面（對齊 daemon 端點）──
+    # ── three query interfaces + maintenance interface (aligned with daemon endpoints) ──
     def health(self) -> dict:
         return self._get("/health", {})
 
     def status(self, project: str | None = None, *, fresh: bool = False) -> dict:
-        # fresh=True → 帶 ?fresh=1 讓 daemon 比對 git HEAD sha 新鮮度（坑6；預設 lazy 不查，
-        # 避免不設防 GET 觸發 git spawn）。回傳含 git_stale / indexed_git_sha / current_git_sha。
+        # fresh=True -> passes ?fresh=1 so the daemon compares against the git HEAD sha for
+        # freshness (pitfall 6; defaults to lazy, not checking, so an unguarded GET can't
+        # trigger a git spawn). The response includes git_stale / indexed_git_sha /
+        # current_git_sha.
         return self._get("/status", {"project": self._proj(project),
                                      "fresh": "1" if fresh else None})
 
@@ -143,7 +155,8 @@ class CodesextantClient:
 
     def get_map(self, budget: int = 2000, project: str | None = None,
                 focus_symbols=None, focus_files=None) -> dict:
-        # queue 4：focus_symbols/focus_files（list）→ 逗號分隔給 daemon query-aware 排序
+        # queue 4: focus_symbols/focus_files (list) -> comma-joined for the daemon's
+        # query-aware ranking
         map_timeout = self._heavy_timeout("CODESEXTANT_MAP_TIMEOUT_SEC")
         return self._get("/get_map", {
             "project": self._proj(project), "budget": budget,
@@ -168,30 +181,34 @@ class CodesextantClient:
 
     def find_deadcode(self, scope_file: str | None = None, lang: str | None = None,
                       project: str | None = None) -> dict:
-        # 序3：死碼線索層。scope_file 給了才跑 orphan（對該檔逐符號真解析）。
+        # sequence 3: the dead-code clue layer. orphan only runs (real per-symbol
+        # resolution against that file) when scope_file is given.
         return self._get("/deadcode", {"project": self._proj(project),
                                        "file": scope_file, "lang": lang},
                          timeout=self._heavy_timeout())
 
     def find_ai_usage(self, scope_file: str | None = None,
                       project: str | None = None) -> dict:
-        # ai-usage：掃 repo 用了哪些 AI/LLM + dispatch_policy cli/direct/local 三通道。
+        # ai-usage: scan which AI/LLM providers the repo uses + the dispatch_policy
+        # cli/direct/local three-channel axis.
         return self._get("/ai_usage", {"project": self._proj(project), "file": scope_file},
                          timeout=self._heavy_timeout())
 
     def find_unwired(self, max_fanout: int | None = None,
                      project: str | None = None) -> dict:
-        # 功能 A：未接線檢查（namegraph 名稱級全圖粗篩零外部引用頂層符號；低信心線索層）。
+        # Feature A: unwired check (a coarse namegraph name-level, whole-graph filter for
+        # top-level symbols with zero external references; a low-confidence clue layer).
         return self._get("/find_unwired", {"project": self._proj(project),
                                            "max_fanout": max_fanout},
                          timeout=self._heavy_timeout())
 
     def get_health(self, project: str | None = None) -> dict:
-        # 紀律轉美：per-symbol 代碼健康度（低=該讀碼複核處；線索非決策、⛔不出應刪）。
+        # Discipline-to-beauty: per-symbol code health (low = a spot worth reading and
+        # double-checking; a clue, not a verdict, and ⛔ never emits a "should delete").
         return self._get("/get_health", {"project": self._proj(project)},
                          timeout=self._heavy_timeout())
 
-    # ── 功能 B：註解管理 + 重複偵測 ──
+    # ── Feature B: comment management + duplicate detection ──
     def get_comment_overview(self, file: str | None = None, project: str | None = None) -> dict:
         return self._get("/comment_overview", {"project": self._proj(project), "file": file},
                          timeout=self._heavy_timeout())
@@ -213,7 +230,8 @@ class CodesextantClient:
     def find_duplicates(self, file: str | None = None, near_global: bool = False,
                         min_similarity: float | None = None,
                         include_call_pattern: bool = False, project: str | None = None) -> dict:
-        # 重複/類似偵測。near_global=全域近似 opt-in、calls=開 call_pattern。
+        # Duplicate/similarity detection. near_global=opt-in global approximate matching,
+        # calls=turns on call_pattern.
         return self._get("/find_duplicates", {"project": self._proj(project), "file": file,
                                               "near_global": "1" if near_global else None,
                                               "min_similarity": min_similarity,
@@ -223,7 +241,8 @@ class CodesextantClient:
     def call_hierarchy(self, symbol: str, *, direction: str = "both",
                        max_hops: int | None = None, def_path: str | None = None,
                        src_root: str | None = None, project: str | None = None) -> dict:
-        # 競品吸收 queue 1：傳遞呼叫鏈。direction up=callers/down=callees/both。
+        # Competitor-feature-absorption queue 1: transitive call chain. direction
+        # up=callers/down=callees/both.
         return self._post("/call_hierarchy", {
             "project": self._proj(project), "symbol": symbol,
             "direction": direction, "max_hops": max_hops,
@@ -233,7 +252,8 @@ class CodesextantClient:
     def impact(self, symbol: str, *, max_hops: int | None = None,
                def_path: str | None = None, src_root: str | None = None,
                project: str | None = None) -> dict:
-        # 競品吸收 queue 2：改動影響 / blast radius（改 X 會牽動誰）。
+        # Competitor-feature-absorption queue 2: change impact / blast radius (who gets
+        # dragged in if X changes).
         return self._post("/impact", {
             "project": self._proj(project), "symbol": symbol,
             "max_hops": max_hops, "def_path": def_path, "src_root": src_root},

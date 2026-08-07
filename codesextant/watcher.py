@@ -1,20 +1,28 @@
-"""檔案監看主動增量索引（競品吸收 queue 3，CodeGraph/aider 啟發）。
+"""File-watch proactive incremental indexing (competitor-feature-absorption queue 3,
+inspired by CodeGraph/aider).
 
-CodeSextant 原本是「被查詢時才比 content-hash」的被動增量——查詢端要等、且未 commit 的改動
-（content 變但 git sha 沒變）wrapper 不會自動 reindex（已知盲區）。本模組讓單例 daemon 掛
-OS 原生 file-watcher（watchdog：Windows 走 ReadDirectoryChangesW / Linux inotify / macOS
-FSEvents），檔一變就**防抖後主動增量索引**，地圖永遠新鮮、查詢零等待、不靠 git sha。
+CodeSextant was originally passive-incremental: it only diffed content-hash when a
+query came in. The querying side had to wait, and uncommitted changes (content changed
+but the git sha didn't) never triggered an automatic reindex from the wrapper (a known
+blind spot). This module lets the singleton daemon attach a native OS file-watcher
+(watchdog: ReadDirectoryChangesW on Windows / inotify on Linux / FSEvents on macOS) so
+that as soon as a file changes, it **proactively reindexes incrementally after
+debouncing**. The map stays fresh, queries never wait, and nothing depends on git sha.
 
-設計鐵則：
-  - ⛔ 不取代 content-hash 增量（index_project 仍 content-hash 只重算變的檔）——watcher 只是
-    「主動觸發 index_project」的前置；watcher 漏抓時查詢端比 hash 仍是兜底。
-  - 防抖窗口必設（git checkout/大量改檔不觸發重索引風暴）。
-  - watchdog 沒裝 → 靜默退化（不啟動 watcher，content-hash 兜底照常），不報錯不擋。
-  - 開關 + 參數全 config（L0 鐵律 #6）。
+Design principles:
+  - ⛔ This does NOT replace content-hash incrementalism (index_project still only
+    recomputes files whose content-hash changed). The watcher is only the trigger that
+    proactively calls index_project; when the watcher misses something, the querying
+    side's hash comparison is still the fallback.
+  - A debounce window is mandatory (so a git checkout / mass file change doesn't trigger
+    a reindex storm).
+  - If watchdog isn't installed -> silently degrade (don't start the watcher, the
+    content-hash fallback keeps working as normal), no error, no blocking.
+  - Switches + parameters are all configurable (L0 hard rule #6).
 
-開關（皆 .lower() 容錯）：
-  - CODESEXTANT_WATCH_ENABLED = 0/false/no/off 關閉（預設 on）。
-  - CODESEXTANT_WATCH_DEBOUNCE_MS = 防抖窗口毫秒（預設 2000）。
+Switches (all tolerant of .lower()):
+  - CODESEXTANT_WATCH_ENABLED = 0/false/no/off to disable (default on).
+  - CODESEXTANT_WATCH_DEBOUNCE_MS = the debounce window in milliseconds (default 2000).
 """
 from __future__ import annotations
 
@@ -38,7 +46,8 @@ def _debounce_sec() -> float:
 
 
 def _stop_join_timeout() -> float:
-    """關閉時等 OS 監看執行緒收工的上限秒數（可調，見呼叫處註解）。"""
+    """Max seconds to wait for the OS watcher thread to wind down on shutdown (tunable,
+    see the comment at the call site)."""
     try:
         v = float(os.environ.get("CODESEXTANT_WATCH_STOP_JOIN_SEC", "2"))
         return v if v > 0 else 2.0
@@ -47,7 +56,7 @@ def _stop_join_timeout() -> float:
 
 
 class _ProjectWatch:
-    """單一專案的 watchdog observer + 防抖增量索引。"""
+    """A single project's watchdog observer + debounced incremental indexing."""
 
     def __init__(self, repo_path: str, logger):
         self.repo_path = os.path.abspath(repo_path)
@@ -70,7 +79,8 @@ class _ProjectWatch:
                 if event.is_directory:
                     return
                 p = getattr(event, "dest_path", "") or event.src_path
-                # 只理會支援語言的原始碼檔變動（跳過 .pyc/.db/雜訊）
+                # Only care about source-file changes for supported languages (skip
+                # .pyc/.db/noise)
                 if os.path.splitext(p)[1].lower() in symbols.SUPPORTED_EXTENSIONS:
                     mgr._enqueue(p)
 
@@ -117,16 +127,19 @@ class _ProjectWatch:
         if not pending:
             return
         try:
-            # 增量（content-hash 只重算真的變的檔）；watcher 只負責「主動觸發」
+            # Incremental (content-hash only recomputes files that actually changed); the
+            # watcher's only job is "proactively triggering"
             key = work_coordinator.make_work_key(
                 "/reindex", self.repo_path, {
                     "force": False,
                     "source": "watcher",
                     "generation": generation,
                 })
-            # 與 HTTP 端點共用同一個分片權威：同一 repo ⇒ 同一車道，所以
-            # watcher 觸發的重索引會跟 /reindex 排隊而不是並行跑兩份，也一樣
-            # 受全域併發上限管控。用兩個 coordinator 會讓兩者互相看不見。
+            # Shares the same shard authority as the HTTP endpoint: same repo => same
+            # lane, so a reindex triggered by the watcher queues behind /reindex instead of
+            # running two copies in parallel, and is subject to the same global
+            # concurrency cap. Using two separate coordinators would make them blind to
+            # each other.
             r = work_coordinator.SHARED_SHARDED.run(
                 key,
                 lambda: engine.index_project(self.repo_path),
@@ -134,10 +147,11 @@ class _ProjectWatch:
                 shard=key[1],
             )
             self.logger.info(
-                "watcher 增量重索引 %s（%d 檔變動觸發）→ indexed=%s skipped=%s removed=%s",
+                "watcher incremental reindex %s (triggered by %d changed files) -> "
+                "indexed=%s skipped=%s removed=%s",
                 self.repo_path, n, r.get("indexed"), r.get("skipped"), r.get("removed"))
-        except Exception as exc:  # 索引失敗不該炸 watcher thread
-            self.logger.warning("watcher 增量索引失敗 %s：%s", self.repo_path, exc)
+        except Exception as exc:  # an indexing failure must not crash the watcher thread
+            self.logger.warning("watcher incremental index failed %s: %s", self.repo_path, exc)
             with self._lock:
                 if not self._stopping:
                     # Admission rejection or index failure must not consume the
@@ -156,9 +170,11 @@ class _ProjectWatch:
         if self._observer is not None:
             try:
                 self._observer.stop()
-                # 有界等待：關閉路徑不可被卡住的 OS 監看執行緒無限拖住（daemon
-                # 關閉會連帶擋住重啟）。逾時就放生該執行緒——它是 daemon 執行緒，
-                # 進程結束時一併回收。可調：CODESEXTANT_WATCH_STOP_JOIN_SEC。
+                # Bounded wait: the shutdown path must not be dragged out indefinitely by
+                # a stuck OS watcher thread (daemon shutdown would then also block a
+                # restart). If it times out, let the thread go, since it's a daemon thread and
+                # gets reclaimed when the process exits anyway. Tunable via
+                # CODESEXTANT_WATCH_STOP_JOIN_SEC.
                 self._observer.join(timeout=_stop_join_timeout())
             except Exception:
                 pass
@@ -172,7 +188,8 @@ class _ProjectWatch:
 
 
 class WatchManager:
-    """管多專案的 watcher（daemon 單例持有）。冪等：同專案只掛一次。"""
+    """Manages watchers for multiple projects (held by the daemon singleton). Idempotent:
+    a given project is only attached once."""
 
     def __init__(self, logger):
         self.logger = logger
@@ -181,13 +198,14 @@ class WatchManager:
         self._watched_snapshot: tuple[str, ...] = ()
 
     def ensure_watch(self, repo_path: str) -> bool:
-        """確保某專案被監看（冪等）。回 True=有在監看 / False=未掛（關閉/watchdog 缺/失敗）。"""
+        """Ensure a project is being watched (idempotent). Returns True=being watched /
+        False=not attached (disabled/watchdog missing/failed)."""
         if not watch_enabled():
             return False
         try:
-            import watchdog.observers  # noqa: F401  探可用性
+            import watchdog.observers  # noqa: F401  probe availability
         except ImportError:
-            return False  # watchdog 沒裝 → 靜默退（content-hash 兜底仍在）
+            return False  # watchdog not installed -> silently back off (content-hash fallback still applies)
         if not repo_path:
             return False
         rp = os.path.abspath(repo_path)
@@ -200,7 +218,7 @@ class WatchManager:
         try:
             w.start()
         except Exception as exc:
-            self.logger.warning("watcher 掛載失敗 %s：%s", rp, exc)
+            self.logger.warning("watcher attach failed %s: %s", rp, exc)
             return False
         keep = False
         with self._lock:
@@ -211,7 +229,7 @@ class WatchManager:
         if not keep:
             w.stop()
             return True
-        self.logger.info("watcher 掛載 %s（防抖 %.1fs）", rp, _debounce_sec())
+        self.logger.info("watcher attached %s (debounce %.1fs)", rp, _debounce_sec())
         return True
 
     def watched(self) -> list[str]:

@@ -1,20 +1,22 @@
-"""引擎門面 — 統籌 symbols / references / storage / ranking 四個模組。
+"""Engine facade: coordinates the symbols / references / storage / ranking modules.
 
-這是 C1 對外的「純引擎 API」，也是 C2 daemon 要包成 HTTP 的那一層。
-設計鐵則（給 C2 省力）：
-  - 每個對外函數的參數與回傳都用「簡單可序列化型別」(str/int/dict/list)，
-    能直接 json.dumps，HTTP daemon 接過去幾乎零轉換。
-  - 一個 HTTP 端點對一個函數：
+This is C1's public "pure engine API", and the layer the C2 daemon wraps as HTTP.
+Design rules (which keep C2 simple):
+  - Every public function's arguments and return values use simple serializable types
+    (str/int/dict/list), so they pass straight through json.dumps and the HTTP daemon
+    needs almost no conversion.
+  - One HTTP endpoint per function:
         /reindex  ← index_project(path)
         /get_symbols ← get_symbols(path, file)
         /find_references ← find_references(path, symbol, ...)
         /get_map ← get_map(path, token_budget)
         /status ← status(path)
-  - fail-loud：路徑不存在、專案沒索引過就響亮報錯，不回 silent None / 空。
+  - Fail loudly: a missing path or an unindexed project raises, rather than silently
+    returning None or an empty result.
 
-混合架構（PoC 坐實）：
-  - index_project：tree-sitter 全量抽符號（快），不跑 jedi。
-  - find_references：按需才跑 jedi 二段式精解。
+Hybrid architecture (proved out by the PoC):
+  - index_project: tree-sitter extracts every symbol (fast) and does not run jedi.
+  - find_references: runs jedi's two-stage resolution only on demand.
 """
 from __future__ import annotations
 
@@ -30,12 +32,15 @@ from . import clones, comments, namegraph, references, storage, symbols
 from .ranking import rank_symbols
 from .symbols import SUPPORTED_EXTENSIONS
 
-# 索引時掃原始碼檔，跳過這些雜訊目錄（target=Rust build 產物）
+# Directories skipped while scanning source files during indexing (target = Rust build output).
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
               ".mypy_cache", ".pytest_cache", "build", "dist", "target", ".tox"}
 
-# daemon 內只留「已裁成 token_budget 的小結果」，不留 57 萬 symbols/完整 edge graph。
-# key 綁 SQLite revision + 所有會改排序的參數/env；index/ref 一更新，db mtime 變動即自動 miss。
+# The daemon keeps only the small result already trimmed to token_budget, never 570k
+# symbols or a full edge graph.
+# The cache key is bound to the SQLite revision plus every parameter and env var that can
+# change the ordering; once an index or a ref updates, the db mtime changes and the entry
+# misses automatically.
 _MAP_CACHE: OrderedDict[tuple, dict] = OrderedDict()
 _MAP_CACHE_LOCK = RLock()
 _SYMBOL_SNAPSHOT_INFLIGHT: set[tuple[str, tuple]] = set()
@@ -50,7 +55,7 @@ _MAP_CACHE_ENV = (
 
 
 def _schedule_symbol_snapshot(db_file, revision: tuple, symbols: list[dict]) -> None:
-    """回應路徑之外延遲寫快照；同 revision 全程序只准一個 writer。"""
+    """Write the snapshot lazily, off the response path; one writer per revision per process."""
     key = (str(db_file), tuple(revision))
     with _MAP_CACHE_LOCK:
         if key in _SYMBOL_SNAPSHOT_INFLIGHT:
@@ -59,10 +64,10 @@ def _schedule_symbol_snapshot(db_file, revision: tuple, symbols: list[dict]) -> 
 
     def worker():
         try:
-            time.sleep(1.0)  # 先讓 HTTP handler 把 map 小結果送完，避免 JSON writer 搶 GIL
+            time.sleep(1.0)  # let the HTTP handler finish sending the small map result first, so the JSON writer does not fight it for the GIL
             storage.write_symbol_snapshot(db_file, revision, symbols)
         except Exception as exc:
-            print(f"  ⚠ symbols snapshot 寫入失敗：{type(exc).__name__}: {exc}",
+            print(f"  ⚠ failed to write symbols snapshot: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
         finally:
             with _MAP_CACHE_LOCK:
@@ -70,20 +75,23 @@ def _schedule_symbol_snapshot(db_file, revision: tuple, symbols: list[dict]) -> 
 
     Thread(target=worker, name="codesextant-symbol-snapshot", daemon=True).start()
 
-# 找引用時納入的「可被引用的定義」種類。含 variable：TS/JS 的 exported const、arrow
-# function、const 物件都是一等被引用對象（C5b 實機發現排除 variable 會讓 TS const 無候選
-# 定義 → def_path=None → 誤走 jedi 死路 high=0，對應 review 問題 4 的常見情況）。
+# The kinds of definition treated as referenceable when finding references. variable is
+# included because TS/JS exported consts, arrow functions and const objects are all
+# first-class reference targets (C5b found in practice that excluding variable leaves a TS
+# const with no candidate definition → def_path=None → it wrongly takes the jedi dead end
+# and reports high=0, which is the common case behind review issue 4).
 _REFERENCEABLE_KINDS = {"function", "class", "method", "interface", "type",
                         "enum", "struct", "trait", "variable",
-                        # 2026-06-22 主流語言一批新增的符號種類：
-                        "constructor",   # C#/Java/Swift 建構子
-                        "property",      # C#/Swift 屬性
+                        # Symbol kinds added with the 2026-06-22 batch of mainstream languages:
+                        "constructor",   # C#/Java/Swift constructors
+                        "property",      # C#/Swift properties
                         "module",        # Ruby module
                         "protocol"}      # Swift protocol
 
 
 def _iter_source_files(root: str):
-    """掃 root 下所有「支援語言」的原始碼檔（C5：多語言；跳過雜訊目錄）。"""
+    """Scan every source file in a supported language under root (C5: multi-language;
+    noise directories are skipped)."""
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
         for fn in filenames:
@@ -92,20 +100,24 @@ def _iter_source_files(root: str):
 
 
 def _env_on(name: str) -> bool:
-    """env 旗標解析（統一走 .lower()，避免 =True/=TRUE 被當沒設）。"""
+    """Parse an env flag (always via .lower(), so =True/=TRUE are not read as unset)."""
     return os.environ.get(name, "").lower() in ("1", "true", "yes", "on")
 
 
 def _infer_project_language(root: str, *, sample_cap: int | None = None) -> str | None:
-    """坑9：找引用時 symbol 查無候選定義（def_path=None）且 jedi 也找不到定義時，
-    取樣專案主語言做 **fallback**（非 override，見 find_references），避免非 Python
-    symbol 走名稱比對死路。
+    """Pitfall 9: when finding references turns up no candidate definition for a symbol
+    (def_path=None) and jedi cannot locate the definition either, sample the project's
+    dominant language as a **fallback** (not an override; see find_references), so a
+    non-Python symbol does not get stuck on the name-matching dead end.
 
-    只在主導語言佔比 ≥ 門檻時回該語言（平手/混合不硬選＝回 None 走保守 jedi、誤判成本
-    最低）；判不出回 None。開關（L0 鐵律 #6，皆 .lower() 容錯）：
-      - CODESEXTANT_INFER_LANG_DISABLED=1/true/yes/on → 回 None（停用）。
-      - CODESEXTANT_INFER_LANG_SAMPLE_CAP=<int> → 取樣上限（預設 1000；<=0 表不截斷全掃）。
-      - CODESEXTANT_INFER_LANG_MIN_RATIO=<float> → 主導佔比門檻（預設 0.6）。
+    Returns a language only when its share is at or above the threshold; a tie or a mixed
+    project deliberately does not force a choice and returns None, which falls back to the
+    conservative jedi path and costs the least when wrong. Undecidable also returns None.
+    Switches (L0 hard rule #6, all tolerant via .lower()):
+      - CODESEXTANT_INFER_LANG_DISABLED=1/true/yes/on → return None (disabled).
+      - CODESEXTANT_INFER_LANG_SAMPLE_CAP=<int> → sampling cap (default 1000; <=0 means
+        scan everything without truncating).
+      - CODESEXTANT_INFER_LANG_MIN_RATIO=<float> → dominant-share threshold (default 0.6).
     """
     if _env_on("CODESEXTANT_INFER_LANG_DISABLED"):
         return None
@@ -131,16 +143,19 @@ def _infer_project_language(root: str, *, sample_cap: int | None = None) -> str 
     if total == 0:
         return None
     top_lang, top_n = counts.most_common(1)[0]
-    # 主導佔比未達門檻（混合/平手）→ 回 None 走保守 jedi（決定性、誤判成本最低）
+    # Dominant share below the threshold (mixed or tied) → return None and take the
+    # conservative jedi path: deterministic, and the cheapest outcome when wrong.
     if top_n / total < min_ratio:
         return None
     return top_lang
 
 
 def _git_head_sha(repo_path: str) -> str | None:
-    """坑6：讀 repo 的 git HEAD sha（freshness 比對用）。非 git repo／git 不可用／
-    開關關閉 → None。Windows detached daemon 下不彈黑窗（CREATE_NO_WINDOW）。
-    開關（L0 鐵律 #6，.lower() 容錯）：CODESEXTANT_GIT_FRESHNESS_DISABLED=1/true/yes/on → None。
+    """Pitfall 6: read the repo's git HEAD sha (used for freshness comparison). Not a git
+    repo, git unavailable, or the switch turned off → None. Does not flash a console window
+    under a detached Windows daemon (CREATE_NO_WINDOW).
+    Switch (L0 hard rule #6, tolerant via .lower()):
+    CODESEXTANT_GIT_FRESHNESS_DISABLED=1/true/yes/on → None.
     """
     if _env_on("CODESEXTANT_GIT_FRESHNESS_DISABLED"):
         return None
@@ -148,7 +163,7 @@ def _git_head_sha(repo_path: str) -> str | None:
         import subprocess
         kwargs = {"capture_output": True, "text": True, "timeout": 5}
         if os.name == "nt":
-            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW（detached 不彈黑窗）
+            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW (no console flash when detached)
         out = subprocess.run(["git", "-C", repo_path, "rev-parse", "HEAD"], **kwargs)
         if out.returncode == 0:
             return out.stdout.strip() or None
@@ -158,23 +173,25 @@ def _git_head_sha(repo_path: str) -> str | None:
 
 
 def index_project(path: str, *, force: bool = False) -> dict:
-    """對一個專案建（或增量更新）索引。
+    """Build (or incrementally update) a project's index.
 
-    tree-sitter 全量抽符號 + content hash 增量：只重算 hash 變了的檔。
-    ⛔ 這一步不跑 jedi（全量 jedi 太慢）；引用解析留給 find_references 按需做。
+    tree-sitter extracts every symbol, and a content hash drives the incremental pass:
+    only files whose hash changed are recomputed.
+    ⛔ This step does not run jedi (running it over everything is far too slow); reference
+    resolution is left to find_references, on demand.
 
-    參數
-    ----
-    path  : 專案根目錄（絕對或相對皆可，內部會 normalize）。
-    force : True 時忽略 hash、全部重算（除錯/重建用）。
+    Parameters
+    ----------
+    path  : the project root (absolute or relative; it is normalized internally).
+    force : True ignores hashes and recomputes everything (for debugging or rebuilding).
 
-    回傳 dict（可轉 JSON）：
+    Returns a dict (JSON-serializable):
       {indexed, skipped, removed, errors, total_files, elapsed_sec,
        project_key, db_file, symbols_total}
-    路徑不是目錄 → NotADirectoryError（fail-loud）。
+    A path that is not a directory → NotADirectoryError (fail loudly).
     """
     if not os.path.isdir(path):
-        raise NotADirectoryError(f"index_project：'{path}' 不是有效目錄")
+        raise NotADirectoryError(f"index_project: '{path}' is not a valid directory")
 
     abs_path = os.path.abspath(path)
     t0 = time.perf_counter()
@@ -185,13 +202,14 @@ def index_project(path: str, *, force: bool = False) -> dict:
         seen_files: set[str] = set()
         for fp in _iter_source_files(abs_path):
             seen_files.add(fp)
-            # 紅隊 L4-MEDIUM：一檔讀一次 bytes（content_hash 也從 bytes 算，省掉原本 4 次磁碟讀）
+            # Red team L4-MEDIUM: read each file's bytes once (content_hash is computed
+            # from those bytes too), which removes the previous 4 disk reads per file.
             try:
                 with open(fp, "rb") as _f:
                     source = _f.read()
             except OSError as exc:
                 errors += 1
-                error_files.append({"path": fp, "error": f"讀檔失敗: {exc}"})
+                error_files.append({"path": fp, "error": f"failed to read file: {exc}"})
                 continue
             h = hashlib.sha256(source).hexdigest()
 
@@ -200,22 +218,26 @@ def index_project(path: str, *, force: bool = False) -> dict:
                 continue
 
             try:
-                # 紅隊 L4-MEDIUM：一檔 parse 一次，symbols/comments/fingerprints 共用同一 tree（省重複 parse）
+                # Red team L4-MEDIUM: parse each file once and share the tree across
+                # symbols/comments/fingerprints, avoiding repeated parses.
                 lang = symbols.language_for_file(fp)
                 tree = symbols.parse_source(source, lang) if lang else None
                 syms = (symbols.extract_symbols_from_source(source, lang, file_path=fp, tree=tree)
                         if lang else [])
                 store.store_file_symbols(fp, h, syms, indexed_at=time.time())
                 indexed += 1
-                # 功能 B：抽註解落盤（共用 tree；註解失敗不該炸索引，symbols 已落盤、下次 reindex 再補）。
+                # Feature B: extract and persist comments (sharing the tree). A comment
+                # failure must not break indexing. The symbols are already persisted and
+                # the next reindex will fill the gap.
                 if lang and comments.comments_enabled():
                     try:
                         store.store_file_comments(fp, comments.extract_comments_from_source(
                             source, lang, file_path=fp, tree=tree))
-                    except Exception as exc:  # 註解失敗不炸索引、但記 stderr 不靜默吞（可觀測性）
-                        print(f"  ⚠ 註解抽取失敗（{fp}）：{type(exc).__name__}: {exc}",
+                    except Exception as exc:  # do not break indexing, but log to stderr rather than swallowing it (observability)
+                        print(f"  ⚠ comment extraction failed ({fp}): {type(exc).__name__}: {exc}",
                               file=sys.stderr)
-                # 功能 B：抽結構指紋 + winnowing 倒排落盤（共用 tree；失敗不炸索引）
+                # Feature B: extract structural fingerprints + the winnowing inverted index
+                # and persist them (sharing the tree; a failure must not break indexing).
                 if lang and clones.dedup_enabled():
                     try:
                         fps = clones.extract_fingerprints_from_source(
@@ -223,21 +245,22 @@ def index_project(path: str, *, force: bool = False) -> dict:
                         winnow_idx = [{"line": f["line"], "fp_value": v}
                                       for f in fps for v in f.get("winnow", [])]
                         store.store_file_fingerprints(fp, fps, winnow_idx)
-                    except Exception as exc:  # 指紋/複雜度失敗不炸索引、但記 stderr 不靜默吞（對抗 review CRITICAL #2③）
-                        print(f"  ⚠ 指紋/複雜度抽取失敗（{fp}）：{type(exc).__name__}: {exc}",
+                    except Exception as exc:  # do not break indexing, but log to stderr rather than swallowing it (adversarial review CRITICAL #2③)
+                        print(f"  ⚠ fingerprint/complexity extraction failed ({fp}): {type(exc).__name__}: {exc}",
                               file=sys.stderr)
-            except Exception as exc:  # 單檔解析失敗不該炸整個索引，但要記錄（不靜默吞）
+            except Exception as exc:  # one file failing to parse must not break the whole index, but it must be recorded, not swallowed
                 errors += 1
                 error_files.append({"path": fp, "error": f"{type(exc).__name__}: {exc}"})
 
-        # 處理已從磁碟消失的檔（從索引移除，保持單一真相）
+        # Handle files that have disappeared from disk (remove them from the index, so it
+        # stays the single source of truth).
         removed = 0
         for old_path in store.all_indexed_files():
             if old_path not in seen_files and not os.path.exists(old_path):
                 store.remove_file(old_path)
                 removed += 1
 
-        # 坑6：記錄本次索引時 repo 的 git HEAD sha（非 git repo → None 不記）
+        # Pitfall 6: record the repo's git HEAD sha at index time (not a git repo → None, nothing recorded).
         sha = _git_head_sha(abs_path)
         if sha:
             store.record_git_sha(sha)
@@ -260,10 +283,11 @@ def index_project(path: str, *, force: bool = False) -> dict:
 
 
 def get_symbols(path: str, file: str | None = None) -> dict:
-    """取某專案的符號（給 file 只取該檔，否則整個專案）。
+    """Get a project's symbols (pass file for one file, otherwise the whole project).
 
-    回傳 {project_key, file, count, symbols:[...]}。
-    專案沒索引過 → 回 count=0 並附 note 提示先 index（不假裝有資料）。
+    Returns {project_key, file, count, symbols:[...]}.
+    A project that has never been indexed returns count=0 plus a note telling you to index
+    first, and it does not pretend to have data.
     """
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
@@ -273,7 +297,7 @@ def get_symbols(path: str, file: str | None = None) -> dict:
             "file": file,
             "count": 0,
             "symbols": [],
-            "note": f"專案尚未索引（無 {db_file}）。請先呼叫 index_project。",
+            "note": f"project has not been indexed yet (no {db_file}); call index_project first.",
         }
 
     target_file = os.path.abspath(file) if file else None
@@ -289,8 +313,9 @@ def get_symbols(path: str, file: str | None = None) -> dict:
 
 def _refs_non_python(root: str, symbol: str, def_path: str | None, lang: str,
                      include_low_confidence: bool) -> dict:
-    """非 Python 找引用 dispatch：TS/JS 先試 ts-morph 高信心、不可用 fallback 名稱比對
-    （不爆）；其他語言走名稱比對退化（全低信心、誠實標示）。"""
+    """Reference dispatch for non-Python languages: TS/JS try ts-morph for high confidence
+    first and fall back to name matching when it is unavailable (never raising); every
+    other language degrades to name matching (all low confidence, honestly labelled)."""
     if lang in ("typescript", "tsx", "javascript"):
         result = references.ts_morph_references(root, symbol, def_path=def_path)
         if result is None:
@@ -306,59 +331,76 @@ def _refs_non_python(root: str, symbol: str, def_path: str | None, lang: str,
 
 
 def _refs_reliability(result: dict) -> dict:
-    """序6：依 find_references 結果品質自評可靠度 + 給「何時該回去讀原始碼」建議。
+    """Step 6: self-assess the reliability of a find_references result and say when you
+    should go back and read the source.
 
-    level：high=可直接信任 / medium=部分可信但有盲區、建議補讀 / low=務必讀碼別當定論。
-    ⛔ 不管哪一級都**不取代讀碼判斷邏輯對錯**——本工具只看引用關聯、不看語義與業務意圖；
-    且靜態解析一律看不到動態/反射/字串拼接的呼叫（這正是最該人工讀碼之處）。
+    level: high = trust it directly / medium = partly trustworthy but it has blind spots,
+    read a bit more / low = read the code, do not treat this as a verdict.
+    ⛔ No level **replaces reading the code to judge whether the logic is right**. This
+    tool sees reference relationships, not semantics or business intent. Static resolution
+    never sees dynamic, reflective or string-concatenated calls, which is exactly where
+    reading the code matters most.
     """
     engine = result.get("engine")
     high = len(result.get("high_confidence") or [])
     low = len(result.get("low_confidence") or [])
     if engine == "name-match":
         return {"level": "low",
-                "advice": "純名稱比對（無真 import 解析）——含同名干擾、且看不到動態/反射呼叫；"
-                          "務必讀原始碼確認，別把這份清單當完整或精確。"}
+                "advice": "plain name matching, with no real import resolution. It includes "
+                          "same-name interference and cannot see dynamic or reflective calls. "
+                          "Read the source to confirm; do not treat this list as complete or precise."}
     if not result.get("definition"):
         return {"level": "low",
-                "advice": "未定位到符號定義（可能拼錯／不在此 repo／是 module 級變數）——"
-                          "結果不完整，建議直接讀原始碼確認。"}
+                "advice": "the symbol's definition was not located (a typo, not in this repo, or a "
+                          "module-level variable). The result is incomplete, so read the source "
+                          "directly to confirm."}
     if high == 0 and low == 0:
         return {"level": "medium",
-                "advice": "真解析得到零引用——可能真沒人用，也可能是動態/反射/字串拼接呼叫"
-                          "（靜態解析一律看不到）；刪改前讀那段碼上下文確認。"}
+                "advice": "real resolution found zero references. It may genuinely be unused, or it "
+                          "may be called dynamically, reflectively or through string concatenation, "
+                          "which static resolution never sees. Read the surrounding code before "
+                          "deleting or changing it."}
     if low > high * 3 and low > 5:
         return {"level": "medium",
-                "advice": f"低信心({low})遠多於高信心({high})、多為同名干擾；高信心那 {high} 處可信，"
-                          "但若你要找的用法不在其中，建議掃一眼低信心或讀原始碼。"}
+                "advice": f"far more low-confidence hits ({low}) than high-confidence ones ({high}), "
+                          f"mostly same-name interference. Those {high} high-confidence hits are "
+                          "trustworthy, but if the usage you are after is not among them, skim the "
+                          "low-confidence list or read the source."}
     return {"level": "high",
-            "advice": f"真解析高信心引用 {high} 處、可直接信任省去人肉追引用"
-                      "（仍：改簽章/刪除後跑 build 驗證；**邏輯對錯仍需讀碼**）。"}
+            "advice": f"{high} high-confidence reference(s) from real resolution, so trust them and skip "
+                      "chasing references by hand (still: run the build after changing a signature or "
+                      "deleting something; **whether the logic is right still needs reading the code**)."}
 
 
 def find_references(path: str, symbol: str, *, def_path: str | None = None,
                     src_root: str | None = None,
                     include_low_confidence: bool = True,
                     persist: bool = True) -> dict:
-    """找某符號「被誰用」——jedi 二段式精解（按需才跑 jedi）。
+    """Find who uses a symbol: jedi's two-stage resolution, run only on demand.
 
-    參數
-    ----
-    path   : 專案根（也是 jedi.Project 隔離根，除非另給 src_root）。
-    symbol : 符號名（如 "check"）。
-    def_path : 該符號定義所在檔。沒給的話，會先查索引庫找候選定義；
-               找到唯一一個就用它，找到多個（同名）則用第一個並在回傳裡列出全部候選。
-    src_root : jedi.Project 的根。預設 = path。某些 repo 的 import 根在 src/ 子目錄，
-               可明確指定（採 src/ 佈局的專案要指到 .../src）。
-    include_low_confidence : 是否回名稱比對命中但 jedi 未確認的檔（標 low）。
-    persist : True 時把解析出的高信心引用邊落盤（供 PageRank/查詢重用）。
+    Parameters
+    ----------
+    path   : the project root (also jedi.Project's isolation root, unless src_root is given).
+    symbol : the symbol name (e.g. "check").
+    def_path : the file the symbol is defined in. If omitted, the index is queried for
+               candidate definitions; a single match is used directly, and with several
+               same-named matches the first is used and all candidates are listed in the
+               return value.
+    src_root : jedi.Project's root. Defaults to path. Some repos put their import root in a
+               src/ subdirectory and can name it explicitly (a project using a src/ layout
+               must point at .../src).
+    include_low_confidence : whether to return files that name matching hit but jedi did not
+               confirm (marked low).
+    persist : True persists the resolved high-confidence reference edges, so PageRank and
+               later queries can reuse them.
 
-    回傳 references.find_references 的 dict + {candidate_definitions:[...]}。
+    Returns references.find_references's dict plus {candidate_definitions:[...]}.
     """
     abs_path = os.path.abspath(path)
     root = os.path.abspath(src_root) if src_root else abs_path
 
-    # 若沒給 def_path，從索引庫撈同名定義當候選（二段式第一段的「粗篩」也用得上索引）
+    # Without def_path, pull same-named definitions from the index as candidates (the
+    # first stage's coarse filter benefits from the index too).
     candidate_defs: list[dict] = []
     db_file = storage.db_path_for(abs_path)
     if db_file.exists():
@@ -368,18 +410,21 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
     if def_path is None and candidate_defs:
         def_path = candidate_defs[0]["path"]
 
-    # C5 按定義檔語言 dispatch：Python（或無法判斷副檔名）走 jedi 真 import 解析；
-    # 其他語言走 _refs_non_python（ts-morph／名稱比對退化）。
+    # C5 dispatches on the definition file's language: Python (or an undeterminable
+    # extension) takes jedi's real import resolution; every other language goes through
+    # _refs_non_python (ts-morph, degrading to name matching).
     lang = symbols.language_for_file(def_path) if def_path else None
     if lang in (None, "python"):
         result = references.find_references(
             root, symbol, def_path=def_path,
             include_low_confidence=include_low_confidence,
         )
-        # 坑9（對抗 review 修正：fallback 而非 override）：def_path=None 且 jedi 沒找到定義
-        # 時，才以取樣推得的語言重試。⚠ 必須在 jedi 失敗「之後」介入——jedi 不依賴索引/
-        # def_path、直接掃磁碟，混合 repo 裡 Python symbol 即使 def_path=None jedi 仍找得到；
-        # 先 override 會奪走這能力（pit9-1 回歸：TS 多於 Py 的 repo 把 Python 查詢誤丟成空）。
+        # Pitfall 9 (fixed in adversarial review: fallback, not override): only retry with
+        # the sampled language when def_path is None *and* jedi found no definition.
+        # ⚠ This must run *after* jedi fails, because jedi does not depend on the index or
+        # def_path, it scans the disk directly, so in a mixed repo it still finds a Python
+        # symbol even with def_path=None. Overriding first would take that ability away
+        # (regression pit9-1: a repo with more TS than Python returned empty for Python queries).
         if def_path is None and not result.get("definition"):
             inferred = _infer_project_language(root)
             if inferred and inferred != "python":
@@ -392,20 +437,28 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
     result["language"] = lang or "python"
     result["candidate_definitions"] = candidate_defs
     result["src_root"] = root
-    # 序1 保險：三路源頭（references.find_references/name_match/ts_morph）都已標 engine，
-    # 但 fallback 換 result 或未來新路徑可能漏 → 補一個保守預設（最低信心，不謊報真解析）。
+    # Step 1 safety net: all three sources (references.find_references / name_match /
+    # ts_morph) already set engine, but a fallback swapping the result, or a future new
+    # path, could miss it, so default conservatively (lowest confidence, never claiming
+    # real resolution that did not happen).
     result.setdefault("engine", "name-match")
-    # 序2（Gap3-A 降信心）：誠實揭露能力邊界——查引用/未使用偵測 ≠ 編譯/型別/lint 通過，
-    # refs 全綠不代表能 build。清死碼或改簽章後務必自跑 build/CI（紅藍最佳解 §2 保留項）。
+    # Step 2 (Gap3-A, lowering confidence): state the capability boundary honestly.
+    # reference lookup and unused detection are not the same as passing compilation, type
+    # checking or lint, and all-green refs do not mean it builds. After clearing dead code
+    # or changing a signature, run build/CI yourself.
     result["verification_reminder"] = (
-        "CodeSextant 查的是引用關聯，不等於編譯/型別/lint 通過；"
-        "清死碼或改簽章後務必跑 build/CI 驗證。"
+        "CodeSextant reports reference relationships, which is not the same as passing "
+        "compilation, type checking or lint; after clearing dead code or changing a "
+        "signature, always run build/CI to verify."
     )
-    # 序6：自我邊界感知——依本次結果品質自評可靠度 + 主動建議「何時該回去讀原始碼」。
-    # ⛔ 工具是導航圖非代碼本身：name-match/零引用/低信心遠多時主動喊讀碼，避免用戶誤以為已涵蓋。
+    # Step 6: awareness of its own boundaries. Self-assess the reliability of this result
+    # and volunteer when you should go back and read the source.
+    # ⛔ The tool is a navigation map, not the code itself: on name-match results, zero
+    # references, or far more low-confidence hits, it says so, so nobody assumes coverage
+    # it does not have.
     result["reliability"] = _refs_reliability(result)
 
-    # 落盤高信心引用邊（按來源檔分組），供之後 PageRank 用
+    # Persist the high-confidence reference edges, grouped by source file, for PageRank later.
     if persist and db_file.exists() and result.get("definition"):
         d = result["definition"]
         edges_by_src: dict[str, list[dict]] = {}
@@ -424,8 +477,9 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
         if edges_by_src:
             with storage.ProjectStore.open(abs_path) as store:
                 for sp, edges in edges_by_src.items():
-                    # 注意：replace_refs_for 會清掉該 src 檔「所有」舊邊。
-                    # 為避免清掉別的符號的邊，這裡採累加策略：先讀回該檔現有邊再合併。
+                    # Note: replace_refs_for clears *all* of that source file's old edges.
+                    # To avoid wiping other symbols' edges, accumulate instead: read the
+                    # file's existing edges back and merge.
                     existing = [e for e in store.all_refs() if e["src_path"] == sp
                                 and e["symbol_name"] != symbol]
                     store.replace_refs_for(sp, existing + edges)
@@ -436,24 +490,32 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
 def call_hierarchy(path: str, symbol: str, *, direction: str = "both",
                    max_hops: int | None = None, def_path: str | None = None,
                    src_root: str | None = None, build_edges: bool = True) -> dict:
-    """傳遞呼叫鏈（競品吸收 queue 1）——把單層 refs 升級成傳遞 callers/callees 鏈。
+    """Transitive call chain: upgrades single-level refs into transitive caller/callee chains.
 
-    direction：up=誰(傳遞)呼叫此符號(callers) / down=此符號(傳遞)呼叫誰(callees) / both。
-    底層走 storage.traverse_call_graph（refs 表 WITH RECURSIVE CTE），max_hops 防環無限遞迴。
+    direction: up = who (transitively) calls this symbol (callers) / down = who this symbol
+    (transitively) calls (callees) / both.
+    Underneath it uses storage.traverse_call_graph (a WITH RECURSIVE CTE over the refs
+    table); max_hops stops cycles from recursing forever.
 
-    ⚠ 呼叫鏈基於「已落盤的引用邊」（refs 表，對符號跑過 find_references 才累積）。build_edges=True
-    時先對 target 跑一次 find_references(persist=True) 建直接 callers 邊，讓 up 方向直接層即時準；
-    傳遞層與 down 方向仍依賴 refs 表既有邊（誠實 note 標明，呼應「誠實 UNKNOWN」哲學——邊不完整
-    就說，不假裝完整）。靜態推導看不到動態/反射呼叫。
+    ⚠ The call chain is built from **persisted reference edges** (the refs table, which only
+    accumulates once find_references has run against a symbol). With build_edges=True, the
+    target gets one find_references(persist=True) pass first to build its direct caller
+    edges, which makes the direct level of the up direction accurate immediately; the
+    transitive levels and the down direction still depend on whatever edges the refs table
+    already holds. The note says so honestly, in keeping with the "honest UNKNOWN"
+    philosophy: if the edges are incomplete, say so rather than pretending otherwise.
+    Static derivation cannot see dynamic or reflective calls.
 
-    參數
-    ----
-    max_hops : None 時取 env CODESEXTANT_CALL_HIERARCHY_MAX_HOPS（預設 5，L0 鐵律 #6 可調）。
-    回 dict：{symbol, direction, definition, callers?, callees?, max_hops, edges_in_graph,
-             candidate_definitions, note, verification_reminder}。專案未索引 → RuntimeError。
+    Parameters
+    ----------
+    max_hops : when None, taken from env CODESEXTANT_CALL_HIERARCHY_MAX_HOPS (default 5,
+               adjustable per L0 hard rule #6).
+    Returns a dict: {symbol, direction, definition, callers?, callees?, max_hops,
+             edges_in_graph, candidate_definitions, note, verification_reminder}.
+    An unindexed project → RuntimeError.
     """
     if direction not in ("up", "down", "both"):
-        raise ValueError(f"direction 必須是 up/down/both，收到 {direction!r}")
+        raise ValueError(f"direction must be up/down/both, got {direction!r}")
     if max_hops is None:
         try:
             max_hops = int(os.environ.get("CODESEXTANT_CALL_HIERARCHY_MAX_HOPS", "5"))
@@ -463,7 +525,7 @@ def call_hierarchy(path: str, symbol: str, *, direction: str = "both",
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
         raise RuntimeError(
-            f"call_hierarchy：專案尚未索引（無 {db_file}）。請先呼叫 index_project。")
+            f"call_hierarchy: project has not been indexed yet (no {db_file}); call index_project first.")
 
     with storage.ProjectStore.open(abs_path) as store:
         candidate_defs = [d for d in store.find_symbol_definitions(symbol)
@@ -478,22 +540,24 @@ def call_hierarchy(path: str, symbol: str, *, direction: str = "both",
         "max_hops": max_hops,
         "candidate_definitions": candidate_defs,
         "verification_reminder": (
-            "呼叫鏈是靜態引用推導，看不到動態/反射/字串拼接呼叫；改動前仍須讀那段碼確認。"),
+            "A call chain is derived statically from references and cannot see dynamic, "
+            "reflective or string-concatenated calls; read the code before changing it."),
     }
     if def_path is None:
         result["callers"] = []
         result["callees"] = []
-        result["error"] = (f"索引庫找不到符號 '{symbol}' 的可引用定義；"
-                           "確認拼字、或先 index_project。")
+        result["error"] = (f"the index holds no referenceable definition for symbol '{symbol}'; "
+                           "check the spelling, or run index_project first.")
         return result
 
-    # build_edges：對 target 跑 find_references 建直接 callers 邊（讓 up 直接層即時準）
+    # build_edges: run find_references against the target to build its direct caller edges,
+    # which makes the direct level of the up direction accurate immediately.
     if build_edges:
         try:
             find_references(abs_path, symbol, def_path=def_path, src_root=src_root,
                             persist=True)
         except Exception:
-            pass  # 建邊失敗不致命——退用 refs 表既有邊
+            pass  # failing to build edges is not fatal; fall back to whatever the refs table already holds
 
     with storage.ProjectStore.open(abs_path) as store:
         result["edges_in_graph"] = len(store.all_refs())
@@ -504,14 +568,17 @@ def call_hierarchy(path: str, symbol: str, *, direction: str = "both",
             result["callees"] = store.traverse_call_graph(
                 symbol, def_path, direction="down", max_hops=max_hops)
     result["note"] = (
-        f"呼叫鏈基於已落盤引用邊（refs 表 {result['edges_in_graph']} 條）；"
-        "邊在你對符號跑過 find_references(map/refs 會自動 persist)後累積。"
-        "傳遞層/callees 方向若邊不足會偏少——先對相關符號跑 refs 補邊可更完整。")
+        f"The call chain is built from persisted reference edges ({result['edges_in_graph']} "
+        "in the refs table). Edges accumulate once you run find_references against a symbol "
+        "(map and refs persist automatically). If there are too few edges, the transitive "
+        "levels and the callees direction will look sparse; run refs against the related "
+        "symbols first to fill them in.")
     return result
 
 
 def _is_test_path(p: str) -> bool:
-    """路徑啟發式判測試檔（給 blast radius 分類 test/prod 用、零成本）。"""
+    """Path heuristic for identifying test files (used by blast radius to split test from
+    prod; costs nothing)."""
     pl = p.replace("\\", "/").lower()
     base = os.path.basename(pl)
     return (base.startswith("test_") or base.endswith("_test.py") or base.endswith("_test.go")
@@ -520,11 +587,14 @@ def _is_test_path(p: str) -> bool:
 
 
 def _mark_high_importance(path: str, callers: list[dict]) -> list[dict]:
-    """標出受影響 caller 中 PageRank 高重要度者（接 get_map top 符號名集合）。
+    """Flag the affected callers that PageRank considers highly important (by intersecting
+    with get_map's top symbol names).
 
-    紅隊 L2-MEDIUM 修正：with_name_edges=False 走輕量路徑——impact/blast-radius 是高頻熱
-    路徑，只需「結構中心 top 符號名」過濾 caller，不需名稱級排序精度；舊版每次 impact 都附帶
-    觸發一次全 repo 名稱級掃描（實測 5.5x 退化、且該場景 high_importance 常為 0＝零價值）。
+    Red team L2-MEDIUM fix: with_name_edges=False takes the lightweight path. impact and
+    blast-radius are hot paths that only need the structurally central top symbol names to
+    filter callers, which do not need name-level ordering precision. The old version
+    triggered a whole-repo name-level scan on every impact call (measured at 5.5x slower,
+    and in that scenario high_importance was usually 0, so it bought nothing).
     """
     try:
         m = get_map(path, token_budget=3000, with_name_edges=False)
@@ -536,15 +606,18 @@ def _mark_high_importance(path: str, callers: list[dict]) -> list[dict]:
 
 def impact(path: str, symbol: str, *, max_hops: int | None = None,
            def_path: str | None = None, src_root: str | None = None) -> dict:
-    """改動影響報告 / blast radius（競品吸收 queue 2）——改 X 會牽動誰。
+    """Change impact report / blast radius: who is affected by editing X.
 
-    建在 call_hierarchy(direction=up) 之上：直接+傳遞 callers、caller 分 test/prod/entrypoint、
-    接 PageRank 標高重要度受影響符號。誠實層強制：name-match 低信心的傳遞依賴另列『可能還
-    影響（未確認）』，⛔不混進確定集誤導。靜態推導看不到動態/反射呼叫。
+    Built on call_hierarchy(direction=up): direct and transitive callers, callers split into
+    test/prod/entrypoint, and PageRank used to flag the highly important affected symbols.
+    The honesty layer is mandatory: low-confidence transitive dependencies from name matching
+    are listed separately as "may also be affected (unconfirmed)" and ⛔ are never mixed into
+    the confirmed set, where they would mislead. Static derivation cannot see dynamic or
+    reflective calls.
 
-    回 dict：{symbol, definition, direct_callers, transitive_callers, affected_files,
+    Returns a dict: {symbol, definition, direct_callers, transitive_callers, affected_files,
              by_kind:{test/prod/entrypoint}, high_importance_affected, uncertain_maybe_affected,
-             summary, note, verification_reminder}。專案未索引 → RuntimeError。
+             summary, note, verification_reminder}. An unindexed project → RuntimeError.
     """
     from . import deadcode
 
@@ -556,9 +629,11 @@ def impact(path: str, symbol: str, *, max_hops: int | None = None,
 
     by_kind: dict[str, list] = {"test": [], "prod": [], "entrypoint": []}
     for c in confirmed:
-        # ⚠ test 優先於 entrypoint：deadcode.is_entrypoint 把 test_*.py 當入口（那是死碼豁免
-        # 用途）；但 blast radius 的分類意圖是「改它只影響測試 vs 影響對外行為」，故 test 檔
-        # 先歸 test，非 test 的入口（路由/CLI/__main__）才歸 entrypoint。
+        # ⚠ test takes priority over entrypoint: deadcode.is_entrypoint treats test_*.py as
+        # an entrypoint, which is right for dead-code exemptions. But blast radius is
+        # classifying "does changing this only affect tests, or does it affect external
+        # behaviour", so test files go to test first, and only non-test entries (routes,
+        # CLI, __main__) count as entrypoint.
         if _is_test_path(c["path"]):
             by_kind["test"].append(c)
             continue
@@ -577,7 +652,8 @@ def impact(path: str, symbol: str, *, max_hops: int | None = None,
         "affected_files": sorted({c["path"] for c in confirmed}),
         "by_kind": by_kind,
         "high_importance_affected": high_importance,
-        # ⛔ 低信心傳遞依賴另列、不混進確定集（誠實層）
+        # ⛔ Low-confidence transitive dependencies are listed separately, never mixed into
+        # the confirmed set (the honesty layer).
         "uncertain_maybe_affected": uncertain,
         "max_hops": ch.get("max_hops"),
         "edges_in_graph": ch.get("edges_in_graph"),
@@ -594,40 +670,48 @@ def impact(path: str, symbol: str, *, max_hops: int | None = None,
         },
         "note": ch.get("note"),
         "verification_reminder": (
-            "改動影響基於靜態呼叫鏈、看不到動態/反射/字串拼接呼叫；'可能還影響' 區是低信心未確認、"
-            "別當定論。改動前仍須讀受影響處確認。"),
+            "Change impact is based on a static call chain and cannot see dynamic, reflective "
+            "or string-concatenated calls; the 'may also be affected' section is low-confidence "
+            "and unconfirmed, not a verdict. Read the affected code before changing it."),
     }
 
 
 def _get_map_uncached(path: str, token_budget: int = 2000, *, damping: float = 0.85,
                       focus_symbols=None, focus_files=None,
                       with_name_edges: bool = True) -> dict:
-    """給「token 預算內最重要的 N 個符號」（PageRank 排序）。
+    """Return the most important N symbols that fit a token budget, ordered by PageRank.
 
-    queue 4：focus_symbols/focus_files（呼叫端顯式傳入「在改/在問的符號/檔」）→ query-aware
-    排序偏向相關處（personalization）；不傳＝原靜態結構中心度地圖。
+    focus_symbols / focus_files let the caller name the symbols and files currently being
+    edited or asked about, which biases the ordering toward relevant code
+    (personalization). Omitting them gives the plain static structural-centrality map.
 
-    參數
-    ----
-    path : 專案根。
-    token_budget : 約略 token 預算。用「每個符號條目約 12 token」粗估換算成符號數，
-                   挑 PageRank 最高的前 N 個。
-    damping : PageRank 阻尼係數。
-    with_name_edges : True（預設）建名稱級全圖邊修開箱退化；False 走輕量純 SQLite 路徑
-                      （不掃磁碟、不建名稱級邊）——給 impact/blast-radius 等只需 top 結構符號名的
-                      熱路徑用，避免名稱級全圖掃拖慢（紅隊 L2-MEDIUM）。
+    Parameters
+    ----------
+    path : the project root.
+    token_budget : an approximate token budget. It is converted to a symbol count using a
+                   rough estimate of about 12 tokens per symbol entry, then the top N by
+                   PageRank are taken.
+    damping : PageRank's damping factor.
+    with_name_edges : True (the default) builds name-level whole-graph edges to fix the
+                      out-of-the-box degradation; False takes the lightweight pure-SQLite
+                      path with no disk scan and no name-level edges, for hot paths like
+                      impact and blast-radius that only need the top structural symbol
+                      names, so the name-level whole-graph scan does not slow them down
+                      (red team L2-MEDIUM).
 
-    回傳 {project_key, token_budget, approx_tokens, count, symbols:[...帶 rank...], edge_sources, note}。
-    專案沒索引過 → fail-loud（RuntimeError），因為「給地圖」必須先有索引。
+    Returns {project_key, token_budget, approx_tokens, count, symbols:[...with rank...],
+    edge_sources, note}.
+    A project that has never been indexed fails loudly (RuntimeError), because producing a
+    map requires an index.
     """
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
         raise RuntimeError(
-            f"get_map：專案尚未索引（無 {db_file}）。請先呼叫 index_project。"
+            f"get_map: project has not been indexed yet (no {db_file}); call index_project first."
         )
 
-    # 約略換算：一條符號摘要（kind name @file:line）約 12 token
+    # Rough conversion: one symbol summary (kind name @file:line) is about 12 tokens.
     tokens_per_symbol = 12
     top_n = max(1, token_budget // tokens_per_symbol)
 
@@ -638,10 +722,14 @@ def _get_map_uncached(path: str, token_budget: int = 2000, *, damping: float = 0
         if symbols is None:
             symbols = store.get_symbols()
         db_refs = store.all_refs()
-        # namegraph（任務一修退化）：名稱級全圖邊，in-memory 算、**不落 refs 表**、全 low 信心。
-        # 修「開箱只 reindex 沒跑 find_references → refs=0 → PageRank 全均分」的招牌退化。
-        # db 的 high 邊（jedi/ts-morph 真解析，權重 1.0）仍主導；名稱級 low 邊（0.25×品質係數）
-        # 只補開箱無邊的全圖結構底盤。callgraph/impact/find_references 都讀 refs 表，零影響。
+        # namegraph: name-level whole-graph edges, computed in memory, **never persisted to
+        # the refs table**, and always low confidence. This fixes the signature degradation
+        # where a fresh reindex without any find_references run leaves refs=0 and PageRank
+        # collapses to a uniform distribution. The database's high edges (jedi/ts-morph real
+        # resolution, weight 1.0) still dominate; the name-level low edges (0.25 × a quality
+        # coefficient) only supply the structural floor when there would otherwise be no
+        # edges. callgraph, impact and find_references all read the refs table, so they are
+        # unaffected.
         name_edges: list[dict] = []
         ng_meta = None
         if with_name_edges and namegraph.namegraph_enabled():
@@ -656,25 +744,30 @@ def _get_map_uncached(path: str, token_budget: int = 2000, *, damping: float = 0
         name_unique_count = len(name_edges)
         ranked = rank_symbols(symbols, refs, top_n=top_n, damping=damping,
                               focus_symbols=focus_symbols, focus_files=focus_files)
-        # 紅隊 L4-MEDIUM：截斷時 note 不可宣稱「涵蓋全專案」（誠實層）
+        # Red team L4-MEDIUM: when the scan was truncated, the note must not claim it
+        # covered the whole project (the honesty layer).
         truncated = bool((ng_meta or {}).get("truncated"))
-        coverage = (f"分層取樣 {(ng_meta or {}).get('scanned_files')}／共 "
-                    f"{(ng_meta or {}).get('total_files')} 檔（已截斷，原因="
-                    f"{','.join((ng_meta or {}).get('truncation_reasons') or [])}；"
-                    "env CODESEXTANT_NAMEGRAPH_MAX_FILES 可調），排序僅涵蓋部分專案、後段符號可能被低估"
-                    if truncated else "涵蓋全專案")
+        coverage = (f"stratified sample of {(ng_meta or {}).get('scanned_files')} of "
+                    f"{(ng_meta or {}).get('total_files')} files (truncated, reason="
+                    f"{','.join((ng_meta or {}).get('truncation_reasons') or [])}; adjustable via "
+                    "env CODESEXTANT_NAMEGRAPH_MAX_FILES), so the ordering covers only part of "
+                    "the project and later symbols may be underrated"
+                    if truncated else "covers the whole project")
         if not refs:
-            note = ("無任何引用邊（refs=0、名稱級邊也空），PageRank 退化為均分；"
-                    "通常代表專案無互相引用或 namegraph 被停用。")
+            note = ("No reference edges at all (refs=0 and no name-level edges either), so "
+                    "PageRank degrades to a uniform distribution. This usually means the "
+                    "project has no internal cross-references, or namegraph is disabled.")
         elif not db_refs:
-            note = (f"PageRank 用名稱級全圖邊排序（{name_edge_count} 次 low 信心引用、"
-                    f"折成 {name_unique_count} 條唯一邊，{coverage}）；"
-                    "排序已脫離均分、凸顯結構中心符號。要更精準可對熱點符號跑 "
-                    "find_references(persist=True) 累積高信心邊。")
+            note = (f"PageRank ordered by name-level whole-graph edges ({name_edge_count} "
+                    f"low-confidence references folded into {name_unique_count} unique edges, "
+                    f"{coverage}). The ordering has escaped the uniform distribution and "
+                    "surfaces structurally central symbols. For more precision, run "
+                    "find_references(persist=True) on hot symbols to accumulate "
+                    "high-confidence edges.")
         else:
-            note = (f"PageRank 混合 {len(db_refs)} 條高信心邊（真解析、主導）+ "
-                    f"{name_edge_count} 次名稱級 low 引用（折成 {name_unique_count} 條唯一邊，"
-                    f"{coverage}）排序。")
+            note = (f"PageRank ordered by a mix of {len(db_refs)} high-confidence edges (real "
+                    f"resolution, dominant) and {name_edge_count} name-level low-confidence "
+                    f"references (folded into {name_unique_count} unique edges, {coverage}).")
         result = {
             "project_key": store.project_key,
             "token_budget": token_budget,
@@ -720,7 +813,8 @@ def _map_cache_limit() -> int:
 
 def get_map(path: str, token_budget: int = 2000, *, damping: float = 0.85,
             focus_symbols=None, focus_files=None, with_name_edges: bool = True) -> dict:
-    """帶 revision-aware LRU 的公開 map；同索引同參數在 daemon 內直接回小結果副本。"""
+    """The public map, with a revision-aware LRU; within the daemon, the same index and the
+    same parameters return a copy of the cached small result directly."""
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
@@ -728,8 +822,10 @@ def get_map(path: str, token_budget: int = 2000, *, damping: float = 0.85,
             abs_path, token_budget, damping=damping, focus_symbols=focus_symbols,
             focus_files=focus_files, with_name_edges=with_name_edges)
 
-    # 先完成冪等 schema/index migration 再取 revision，避免升級當下把結果存到 migration 前 key、
-    # 下一次又白算一遍。open 不再無條件改 meta，所以正常 cache hit 只多一次便宜開關庫。
+    # Finish the idempotent schema/index migration before reading the revision, so an
+    # upgrade does not store the result under the pre-migration key and recompute it from
+    # scratch next time. open() no longer modifies meta unconditionally, so a normal cache
+    # hit costs only one cheap open/close of the database.
     with storage.ProjectStore.open(abs_path):
         pass
     key = _map_cache_key(
@@ -770,17 +866,19 @@ def get_map(path: str, token_budget: int = 2000, *, damping: float = 0.85,
     try:
         storage.write_map_snapshot(db_file, key_digest, result)
     except (OSError, TypeError, ValueError) as exc:
-        print(f"  ⚠ map snapshot 寫入失敗：{type(exc).__name__}: {exc}",
+        print(f"  ⚠ failed to write map snapshot: {type(exc).__name__}: {exc}",
               file=sys.stderr)
     return result
 
 
 def status(path: str, *, check_freshness: bool = False) -> dict:
-    """某專案的索引狀態（給 /status 端點與中文面板用）。
+    """A project's index status (for the /status endpoint and the panel).
 
-    專案沒索引過 → 回 indexed=False（不報錯，狀態查詢本就該能查「沒索引」）。
-    check_freshness=True 才比對 git HEAD sha（會 spawn git 子進程）——預設 False，
-    避免不設防的 GET /status 被惡意本機網頁 no-cors 觸發 git spawn 風暴（pit7-1）。
+    A project that has never been indexed returns indexed=False rather than raising, because a
+    status query should be able to report "not indexed".
+    Only check_freshness=True compares the git HEAD sha, which spawns a git subprocess. The
+    default is False, so an unauthenticated GET /status cannot be turned into a git spawn
+    storm by a malicious local web page using no-cors (pit7-1).
     """
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
@@ -795,32 +893,35 @@ def status(path: str, *, check_freshness: bool = False) -> dict:
         st = store.stats()
         st["indexed"] = True
         if check_freshness:
-            # 坑6：git freshness——索引時 sha vs 當前 HEAD sha。
+            # Pitfall 6: git freshness. The sha recorded at index time vs the current HEAD sha.
             indexed_sha = st.get("indexed_git_sha")
             current_sha = _git_head_sha(abs_path)
             st["current_git_sha"] = current_sha
             if indexed_sha and current_sha:
                 st["git_stale"] = (indexed_sha != current_sha)
             elif indexed_sha and not current_sha:
-                # 曾記過 sha 但現在 git 不可用（.git 刪/搬走/dubious-ownership）→ 無法判定，
-                # ⛔ 不可靜默 False 謊報新鮮（pit6-1）。
+                # A sha was recorded before, but git is now unavailable (.git deleted, moved,
+                # or dubious-ownership) → undecidable. ⛔ Do not silently return False and
+                # claim it is fresh (pit6-1).
                 st["git_stale"] = None
-                st["git_note"] = "git 目前不可用，無法判定新鮮度（索引時的 sha 仍在）"
+                st["git_note"] = "git is currently unavailable, so freshness cannot be determined (the sha recorded at index time is still here)"
             else:
-                # 非 git repo／索引時未記 sha → freshness 不適用
+                # Not a git repo, or no sha recorded at index time → freshness does not apply.
                 st["git_stale"] = False
                 if not indexed_sha and current_sha:
-                    st["git_note"] = "此庫索引時未記錄 git sha，重新索引以啟用新鮮度判定"
+                    st["git_note"] = "this database recorded no git sha at index time; reindex to enable freshness checking"
         return st
 
 
 def list_projects() -> dict:
-    """列出本機所有已索引專案（給 /projects 端點與中文面板用）。
+    """List every project indexed on this machine (for the /projects endpoint and the panel).
 
-    掃庫目錄下每個 SQLite 庫、反查其 repo_path ＋統計。不需 project 參數
-    （這是面板「總覽」的資料來源，跟所有單專案端點互補）。
+    Scans each SQLite database in the database directory, looks up its repo_path and
+    gathers statistics. It takes no project argument, because it is the data source for the
+    panel's overview and complements the per-project endpoints.
 
-    回傳 {db_dir, count, projects:[...]}；count 只算讀得成功的庫（壞庫帶 error 仍列出）。
+    Returns {db_dir, count, projects:[...]}; count only counts databases that were read
+    successfully, though broken ones are still listed with an error.
     """
     projects = storage.list_indexed_projects()
     return {
@@ -830,16 +931,19 @@ def list_projects() -> dict:
     }
 
 
-# ── C5c：死碼線索層（序3）——複用 find_references 真解析 + deadcode helper 組裝 ──
+# ── C5c: dead-code clue layer (step 3): reuses find_references' real resolution and assembles it with the deadcode helpers ──
 def _orphans_for_file(root: str, scope_file: str, lang: str | None) -> list[dict]:
-    """對 scope_file 的頂層可導出符號逐個判 orphan（複用 find_references 真解析）。
+    """Judge orphan status for each top-level exportable symbol in scope_file, reusing
+    find_references' real resolution.
 
-    ⛔ UNKNOWN gate（紅藍最佳解修正一安全閘）：在跑 find_references「之前」先檢
-    resolver_available——引擎不可用整個符號回 UNKNOWN_NO_RESOLVER、**跳過 high=0 判斷**
-    （紅隊 B2：否則 ts-morph 不可用時會把整個 TS 專案每個 export 標可刪＝災難）。
-    只看頂層符號（method/nested 不是 orphan 候選）。
+    ⛔ UNKNOWN gate (fix 1's safety gate): check resolver_available **before** running
+    find_references. If the engine is unavailable the whole symbol returns
+    UNKNOWN_NO_RESOLVER and **the high=0 decision is skipped** (red team B2: otherwise an
+    unavailable ts-morph marks every export in a TS project deletable, which is a disaster).
+    Only top-level symbols are considered (methods and nested definitions are not orphan
+    candidates).
     """
-    from . import deadcode  # 延遲 import（engine→deadcode 單向，避免頂層循環）
+    from . import deadcode  # deferred: engine → deadcode is one-way, avoiding a cycle
 
     scope_abs = os.path.abspath(scope_file)
     file_lang = lang or symbols.language_for_file(scope_abs)
@@ -852,18 +956,18 @@ def _orphans_for_file(root: str, scope_file: str, lang: str | None) -> list[dict
 
     syms = get_symbols(root, file=scope_abs).get("symbols", [])
     out: list[dict] = []
-    pending: list[tuple[str, dict]] = []  # 非 entrypoint、待真解析的頂層符號
+    pending: list[tuple[str, dict]] = []  # top-level symbols that are not entrypoints and still need real resolution
     for s in syms:
         if s.get("kind") not in _REFERENCEABLE_KINDS:
             continue
-        if s.get("scope"):  # 只看頂層（巢狀/方法不是 orphan 候選）
+        if s.get("scope"):  # top level only (nested definitions and methods are not orphan candidates)
             continue
         name = s.get("name")
         entry, er = deadcode.is_entrypoint(scope_abs, symbol_name=name, source=source)
         if entry:
             out.append({**s, **deadcode.classify_orphan(None, is_entry=True, entry_reason=er)})
             continue
-        if not ok:  # ⛔ 安全閘：引擎不可用 → 不跑 high=0 判斷，誠實回 UNKNOWN
+        if not ok:  # ⛔ Safety gate: engine unavailable → skip the high=0 decision and return an honest UNKNOWN
             out.append({**s, "verdict": "UNKNOWN_NO_RESOLVER",
                         "icon": deadcode.verdict_icon("UNKNOWN_NO_RESOLVER"),
                         "reason": reason})
@@ -871,15 +975,17 @@ def _orphans_for_file(root: str, scope_file: str, lang: str | None) -> list[dict
         pending.append((name, s))
 
     if pending and file_lang in ("typescript", "tsx", "javascript"):
-        # 序5：TS/JS 一次 batch 查全部 pending（一次 new Project 載入專案 loop 多符號），
-        # 取代逐符號各 spawn node 各重載專案的 N× 浪費（實測 9 符號 32s → batch 一次）。
+        # Step 5: for TS/JS, query every pending symbol in one batch (one new Project loads
+        # the project, then loops over the symbols), replacing the N-fold waste of spawning
+        # node and reloading the project once per symbol (measured: 9 symbols took 32s, one
+        # batch replaces it).
         names = [n for n, _ in pending]
         batch = references.ts_morph_references_batch(root, scope_abs, names)
         for name, s in pending:
-            refs = batch.get(name) if batch else None  # batch 失敗→None→classify 安全回 UNKNOWN
+            refs = batch.get(name) if batch else None  # a failed batch gives None, and classify safely returns UNKNOWN
             out.append({**s, **deadcode.classify_orphan(refs, is_entry=False, entry_reason=None)})
     else:
-        # Python / 其他：逐符號 jedi（74ms/次、無 batch 必要）
+        # Python and everything else: jedi per symbol (74ms each, so batching is unnecessary).
         for name, s in pending:
             refs = find_references(root, name, def_path=scope_abs, src_root=root, persist=False)
             out.append({**s, **deadcode.classify_orphan(refs, is_entry=False, entry_reason=None)})
@@ -888,27 +994,35 @@ def _orphans_for_file(root: str, scope_file: str, lang: str | None) -> list[dict
 
 def find_deadcode(path: str, *, scope_file: str | None = None,
                   lang: str | None = None) -> dict:
-    """死碼線索層 — unused-import（包 ruff/eslint）+ orphan 分級（複用真解析）+ entrypoint 豁免。
+    """Dead-code clue layer: unused imports (wrapping ruff/eslint) + orphan grading
+    (reusing real resolution) + entrypoint exemptions.
 
-    ⚠ 這是「線索層」非「決策器」：給帶安全分級的線索（LIKELY_UNUSED🟡/UNKNOWN❔/PUBLIC_API⚪/
-    KEEP✅），刪除前務必人工複核 + 跑 build/CI（refs 全綠 ≠ 編譯通過）。紅藍最佳解核心紀律：
-    引擎/linter 不可用一律回 UNKNOWN_*（誠實），絕不退化成自信假陽性。
+    ⚠ This is a clue layer, not a decision maker: it produces clues carrying a safety grade
+    (LIKELY_UNUSED 🟡 / UNKNOWN ❔ / PUBLIC_API ⚪ / KEEP ✅). Review them yourself and run
+    build/CI before deleting anything. All-green refs are not the same as compiling. The
+    core discipline: when an engine or linter is unavailable, always return UNKNOWN_*
+    (honest), and never degrade into a confident false positive.
 
-    參數
-    ----
-    path       : 專案根（unused-import 掃描根 + orphan 的 jedi/ts-morph 解析根）。
-    scope_file : 給了才跑 orphan（對該檔頂層符號逐個真解析；全專案逐符號太重，序3 先要求指定檔）。
-    lang       : 覆寫語言推斷（預設由 scope_file 副檔名 / 專案推斷）。
+    Parameters
+    ----------
+    path       : the project root (the root for the unused-import scan, and the jedi/ts-morph
+                 resolution root for orphans).
+    scope_file : orphan analysis only runs when this is given (resolving each top-level
+                 symbol in that file for real; doing it symbol by symbol across a whole
+                 project is far too heavy, so step 3 requires a specific file).
+    lang       : override language inference (by default it is inferred from scope_file's
+                 extension, or from the project).
 
-    回 dict（可轉 JSON）：{root, scope_file, unused_imports, orphans, summary, verification_reminder}
-    路徑不是目錄 → NotADirectoryError（fail-loud）。
+    Returns a dict (JSON-serializable): {root, scope_file, unused_imports, orphans, summary,
+    verification_reminder}.
+    A path that is not a directory → NotADirectoryError (fail loudly).
     """
     from collections import Counter
 
     from . import deadcode
 
     if not os.path.isdir(path):
-        raise NotADirectoryError(f"find_deadcode：'{path}' 不是有效目錄")
+        raise NotADirectoryError(f"find_deadcode: '{path}' is not a valid directory")
     abs_path = os.path.abspath(path)
     target = os.path.abspath(scope_file) if scope_file else abs_path
 
@@ -928,73 +1042,100 @@ def find_deadcode(path: str, *, scope_file: str | None = None,
             "likely_unused": vc.get("LIKELY_UNUSED", 0),
             "keep": vc.get("KEEP", 0),
             "public_api": vc.get("PUBLIC_API", 0),
-            # UNKNOWN 合計（無解析引擎 + 解析器未定位到定義，如 module 級變數）
+            # Total UNKNOWNs (no resolver, plus definitions the resolver could not locate,
+            # such as module-level variables).
             "unknown": (vc.get("UNKNOWN_NO_RESOLVER", 0) + vc.get("UNKNOWN_UNRESOLVED", 0)),
         },
         "verification_reminder": (
-            "死碼線索層給的是帶安全分級的線索、非刪除決策：LIKELY_UNUSED 也務必人工複核 + 跑 "
-            "build/CI 再刪；UNKNOWN_* 代表工具無法判定（不是可刪）。refs/未使用偵測 ≠ 編譯通過。"
+            "The dead-code layer produces clues carrying a safety grade, not deletion "
+            "decisions: even LIKELY_UNUSED must be reviewed by a human and pass build/CI "
+            "before deletion; UNKNOWN_* means the tool cannot decide, not that it is "
+            "deletable. Reference lookup and unused detection are not the same as compiling."
         ),
-        # 序6：把本次結果的盲區攤開——哪些地方工具幫不上、必須人工讀碼（工具沉默≠可刪）
+        # Step 6: spell out this result's blind spots, where the tool could not help and a
+        # human has to read the code (tool silence does not mean deletable).
         "read_code_advisory": deadcode.read_code_advisory(unused, orphans),
     }
 
 
-# ── ai-usage：這個 repo 用了哪些 AI/LLM + dispatch_policy 合規維度（純掃描，不依賴索引庫）──
+# ── ai-usage: which AI/LLM services this repo uses, plus the dispatch_policy compliance
+# dimension (a pure scan; it does not need the index database) ──
 def find_ai_usage(path: str, *, scope_file: str | None = None) -> dict:
-    """掃 repo 用了哪些 AI/LLM，並依 dispatch_policy 標 cli(合規)/direct(違規)/local(本地) 三通道。
+    """Scan which AI/LLM services a repo uses, labelling each per dispatch_policy as one of
+    three channels: cli (compliant), direct (violation) or local.
 
-    純文字 regex 逐行掃 SUPPORTED_EXTENSIONS 檔（複用 _iter_source_files，跳雜訊目錄），
-    不依賴 SQLite 索引（同 find_deadcode 純掃描）。回 {meta, nodes, edges, stats,
-    read_code_advisory, verification_reminder}——nodes/edges 給 ai_usage_html 渲染 HUD 關聯圖。
+    A plain-text regex scans SUPPORTED_EXTENSIONS files line by line (reusing
+    _iter_source_files, skipping noise directories) and does not need the SQLite index (a
+    pure scan, like find_deadcode). Returns {meta, nodes, edges, stats, read_code_advisory,
+    verification_reminder}; nodes and edges are what ai_usage_html renders as the HUD
+    relationship graph.
 
-    ⚠ 名稱級線索非執行證明；判 direct（違規）前務必人工讀碼確認確實走 metered endpoint。
-    路徑不是目錄 → NotADirectoryError（fail-loud）。
+    ⚠ Name-level clues are not proof of execution; before judging something direct (a
+    violation), read the code and confirm it really hits a metered endpoint.
+    A path that is not a directory → NotADirectoryError (fail loudly).
     """
     from . import ai_usage
     if not os.path.isdir(path):
-        raise NotADirectoryError(f"find_ai_usage：'{path}' 不是有效目錄")
+        raise NotADirectoryError(f"find_ai_usage: '{path}' is not a valid directory")
     abs_path = os.path.abspath(path)
     return ai_usage.scan_ai_usage(
         abs_path, _iter_source_files(abs_path),
         scope_file=os.path.abspath(scope_file) if scope_file else None)
 
 
-# ── 功能 A：未接線檢查（namegraph 強協同）——「寫完不接線→屎山」源頭粗篩 ──
+# ── Feature A: unwired check (working closely with namegraph): a coarse sweep for the
+# root cause of code rot: things written but never wired in ──
 def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
-    """未接線檢查 — 名稱級全圖快速框出「零外部引用」的已定義頂層符號。
+    """Unwired check: uses the name-level whole graph to quickly frame defined top-level
+    symbols that have zero external references.
 
-    「寫完不接線→屎山」源頭偵測：定義了函數/類/型別/常數，卻沒有任何自己 body 以外的地方
-    提到它的名 = 疑似未接線。強協同 namegraph：用同一張全圖名稱級邊算 external usage
-    （body-aware：排定義行 self token + 遞迴自呼叫，保留同檔 body 外呼叫＝同檔 helper 不誤報）。
+    This detects the root cause of code rot: a function, class, type or constant is defined,
+    but nothing outside its own body ever mentions its name, which makes it a suspected
+    unwired symbol. It works closely with namegraph, computing external usage from the same
+    whole-graph name-level edges (body-aware: self-tokens on the definition line and
+    recursive self-calls are excluded, while calls from elsewhere in the same file are kept,
+    so a same-file helper is not misreported).
 
-    ⚠ 線索層非決策器（與 deadcode 同哲學、全程誠實低信心）：
-      - 名稱級天花板：同名干擾會**漏報**（別處用同名的另一個定義會讓真沒人用的那個被算有引用）；
-        動態/反射/字串拼接呼叫看不到會**誤報**；**對外公開 API**（被 repo 外部/下游 import、本 repo
-        內無人用）正好零內部引用 → 會誤報（TS/JS 的 `export` 無 __all__ 對應豁免、尤其危險）。
-      - 豁免：檔名約定/裝飾器入口/Python __all__/dunder/pyproject console_scripts 入口
-        （複用 deadcode.is_entrypoint + entry_point_func_names）。⚠ __all__ 是 Python-only，
-        TS/JS export 公開 API 無對應豁免、會誤報。
-      - 同名定義過多（>fan-out 上限）的氾濫名 → UNKNOWN_FANOUT（未建邊不可判、可能反被大量引用）。
-      - variable/常數降級標記：module 級變數名稱級判定信心更低（deadcode 真解析對它標 UNKNOWN_UNRESOLVED 不判可刪）。
-    定位：全專案一次粗篩 → 對候選跑 find_deadcode（jedi/ts-morph 真解析）複核 + build/CI 再刪。
+    ⚠ A clue layer, not a decision maker (the same philosophy as deadcode, honestly
+    low-confidence throughout):
+      - The ceiling of name-level analysis: same-name interference causes **under-reports**
+        (another definition of the same name being used elsewhere credits the genuinely
+        unused one with references); dynamic, reflective and string-concatenated calls are
+        invisible, causing **false positives**; and a **public API** imported from outside
+        this repo but unused within it has exactly zero internal references, so it is
+        misreported too (TS/JS `export` has no __all__ equivalent to exempt it, which makes
+        this especially dangerous).
+      - Exemptions: filename conventions, decorator entrypoints, Python __all__, dunders,
+        and pyproject console_scripts entrypoints (reusing deadcode.is_entrypoint and
+        entry_point_func_names). ⚠ __all__ is Python-only; a TS/JS export public API has no
+        equivalent exemption and will be misreported.
+      - Flooded names with too many same-named definitions (> the fan-out cap) →
+        UNKNOWN_FANOUT (no edges were built, so it cannot be judged, and it may in fact be
+        heavily referenced).
+      - variable/constant downgrade marker: name-level judgement is even less reliable for
+        module-level variables (deadcode's real resolution marks them UNKNOWN_UNRESOLVED and
+        does not call them deletable).
+    Where it fits: one coarse sweep over the whole project, then run find_deadcode
+    (jedi/ts-morph real resolution) against the candidates and pass build/CI before deleting.
 
-    參數
-    ----
-    max_fanout : 同名 fan-out 上限（None 走 env CODESEXTANT_NAMEGRAPH_MAX_FANOUT，預設 20）。
+    Parameters
+    ----------
+    max_fanout : the same-name fan-out cap (None takes env CODESEXTANT_NAMEGRAPH_MAX_FANOUT,
+                 default 20).
 
-    回 dict（可轉 JSON）：{root, candidates, namegraph_meta, summary,
-                          verification_reminder, read_code_advisory}。專案未索引 → RuntimeError。
+    Returns a dict (JSON-serializable): {root, candidates, namegraph_meta, summary,
+                          verification_reminder, read_code_advisory}.
+    An unindexed project → RuntimeError.
     """
     from . import deadcode
 
     if not os.path.isdir(path):
-        raise NotADirectoryError(f"find_unwired：'{path}' 不是有效目錄")
+        raise NotADirectoryError(f"find_unwired: '{path}' is not a valid directory")
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
         raise RuntimeError(
-            f"find_unwired：專案尚未索引（無 {db_file}）。請先呼叫 index_project。")
+            f"find_unwired: project has not been indexed yet (no {db_file}); call index_project first.")
 
     with storage.ProjectStore.open(abs_path) as store:
         syms = store.get_symbols()
@@ -1002,7 +1143,8 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
 
     usage, over_fanout, ng_meta = namegraph.compute_external_usage(
         syms, indexed_files=indexed, max_fanout=max_fanout)
-    # 紅隊 L3-HIGH：pyproject console_scripts 入口（安裝後 wrapper 反射呼叫、源碼無人提及）豁免
+    # Red team L3-HIGH: exempt pyproject console_scripts entrypoints (called reflectively by
+    # the installed wrapper, and never mentioned in the source).
     entry_funcs = deadcode.entry_point_func_names(abs_path)
 
     _src_cache: dict[str, str] = {}
@@ -1021,16 +1163,17 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
     for s in syms:
         if s.get("kind") not in _REFERENCEABLE_KINDS:
             continue
-        if s.get("scope"):              # 只看頂層（method/巢狀不是未接線候選）
+        if s.get("scope"):              # top level only (methods and nested definitions are not unwired candidates)
             continue
         scanned += 1
         name = s["name"]
-        dp = namegraph._normp(s["path"])   # 與 compute_external_usage 的 usage key 對齊（normcase）
-        # dunder（__all__/__version__/__main__…）走特殊機制、名稱級看不到 → 豁免
+        dp = namegraph._normp(s["path"])   # aligned (normcase) with compute_external_usage's usage key
+        # Dunders (__all__/__version__/__main__…) go through special mechanisms that
+        # name-level analysis cannot see → exempt.
         if name.startswith("__") and name.endswith("__"):
             exempt += 1
             continue
-        # pyproject console_scripts 入口豁免（紅隊 L3-HIGH）
+        # pyproject console_scripts entrypoint exemption (red team L3-HIGH).
         if name in entry_funcs:
             exempt += 1
             continue
@@ -1042,18 +1185,27 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
             unknown += 1
             candidates.append({**s, "verdict": "UNKNOWN_FANOUT",
                                "icon": deadcode.verdict_icon("UNKNOWN_NO_RESOLVER"),
-                               "reason": ("同名定義過多（>fan-out 上限）未建名稱級邊、無法判引用；"
-                                          "可能反而被大量引用，須真解析複核")})
+                               "reason": ("too many same-named definitions (> the fan-out cap), so no "
+                                          "name-level edges were built and references cannot be "
+                                          "judged; it may in fact be heavily referenced, so check with "
+                                          "real resolution")})
             continue
         if usage.get((dp, s["line"], name)) == 0:
-            # 紅隊 L3-MEDIUM：variable/常數名稱級信心更低（deadcode 真解析對 module 級變數標
-            # UNKNOWN_UNRESOLVED 不判可刪），降級標記、別與函數候選同等強度。
+            # Red team L3-MEDIUM: name-level confidence is even lower for variables and
+            # constants (deadcode's real resolution marks module-level variables
+            # UNKNOWN_UNRESOLVED and does not call them deletable), so mark them as a
+            # downgrade rather than giving them the same weight as function candidates.
             is_var = s.get("kind") == "variable"
             cand = {**s, "verdict": "UNWIRED_CANDIDATE", "icon": "🔸",
-                    "reason": ("名稱級全圖中無任何自己 body 以外的地方提到此名（零外部引用）；疑似寫完未接線"
+                    "reason": ("nothing outside this symbol's own body mentions its name anywhere in "
+                               "the name-level whole graph (zero external references); suspected "
+                               "written but never wired in"
                                if not is_var else
-                               "module 級變數/常數零外部引用——名稱級判定信心更低，deadcode 真解析會標 "
-                               "UNKNOWN_UNRESOLVED 不判可刪；務必讀碼確認（可能是設定常數/反射讀取）")}
+                               "module-level variable or constant with zero external references. "
+                               "name-level judgement carries lower confidence here, and deadcode's "
+                               "real resolution marks it UNKNOWN_UNRESOLVED rather than deletable; "
+                               "read the code to confirm (it may be a configuration constant or "
+                               "read reflectively)")}
             if is_var:
                 cand["low_confidence_kind"] = True
             candidates.append(cand)
@@ -1064,23 +1216,32 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
     advisory = []
     if likely:
         advisory.append(
-            f"{likely} 個未接線候選是『線索非定論』——可能是新寫未接的死碼，也可能是動態/反射/CLI/"
-            "測試入口、或**被 repo 外部/下游 import 的對外公開 API**（本 repo 內本就無引用）；逐個讀碼或"
-            "跑 find_deadcode 真解析複核，別直接刪（誤刪 export 會造成下游 breaking change）。")
+            f"{likely} unwired candidate(s) are a clue, not a verdict; they may be newly written "
+            "dead code that was never wired in, or they may be dynamic/reflective calls, a CLI or "
+            "test entrypoint, or **a public API imported by downstream consumers outside this "
+            "repo** (which naturally has no references inside it). Read each one, or cross-check "
+            "with find_deadcode's real resolution, before deleting anything. Deleting an export "
+            "by mistake is a breaking change for downstream users.")
     else:
-        advisory.append("未發現零外部引用的頂層符號（名稱級層面皆有接線跡象；漏報仍可能，重要符號仍建議複核）。")
+        advisory.append("No top-level symbol had zero external references (everything shows signs of "
+                        "being wired in at the name level). Under-reports are still possible, so "
+                        "important symbols are still worth checking.")
     if var_likely:
         advisory.append(
-            f"其中 {var_likely} 個是 module 級變數/常數（已標 low_confidence_kind）——名稱級對變數最不準、"
-            "deadcode 真解析會標 UNKNOWN 不判可刪，別據此刪設定常數。")
+            f"{var_likely} of those are module-level variables or constants (marked "
+            "low_confidence_kind). Name-level analysis is least accurate for variables, and "
+            "deadcode's real resolution marks them UNKNOWN rather than deletable. Do not delete "
+            "configuration constants on this basis.")
     if unknown:
         advisory.append(
-            f"{unknown} 個氾濫同名符號工具判不出（未建邊）——這些常是被大量引用的常見名，"
-            "工具沉默 ⛔ 不代表未接線。")
+            f"{unknown} flooded same-name symbol(s) the tool cannot decide on (no edges were "
+            "built). These are usually common names that are heavily referenced, and the tool's "
+            "silence ⛔ does not mean they are unwired.")
     if ng_meta.get("truncated"):
         advisory.append(
-            f"⚠ 已截斷：只掃了前 {ng_meta.get('scanned_files')}／共 {ng_meta.get('total_files')} 檔"
-            "（env CODESEXTANT_NAMEGRAPH_MAX_FILES 可調），後段符號的 usage 不完整、勿據此判未接線。")
+            f"⚠ Truncated: only {ng_meta.get('scanned_files')} of {ng_meta.get('total_files')} "
+            "files were scanned (adjustable via env CODESEXTANT_NAMEGRAPH_MAX_FILES), so usage "
+            "counts for later symbols are incomplete. Do not judge them unwired on this basis.")
     return {
         "root": abs_path,
         "candidates": candidates,
@@ -1099,14 +1260,17 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
             "exempt_entry_or_dunder": exempt,
         },
         "verification_reminder": (
-            "未接線檢查是名稱級低信心粗篩線索：同名干擾會漏報、動態/反射/字串拼接呼叫看不到會誤報、"
-            "對外公開 API（被外部 repo 消費、本 repo 內無 import）會誤報；候選務必跑 find_deadcode"
-            "（jedi/ts-morph 真解析）複核 + build/CI 再刪——零外部引用 ≠ 確定可刪。"),
+            "The unwired check is a low-confidence, name-level coarse sweep: same-name "
+            "interference causes under-reports, dynamic/reflective/string-concatenated calls are "
+            "invisible and cause false positives, and a public API consumed by other repos but "
+            "never imported within this one is misreported. Always cross-check candidates with "
+            "find_deadcode (jedi/ts-morph real resolution) and pass build/CI before deleting. "
+            "zero external references is not the same as confirmed deletable."),
         "read_code_advisory": advisory,
     }
 
 
-# ── 功能 B 註解管理（engine 查詢層，設計 §3.B.2）──
+# ── Feature B: comment management (the engine's query layer, design §3.B.2) ──
 def _comment_coverage_kinds() -> set[str]:
     raw = os.environ.get("CODESEXTANT_COMMENT_COVERAGE_KINDS", "function,class,method,interface")
     return {k.strip() for k in raw.split(",") if k.strip()}
@@ -1123,17 +1287,21 @@ def _comment_density_enabled() -> bool:
 
 
 def get_comment_overview(path: str, *, scope_file: str | None = None) -> dict:
-    """repo 註解摘要（功能 B「一次看全」）：docstring 覆蓋率（分 kind）+ TODO/FIXME 計數 + 密度。
+    """Repo comment summary (feature B, "see it all at once"): docstring coverage by kind +
+    TODO/FIXME counts + density.
 
-    覆蓋率＝COVERAGE_KINDS 的符號裡有多少個有 docstring（symbols 對 comments(is_doc=1) 用
-    (path, owner_line)==(path, line) 對齊，比 scope 字串相等穩，設計 FIX lens-4）。
-    SKIP_PRIVATE 預設排除 `_` 開頭（算「public surface 覆蓋率」非全符號）。專案未索引 → note 不假裝。
+    Coverage is how many COVERAGE_KINDS symbols have a docstring. Symbols are matched to
+    comments(is_doc=1) on (path, owner_line)==(path, line), which is more reliable than
+    comparing scope strings (design FIX lens-4).
+    SKIP_PRIVATE excludes names starting with `_` by default, so this measures public-surface
+    coverage rather than every symbol. An unindexed project returns a note rather than
+    pretending.
     """
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
         return {"project_key": storage.project_key(abs_path), "indexed": False,
-                "note": f"專案尚未索引（無 {db_file}）。請先呼叫 index_project。"}
+                "note": f"project has not been indexed yet (no {db_file}); call index_project first."}
     target = os.path.abspath(scope_file) if scope_file else None
     kinds = _comment_coverage_kinds()
     skip_private = _comment_skip_private()
@@ -1171,8 +1339,10 @@ def get_comment_overview(path: str, *, scope_file: str | None = None) -> dict:
         tot_all = sum(b["total"] for b in by_kind.values())
         overall_pct = round(100.0 * tot_doc / tot_all, 1) if tot_all else 0.0
 
-        # 紅隊 L3-MEDIUM：tag_counts 改逐行掃 text（不用 comments.tag 欄 GROUP BY——tag 欄每註解只存
-        # 第一個 marker，多標記 block 會漏算/吞掉其他 marker，與 find_comment_tags 數字打架）。
+        # Red team L3-MEDIUM: tag_counts now scans the text line by line instead of doing a
+        # GROUP BY on the comments.tag column. That column stores only the first marker per
+        # comment, so a block with several markers undercounts and swallows the rest, which
+        # contradicted find_comment_tags' numbers.
         from collections import Counter as _Counter
         tag_q = "SELECT line, text FROM comments WHERE tag IS NOT NULL"
         if target:
@@ -1199,7 +1369,9 @@ def get_comment_overview(path: str, *, scope_file: str | None = None) -> dict:
             denom = code_lines or 1
             density = {"comment_lines": comment_lines, "code_lines": code_lines,
                        "ratio": round(comment_lines / denom, 3),
-                       "caveat": "粗估：code_lines＝頂層符號跨行總和、不扣空白/註解行；密度高低≠註解品質"}
+                       "caveat": "Rough estimate: code_lines is the sum of top-level symbol line "
+                                 "spans and does not subtract blank or comment lines; density says "
+                                 "nothing about comment quality"}
 
     undocumented.sort(key=lambda u: (u["path"], u["line"]))
     return {
@@ -1210,23 +1382,28 @@ def get_comment_overview(path: str, *, scope_file: str | None = None) -> dict:
         "tag_counts": tag_counts,
         "density": density,
         "top_undocumented": undocumented[:30],
-        "caveat": ("覆蓋率/密度是靜態結構統計、非語義：高覆蓋率≠註解正確或同步；docstring 偵測限"
-                   "「block/module 第一個 string」(Python)，其他語言靠緊鄰近似、可能對不準。"),
+        "caveat": ("Coverage and density are static structural statistics, not semantic ones: high "
+                   "coverage does not mean the comments are correct or up to date. Docstring "
+                   "detection is limited to the first string in a block or module (Python); other "
+                   "languages rely on proximity and may not line up exactly."),
     }
 
 
 def find_comment_tags(path: str, *, tags: list[str] | None = None,
                       scope_file: str | None = None) -> dict:
-    """TODO/FIXME 索引（功能 B「知道哪行」）：逐行掃 marker 回**真實源碼行**（含多行 block/doc）。
+    """TODO/FIXME index (feature B, "know which line"): scans for markers line by line and
+    returns the **real source line**, including multi-line block and doc comments.
 
-    FIX-3b：block/doc 註解的 marker 行號用 scan_tags_in_text 逐行精算（base_line+offset），不是
-    註解起始行。tags 給了只回那些標記。回 {findings:[{tag,path,line,scope,text}], count_by_tag}。
+    FIX-3b: for block and doc comments, a marker's line number is computed exactly by
+    scan_tags_in_text (base_line + offset), not taken from the comment's opening line.
+    Passing tags returns only those markers.
+    Returns {findings:[{tag,path,line,scope,text}], count_by_tag}.
     """
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
         return {"indexed": False, "findings": [], "count_by_tag": {},
-                "note": f"專案尚未索引（無 {db_file}）。請先呼叫 index_project。"}
+                "note": f"project has not been indexed yet (no {db_file}); call index_project first."}
     target = os.path.abspath(scope_file) if scope_file else None
     want = {t.upper() for t in tags} if tags else None
     marker_re = comments._marker_re()
@@ -1251,17 +1428,19 @@ def find_comment_tags(path: str, *, tags: list[str] | None = None,
     count_by_tag = dict(Counter(f["tag"] for f in findings))
     return {"indexed": True, "scope_file": target, "findings": findings,
             "count_by_tag": count_by_tag,
-            "verification_reminder": "只列工具掃到的標準標記；動態生成/非標準標記掃不到。"}
+            "verification_reminder": "Only standard markers the tool scanned for are listed; "
+                                     "dynamically generated or non-standard markers are not found."}
 
 
 def get_comments(path: str, file: str | None = None, *, scope: str | None = None,
                  doc_only: bool = False, tag: str | None = None) -> dict:
-    """精確過濾取註解（功能 B「只看該看的」，比照 get_symbols）。未索引 → count=0+note 不假裝。"""
+    """Retrieve comments with precise filtering (feature B, "only what is worth reading",
+    mirroring get_symbols). Unindexed → count=0 plus a note, rather than pretending."""
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
         return {"project_key": storage.project_key(abs_path), "count": 0, "comments": [],
-                "note": f"專案尚未索引（無 {db_file}）。請先呼叫 index_project。"}
+                "note": f"project has not been indexed yet (no {db_file}); call index_project first."}
     target = os.path.abspath(file) if file else None
     with storage.ProjectStore.open(abs_path) as store:
         q = ("SELECT path,line,end_line,kind,is_doc,tag,scope,owner_line,text "
@@ -1284,7 +1463,7 @@ def get_comments(path: str, file: str | None = None, *, scope: str | None = None
                 "count": len(rows), "comments": rows}
 
 
-# ── 功能 B 重複/類似偵測（engine 組裝層，設計 §3.A）──
+# ── Feature B: duplicate / near-duplicate detection (the engine's assembly layer, design §3.A) ──
 _DUP_VERDICT_ICON = {
     "EXACT_DUP": "🟥", "RENAMED_DUP": "🟧", "STRUCTURAL_NEAR": "🟨",
     "CALL_PATTERN_SIM": "🟦", "BOILERPLATE_SUPPRESSED": "⚪", "UNKNOWN_TOO_SMALL": "❔",
@@ -1292,7 +1471,8 @@ _DUP_VERDICT_ICON = {
 
 
 def _make_dup_group(verdict: str, members: list[dict], similarity, reason: str) -> dict:
-    """組一個重複群（jscpd compact 格式：位置+名+信心，⛔不貼原始碼，守唯讀導航圖）。"""
+    """Assemble one duplicate group (jscpd compact format: location + name + confidence).
+    ⛔ It never includes the source itself, upholding the read-only navigation map."""
     return {
         "verdict": verdict, "icon": _DUP_VERDICT_ICON[verdict], "similarity": similarity,
         "members": [{"path": m["path"], "line": m["line"], "end_line": m.get("end_line"),
@@ -1304,26 +1484,32 @@ def _make_dup_group(verdict: str, members: list[dict], similarity, reason: str) 
 
 
 def get_health(path: str) -> dict:
-    """per-symbol 代碼健康度（紀律轉美數值層：D1 腫脹 + D3 認知複雜度 + D5 重複 → health；D6 死碼 → dead）。
+    """Per-symbol code health (the numeric layer: D1 bloat + D3 cognitive complexity + D5
+    duplication → health; D6 dead code → dead).
 
-    把 clean-code 紀律復合成 per-symbol health∈[0,1]（低=該讀碼複核處）+ dead（未接線）。
-    ⛔ 唯讀線索非決策器：health 低≠「應刪」，是「值得人工讀碼 + build/CI 複核」的訊號。
-    ⛔ 不含視覺映射（飽和度/透明度公式）＝展示層（星圖前端）的事；本 API 只給數值。
-    UNKNOWN/N-A（class/變數無指紋、非高信心語言 cognitive）剔除 renormalize 不洗滿分（防 vapor）。
+    It composes clean-code discipline into a per-symbol health in [0,1] (low means worth
+    reviewing) plus dead (unwired).
+    ⛔ A read-only clue, not a decision maker: low health does not mean "should be deleted",
+    it means "worth reading yourself and checking with build/CI".
+    ⛔ It contains no visual mapping (saturation or opacity formulas). That belongs to the
+    presentation layer; this API returns numbers only.
+    UNKNOWN / N-A dimensions (classes and variables have no fingerprint; cognitive complexity
+    is unavailable outside high-confidence languages) are excluded and the remaining weights
+    renormalized, so nothing is inflated to a perfect score.
 
-    回 dict（可轉 JSON）：{root, symbols:[{path,name,line,kind,health,dead}],
+    Returns a dict (JSON-serializable): {root, symbols:[{path,name,line,kind,health,dead}],
                           summary:{n_nodes,n_covered,coverage,n_dead,clone_pairs}}。
-    專案未索引 → RuntimeError（同 get_map）。
+    An unindexed project → RuntimeError (same as get_map).
     """
     from collections import Counter
 
     from . import health as _health
     if not os.path.isdir(path):
-        raise NotADirectoryError(f"get_health：'{path}' 不是有效目錄")
+        raise NotADirectoryError(f"get_health: '{path}' is not a valid directory")
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
-        raise RuntimeError(f"get_health：專案尚未索引（無 {db_file}）。請先呼叫 index_project。")
+        raise RuntimeError(f"get_health: project has not been indexed yet (no {db_file}); call index_project first.")
 
     with storage.ProjectStore.open(abs_path) as store:
         syms = store.get_symbols()
@@ -1332,12 +1518,12 @@ def get_health(path: str) -> dict:
     shape_cnt = Counter(r["shape_hash"] for r in fps)
     fp_by = {(os.path.normcase(r["path"]), int(r["line"])):
              (int(r["node_count"] or 0), r["shape_hash"], r["cognitive"]) for r in fps}
-    try:   # D6 未接線（→ dead 標記）；失敗不炸 health（fail-soft）
+    try:   # D6 unwired (→ the dead flag); a failure here must not break health (fail soft)
         uw = find_unwired(abs_path)
         dead_keys = {(os.path.normcase(os.path.abspath(c["path"])), int(c["line"]))
                      for c in uw.get("candidates", []) if c.get("verdict") == "UNWIRED_CANDIDATE"}
     except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠ get_health：find_unwired 失敗（D6 跳過）：{exc}", file=sys.stderr)
+        print(f"  ⚠ get_health: find_unwired failed (D6 skipped): {exc}", file=sys.stderr)
         dead_keys = set()
 
     nodes = [{"path": s["path"], "name": s["name"], "line": s["line"], "kind": s.get("kind", "")}
@@ -1349,25 +1535,30 @@ def get_health(path: str) -> dict:
 
 
 def _merge_summary(summary: dict, delta: dict) -> None:
-    """把某階段回報的計數增量併回總表（各階段只回自己數到的，不碰別人的欄位）。"""
+    """Merge one stage's reported count deltas back into the totals (each stage reports only
+    what it counted and never touches another stage's fields)."""
     for key, value in delta.items():
         summary[key] = summary.get(key, 0) + value
 
 
 def _dup_stage1_one_shape(members: list, *, min_node: int, in_scope) -> tuple[list, dict, set]:
-    """單一 shape_hash 群 → (輸出群, summary 增量, 已歸群成員鍵)。
+    """One shape_hash group → (output groups, summary deltas, keys of members already grouped).
 
-    群內再按 raw_token 二次分簇：逐字相同的各自成 EXACT_DUP，跨簇代表湊成 RENAMED_DUP
-    （紅隊 L1-MEDIUM：兩者並存、不互相吃掉——f1/f2 逐字得 EXACT、f1/f3 改名得 RENAMED）。
+    Within the group, a second clustering pass on raw_token splits it further: verbatim
+    matches each become an EXACT_DUP, and representatives across clusters form a RENAMED_DUP
+    (red team L1-MEDIUM: both coexist and neither swallows the other; f1/f2 match verbatim
+    and get EXACT, f1/f3 differ only by renaming and get RENAMED).
     """
     if len(members) < 2:
         return [], {}, set()
-    # 紅隊 L1-HIGH：結構顯著性＝has_control_flow + node_count（⛔不加 nstmts 門檻——Go 的
-    # body=block>statement_list 多一層、且「單一大 switch/if dispatch」top-level nstmts=1 會
-    # 被誤殺；node_count 是更好的複雜度指標、與 winnow gate 對齊）。
+    # Red team L1-HIGH: structural significance = has_control_flow + node_count. ⛔ Do not
+    # add an nstmts threshold: Go's body=block>statement_list adds a level, and a single
+    # large switch/if dispatch has top-level nstmts=1 and would be killed off wrongly.
+    # node_count is the better complexity indicator and matches the winnow gate.
     sig = [m for m in members if m["has_control_flow"] and m["node_count"] >= min_node]
     if len(sig) < 2:
-        # 同形但都是樣板/太小 → 壓制（只在 scope 內才計數，否則數字會灌水）
+        # Same shape, but all boilerplate or too small → suppress (counted only within
+        # scope, otherwise the numbers inflate).
         return [], ({"boilerplate_suppressed_groups": 1} if in_scope(members) else {}), set()
 
     from collections import defaultdict
@@ -1378,34 +1569,38 @@ def _dup_stage1_one_shape(members: list, *, min_node: int, in_scope) -> tuple[li
     groups: list[dict] = []
     delta: dict = {}
     keys: set = set()
-    reps: list[dict] = []   # 跨 raw 代表（每 raw 子簇第一個），給 RENAMED 群
+    reps: list[dict] = []   # cross-raw representatives (the first of each raw sub-cluster), for the RENAMED group
     for cluster in by_raw.values():
         cluster.sort(key=lambda m: (m["path"], m["line"]))
         if len(cluster) >= 2 and in_scope(cluster):
             groups.append(_make_dup_group(
                 "EXACT_DUP", cluster, 1.0,
-                "逐字相同（shape+raw_token 皆同）。結構相同≠語義相同，合併前讀碼 + CI。"))
+                "Verbatim match (identical shape and raw_token). Identical structure does not "
+                "mean identical semantics; read the code and run CI before merging."))
             delta["exact"] = delta.get("exact", 0) + 1
             keys.update((m["path"], m["line"]) for m in cluster)
         reps.append(cluster[0])
 
-    if len(by_raw) > 1 and len(reps) >= 2:   # 有改名變體 → RENAMED（跨 raw 代表）
+    if len(by_raw) > 1 and len(reps) >= 2:   # renamed variants exist → RENAMED (cross-raw representatives)
         reps.sort(key=lambda m: (m["path"], m["line"]))
         if in_scope(reps):
             groups.append(_make_dup_group(
                 "RENAMED_DUP", reps, None,
-                f"結構相同、識別字/常數不同（{len(by_raw)} 種變體）。可能只是同類樣板，合併前必讀業務語義。"))
+                f"Identical structure with different identifiers or constants ({len(by_raw)} "
+                "variants). These may just be the same kind of boilerplate, so read what they mean "
+                "in context before merging."))
             delta["renamed"] = delta.get("renamed", 0) + 1
             keys.update((m["path"], m["line"]) for m in reps)
     return groups, delta, keys
 
 
 def _dup_stage1(rows: list, *, min_node: int, in_scope) -> tuple[list, dict, set]:
-    """stage-1：shape_hash 分群 → EXACT_DUP（逐字）/ RENAMED_DUP（同形改名）。
+    """Stage 1: group by shape_hash → EXACT_DUP (verbatim) / RENAMED_DUP (same shape, renamed).
 
-    ⚠ 紅隊 L5-HIGH：永遠對全 repo fingerprints 跑、不套 scope 過濾——否則 scope_file 模式下
-    會退化成只比同一個檔案內部，跨檔的逐字重複整批漏掉、信心序顛倒。scope 只決定「輸出
-    哪些群」，偵測範圍始終是全 repo。
+    ⚠ Red team L5-HIGH: always run against the whole repo's fingerprints and never apply a
+    scope filter. Otherwise scope_file mode degrades into comparing within a single file,
+    every cross-file verbatim duplicate is missed, and the confidence ordering inverts. Scope
+    only decides **which groups are output**; detection always spans the whole repo.
     """
     from collections import defaultdict
     by_shape: dict[str, list] = defaultdict(list)
@@ -1424,11 +1619,12 @@ def _dup_stage1(rows: list, *, min_node: int, in_scope) -> tuple[list, dict, set
 
 
 def _dup_flood_fingerprints(conn, df_cap: int) -> set:
-    """閘1：排掉「到處都有」的氾濫指紋。
+    """Gate 1: drop flooded fingerprints that appear everywhere.
 
-    ⚠ 紅隊 L4-HIGH：用 DISTINCT(path,line,fp_value) 數**真 document frequency**（出現在幾個
-    不同函數），不是 fingerprint_index 的總行數——否則單一函數內同一指紋重複出現會把自己
-    灌爆 df_cap、把真指紋誤剔掉。
+    ⚠ Red team L4-HIGH: count the **true document frequency** with
+    DISTINCT(path,line,fp_value), meaning how many different functions it appears in, not
+    fingerprint_index's total row count. Otherwise a fingerprint repeating inside a single
+    function blows past df_cap on its own and the genuine fingerprints get dropped.
     """
     return {r[0] for r in conn.execute(
         "SELECT fp_value FROM (SELECT DISTINCT path,line,fp_value FROM fingerprint_index) "
@@ -1436,10 +1632,11 @@ def _dup_flood_fingerprints(conn, df_cap: int) -> set:
 
 
 def _dup_load_fingerprint_rows(conn, target: str | None, flood: set) -> list:
-    """載入要比對的指紋列。
+    """Load the fingerprint rows to compare.
 
-    ⚠ 紅隊 L2-MEDIUM：scope_file 模式只載「跟目標檔指紋有交集」的單元、不全表載入，讓單檔
-    查重的成本與整個 repo 的規模脫鉤；near_global 才全載入。
+    ⚠ Red team L2-MEDIUM: in scope_file mode, load only the units whose fingerprints intersect
+    the target file's rather than the whole table, which decouples the cost of checking one
+    file from the size of the entire repo. Only near_global loads everything.
     """
     if not target:
         return conn.execute("SELECT path,line,fp_value FROM fingerprint_index").fetchall()
@@ -1448,7 +1645,7 @@ def _dup_load_fingerprint_rows(conn, target: str | None, flood: set) -> list:
     ).fetchall()} - flood
     rows_fp: list = []
     seed_list = list(seed)
-    for i in range(0, len(seed_list), 900):   # SQLite IN 子句上限保護、分批查
+    for i in range(0, len(seed_list), 900):   # batch the queries to stay under SQLite's IN-clause limit
         chunk = seed_list[i:i + 900]
         ph = ",".join("?" * len(chunk))
         rows_fp.extend(conn.execute(
@@ -1459,24 +1656,25 @@ def _dup_load_fingerprint_rows(conn, target: str | None, flood: set) -> list:
 
 def _dup_stage2_pair(ka, kb, shared, *, body_fps, meta, member_key, seen_pairs,
                      in_scope, min_shared: int, sim_thresh: float) -> dict | None:
-    """單一候選配對過閘 → STRUCTURAL_NEAR 群；沒過就 None。"""
-    if shared < min_shared:                     # 閘2：共享指紋數的候選門檻
+    """One candidate pair passing the gates → a STRUCTURAL_NEAR group; None if it does not."""
+    if shared < min_shared:                     # Gate 2: candidate threshold on shared fingerprint count
         return None
     pair = tuple(sorted([ka, kb]))
     if pair in seen_pairs:
         return None
     seen_pairs.add(pair)
     if pair[0] in member_key and pair[1] in member_key:
-        return None                             # 已在 stage-1 同群、不重複報
+        return None                             # already grouped together in stage 1; do not report twice
     union = len(body_fps[ka] | body_fps[kb])
     sim = shared / union if union else 0.0
-    if sim < sim_thresh:                        # 閘3：精確 Jaccard 相似度門檻
+    if sim < sim_thresh:                        # Gate 3: exact Jaccard similarity threshold
         return None
     ma, mb = meta.get(pair[0]), meta.get(pair[1])
     if not ma or not mb:
         return None
-    # 紅隊 L2-LOW：同形歸 stage-1 的 EXACT/RENAMED 管，stage-2 只報「非同形」的近似，
-    # 免得出現 STRUCTURAL_NEAR 卻相似度 1.0 這種自相矛盾的結果。
+    # Red team L2-LOW: identical shapes belong to stage 1's EXACT/RENAMED, so stage 2 reports
+    # only non-identical near matches. Otherwise you get the self-contradictory result of a
+    # STRUCTURAL_NEAR group with similarity 1.0.
     if ma["shape_hash"] == mb["shape_hash"]:
         return None
     if not in_scope([ma, mb]):
@@ -1484,12 +1682,14 @@ def _dup_stage2_pair(ka, kb, shared, *, body_fps, meta, member_key, seen_pairs,
     pair_members = sorted([ma, mb], key=lambda m: (m["path"], m["line"]))
     return _make_dup_group(
         "STRUCTURAL_NEAR", pair_members, round(sim, 3),
-        f"winnow 近似相似度 {round(sim, 3)}（非逐字、非同形）；務必讀碼確認是否真重複。")
+        f"Winnowing similarity {round(sim, 3)} (neither verbatim nor identical in shape); read "
+        "the code to confirm whether this is really duplication.")
 
 
 def _dup_stage2(conn, *, target, meta, member_key, in_scope,
                 df_cap: int, min_shared: int, sim_thresh: float) -> tuple[list, dict]:
-    """stage-2/3：winnowing 近似比對（三道閘：氾濫指紋 → 共享數 → Jaccard 門檻）。"""
+    """Stage 2/3: winnowing near-duplicate comparison (three gates: flooded fingerprints →
+    shared count → Jaccard threshold)."""
     from collections import defaultdict
     flood = _dup_flood_fingerprints(conn, df_cap)
     rows_fp = _dup_load_fingerprint_rows(conn, target, flood)
@@ -1525,7 +1725,8 @@ def _dup_stage2(conn, *, target, meta, member_key, in_scope,
 
 
 def _dup_stage_call_pattern(rows: list, *, min_node: int, in_scope) -> tuple[list, dict]:
-    """call_pattern（要 opt-in、最低信心🟦）：呼叫名集合相同但結構不同才報。"""
+    """call_pattern (opt-in, lowest confidence 🟦): reported only when the set of called names
+    matches but the structure differs."""
     from collections import defaultdict
     by_call: dict[str, list] = defaultdict(list)
     for r in rows:
@@ -1537,71 +1738,91 @@ def _dup_stage_call_pattern(rows: list, *, min_node: int, in_scope) -> tuple[lis
     for members in by_call.values():
         shapes = {m["shape_hash"] for m in members}
         if len(members) < 2 or len(shapes) == 1:
-            continue   # 同 call 又同 shape 已被 stage-1 涵蓋；要 shape 不同才是正交線索
+            continue   # same calls and same shape is already covered by stage 1; only a differing shape is an orthogonal clue
         if not in_scope(members):
             continue
         members.sort(key=lambda m: (m["path"], m["line"]))
         groups.append(_make_dup_group(
             "CALL_PATTERN_SIM", members, None,
-            "呼叫名集合完全相同、結構不同（正交線索、最低信心）；可能碰巧用同組 helper，務必讀碼。"))
+            "Identical set of called names but different structure (an orthogonal clue, lowest "
+            "confidence); they may simply happen to use the same helpers, so read the code."))
         delta["call_pattern"] = delta.get("call_pattern", 0) + 1
     return groups, delta
 
 
 def _dup_advisory(summary: dict, target: str | None) -> list[str]:
-    """把數字翻成「你接下來該去確認什麼」——⛔永不出「應刪/應合併」的決策。"""
+    """Turn the numbers into "what you should go and check next". ⛔ It never emits a
+    "should be deleted / should be merged" decision."""
     advisory: list[str] = []
     if summary["exact"]:
-        advisory.append(f"{summary['exact']} 群逐字相同（高信心 Type-1）——仍可能是不同模組的合理相同樣板，"
-                        "🟥 只說「逐字相同」不說「該合併」。")
+        advisory.append(f"{summary['exact']} group(s) match verbatim (high-confidence Type-1), but they "
+                        "may still be the same boilerplate legitimately repeated across modules. "
+                        "🟥 This says they are identical, not that they should be merged.")
     if summary["renamed"] + summary["structural_near"]:
-        advisory.append(f"{summary['renamed'] + summary['structural_near']} 群是改名/近似——結構像≠語義同"
-                        "（兩段長得一樣的 if-return 可能業務無關），務必讀碼判定是否真重複。")
+        advisory.append(f"{summary['renamed'] + summary['structural_near']} group(s) are renamed or "
+                        "near matches. Looking alike is not the same as meaning the same (two "
+                        "identical-looking if-return blocks can be entirely unrelated). Read the "
+                        "code to decide whether they really duplicate each other.")
     if not summary["stage2_ran"]:
-        advisory.append("未跑全域近似（stage-2/3）：只給逐字/同形重複。要找 Type-3 近似請帶 scope_file 或 near_global。")
+        advisory.append("Global near-duplicate detection (stage 2/3) did not run, so only verbatim "
+                        "and same-shape duplicates are reported. To find Type-3 near duplicates, "
+                        "pass scope_file or near_global.")
     if target:
-        advisory.append("scope 模式：stage-1（逐字/同形）仍對全 repo 跨檔偵測、只輸出含此檔成員的群；"
-                        "stage-2 近似只比與此檔有指紋交集者。total_units_scanned 是全 repo 數。")
+        advisory.append("Scope mode: stage 1 (verbatim and same-shape) still detects across the "
+                        "whole repo and only outputs groups containing a member from this file; "
+                        "stage 2 near-duplicate detection only compares units whose fingerprints "
+                        "intersect this file's. total_units_scanned is the whole-repo count.")
     if not advisory:
-        advisory.append("未發現結構相同群（名稱級結構層面）；Type-4 語義克隆本工具誠實偵測不到。")
+        advisory.append("No structurally identical groups were found at the name and structure "
+                        "level; this tool honestly cannot detect Type-4 semantic clones.")
     return advisory
 
 
 def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bool = False,
                     min_similarity: float | None = None,
                     include_call_pattern: bool = False) -> dict:
-    """重複/類似功能偵測（統一母版）— 結構指紋分群，純非語義（設計 §3.A）。
+    """Duplicate / near-duplicate detection (shared core): grouping by structural
+    fingerprint, strictly non-semantic (design §3.A).
 
-    分三段（紅隊 FIX-1：無 scope 預設只跑 stage-1 真 O(n)，全域近似 stage-2/3 須 opt-in）：
-      stage-1：GROUP BY shape_hash → EXACT_DUP（raw_token 也同、逐字）/ RENAMED_DUP（同形改名）；
-               結構顯著性硬門檻（須含控制流 + node_count/nstmts 夠）擋 getter/__init__ 大宗誤報。
-      stage-2/3（scope_file 或 near_global 才跑）：winnowing 倒排 + DF-cap 三道閘 → STRUCTURAL_NEAR。
-      call_pattern（include_call_pattern 才跑、最低信心🟦）：call_hash 同、結構不同。
+    Three stages (red team FIX-1: without a scope, only stage 1 runs by default, which is
+    genuinely O(n); global near-duplicate stages 2/3 must be opted into):
+      Stage 1: GROUP BY shape_hash → EXACT_DUP (raw_token matches too, so verbatim) /
+               RENAMED_DUP (same shape, renamed). A structural-significance hard gate
+               (control flow required, plus sufficient node_count/nstmts) stops the flood of
+               getter and __init__ false positives.
+      Stage 2/3 (only with scope_file or near_global): winnowing inverted index + DF-cap,
+               through three gates → STRUCTURAL_NEAR.
+      call_pattern (only with include_call_pattern, lowest confidence 🟦): matching call_hash
+               with a different structure.
 
-    ⛔ 永不出「應刪/應合併」決策（守鐵律③唯讀導航圖）；結構相同≠語義相同，合併前人工讀碼 + CI。
+    ⛔ It never emits a "should be deleted / should be merged" decision (upholding hard rule 3,
+    the read-only navigation map); identical structure is not identical semantics, so read the
+    code and run CI before merging.
 
-    參數
-    ----
-    scope_file : 限該檔範圍（stage-2/3 預設只在此跑）。
-    near_global : 全域 stage-2/3 近似比對 opt-in（大 repo 可能慢，DF-cap 防爆）。
-    min_similarity : 覆寫 STRUCTURAL_NEAR 門檻（None 走 env，預設 0.8）。
-    include_call_pattern : 開 CALL_PATTERN_SIM 層（誤報率最高、預設關）。
+    Parameters
+    ----------
+    scope_file : restrict to this file (stages 2/3 run only here by default).
+    near_global : opt into global stage 2/3 near-duplicate comparison (can be slow on a large
+                  repo; DF-cap stops it from exploding).
+    min_similarity : override the STRUCTURAL_NEAR threshold (None takes env, default 0.8).
+    include_call_pattern : enable the CALL_PATTERN_SIM layer (highest false-positive rate, off
+                  by default).
 
-    回 dict：{root, scope_file, groups, summary, verification_reminder, read_code_advisory}。
-    專案未索引 → RuntimeError。
+    Returns a dict: {root, scope_file, groups, summary, verification_reminder,
+    read_code_advisory}. An unindexed project → RuntimeError.
     """
     if not os.path.isdir(path):
-        raise NotADirectoryError(f"find_duplicates：'{path}' 不是有效目錄")
+        raise NotADirectoryError(f"find_duplicates: '{path}' is not a valid directory")
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
         raise RuntimeError(
-            f"find_duplicates：專案尚未索引（無 {db_file}）。請先呼叫 index_project。")
+            f"find_duplicates: project has not been indexed yet (no {db_file}); call index_project first.")
 
     min_node = clones._env_int("CODESEXTANT_DEDUP_MIN_NODE_COUNT", 15)
     sim_thresh = (min_similarity if min_similarity is not None
                   else clones._env_float("CODESEXTANT_DEDUP_SIMILARITY_THRESHOLD", 0.8))
-    sim_thresh = max(0.0, min(1.0, sim_thresh))   # 紅隊 L4-LOW：clamp 防越界值破壞門檻語義
+    sim_thresh = max(0.0, min(1.0, sim_thresh))   # red team L4-LOW: clamp so an out-of-range value cannot break the threshold's meaning
     df_cap = clones._env_int("CODESEXTANT_DEDUP_FP_DF_CAP", 50)
     min_shared = clones._env_int("CODESEXTANT_DEDUP_MIN_SHARED_FP", 3)
     near_global = near_global or clones._env_on("CODESEXTANT_DEDUP_NEAR_GLOBAL")
@@ -1616,18 +1837,22 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
 
     with storage.ProjectStore.open(abs_path) as store:
         conn = store.conn
-        # ⚠ 紅隊 L5-HIGH：stage-1（EXACT/RENAMED）**永遠對全 repo fingerprints 跑**（不套 WHERE path）
-        # ——否則 scope_file 模式下 stage-1 變 intra-file-only，跨檔逐字重複漏掉、信心序顛倒。scope_file
-        # 只用來「過濾要輸出哪些群」（群仍跨檔偵測，但只報含該檔成員的群）。
+        # ⚠ Red team L5-HIGH: stage 1 (EXACT/RENAMED) **always runs against the whole repo's
+        # fingerprints** with no WHERE path filter. Otherwise scope_file mode turns stage 1
+        # into intra-file-only, cross-file verbatim duplicates are missed and the confidence
+        # ordering inverts. scope_file is used solely to filter which groups are output:
+        # detection still spans files, but only groups containing a member from that file are
+        # reported.
         rows = [dict(r) for r in conn.execute(
             "SELECT path,name,kind,line,end_line,scope,shape_hash,raw_token_hash,call_hash,"
             "node_count,nstmts,has_control_flow FROM fingerprints").fetchall()]
-        summary["total_units_scanned"] = len(rows)   # 全 repo 單元數（stage-1 全域比對）
+        summary["total_units_scanned"] = len(rows)   # whole-repo unit count (stage 1 compares globally)
         meta = {(m["path"], m["line"]): m for m in rows}
-        member_key: set = set()   # 已歸 stage-1 EXACT/RENAMED 群的 (path,line)，後段不重報
+        member_key: set = set()   # (path,line) already grouped by stage 1 EXACT/RENAMED; later stages do not repeat them
 
         def _in_scope(members) -> bool:
-            """scope_file 模式：群至少含一個 target 檔成員才輸出（None=不限、全輸出）。"""
+            """In scope_file mode, a group is output only if it contains at least one member
+            from the target file (None means no restriction: output everything)."""
             return (not target) or any(os.path.abspath(m["path"]) == target for m in members)
 
         stage_groups, delta, member_key = _dup_stage1(
@@ -1655,7 +1880,10 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
     return {
         "root": abs_path, "scope_file": target, "groups": groups, "summary": summary,
         "verification_reminder": (
-            "重複偵測是結構/詞彙的非語義線索：結構相同≠語義相同、Type-4 語義克隆看不到、"
-            "動態/反射/codegen 產生的重複看不到；⛔工具永不出「應刪/應合併」，合併前必人工讀碼 + build/CI。"),
+            "Duplicate detection is a structural and lexical clue, not a semantic one: identical "
+            "structure is not identical semantics, Type-4 semantic clones are invisible, and "
+            "duplication produced dynamically, reflectively or by code generation is invisible "
+            "too. ⛔ The tool never says something should be deleted or merged; read the code "
+            "yourself and pass build/CI before merging."),
         "read_code_advisory": advisory,
     }

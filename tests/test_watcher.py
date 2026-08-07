@@ -1,7 +1,9 @@
-"""競品吸收 queue 3：file-watcher 主動增量索引測試。
+"""The file watcher, which reindexes incrementally on its own.
 
-防抖 flush 真會跑增量索引（手動 enqueue 測，不靠真 OS 事件避免時序 flaky）；
-ensure_watch 冪等；開關關閉 no-op；watchdog 缺則靜默退（content-hash 兜底）。
+A debounced flush really does run an incremental index. These tests enqueue by hand
+rather than waiting on real OS events, because the timing of those makes tests flaky.
+Also covered: ensure_watch is idempotent, the off switch makes it a no-op, and a missing
+watchdog package degrades quietly with the content-hash path as the fallback.
 """
 import logging
 import os
@@ -22,7 +24,7 @@ _LOG = logging.getLogger("test_watcher")
 def db_home(tmp_path, monkeypatch):
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
     monkeypatch.setenv("CODESEXTANT_WATCH_ENABLED", "1")
-    monkeypatch.setenv("CODESEXTANT_WATCH_DEBOUNCE_MS", "300")  # 縮短防抖加速測試
+    monkeypatch.setenv("CODESEXTANT_WATCH_DEBOUNCE_MS", "300")  # short debounce, faster tests
 
 
 def _write(root, rel, content):
@@ -61,10 +63,10 @@ class TestWatchManager:
         ok2 = mgr.ensure_watch(str(tmp_path))
         try:
             assert ok1 is True and ok2 is True
-            assert len(mgr.watched()) == 1  # 同專案只掛一次
+            assert len(mgr.watched()) == 1  # one watch per project, not two
         finally:
             mgr.stop_all()
-        assert mgr.watched() == []  # stop 後清空
+        assert mgr.watched() == []  # stop_all clears the list
 
     def test_bad_path_no_watch(self, tmp_path, db_home):
         mgr = watcher.WatchManager(_LOG)
@@ -73,21 +75,24 @@ class TestWatchManager:
 
 class TestDebounceFlush:
     def test_flush_triggers_incremental_reindex(self, tmp_path, db_home):
-        # 防抖 flush 真會跑增量索引：改檔→enqueue→等防抖 timer fire→新符號進索引
+        # Edit a file, enqueue it, wait for the debounce timer to fire, and the new
+        # symbol should be in the index.
         engine.index_project(str(tmp_path))
         _write(tmp_path, "a.py", "def original():\n    return 1\n")
         w = watcher._ProjectWatch(str(tmp_path), _LOG)
-        # 改檔加新符號 + 手動 enqueue（模擬 observer 偵測，不靠真 OS 事件避免 flaky）
+        # Add a symbol, then enqueue by hand to stand in for the observer. Real OS
+        # events would make this flaky.
         _write(tmp_path, "a.py",
                "def original():\n    return 1\n\n\ndef brand_new_sym():\n    return 2\n")
         w._enqueue(str(tmp_path / "a.py"))
-        time.sleep(watcher._debounce_sec() + 0.8)  # 等防抖窗口 + 索引完成
+        time.sleep(watcher._debounce_sec() + 0.8)  # debounce window plus indexing time
         r = engine.get_symbols(str(tmp_path), file=str(tmp_path / "a.py"))
         names = {s["name"] for s in r["symbols"]}
         assert "brand_new_sym" in names, names
 
     def test_debounce_coalesces(self, tmp_path, db_home):
-        # 連續多次 enqueue 只觸發一次 flush（防抖合併，不重索引風暴）
+        # Several enqueues in a row collapse into a single flush, so a burst of edits
+        # cannot turn into a reindex storm.
         engine.index_project(str(tmp_path))
         _write(tmp_path, "a.py", "x = 1\n")
         flushes = []
@@ -98,8 +103,8 @@ class TestDebounceFlush:
             flushes.append(1)
             orig()
         w._flush = _counting_flush
-        for _ in range(5):  # 快速連續 5 次變動
+        for _ in range(5):  # five rapid changes
             w._enqueue(str(tmp_path / "a.py"))
             time.sleep(0.02)
         time.sleep(watcher._debounce_sec() + 0.8)
-        assert len(flushes) == 1, f"防抖應合併成 1 次 flush，實際 {len(flushes)}"
+        assert len(flushes) == 1, f"debounce should coalesce into 1 flush, got {len(flushes)}"

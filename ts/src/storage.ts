@@ -1,27 +1,41 @@
-// 索引存儲模組 — SQLite 落盤 + content hash 增量 + 專案隔離（全 TS 重寫 P1，平移自 Python codesextant/storage.py）。
+// Index storage module: SQLite persistence + content-hash incrementality + project isolation
+// (full TypeScript rewrite, P1; ported from Python codesextant/storage.py).
 //
-// 設計來源（PoC 已坐實）：
-//   - 每專案一個 SQLite 庫，project_key = sha1(repo 絕對路徑)（不混線）。
-//   - 用檔案 content hash(sha256) 當失效 key：改一檔只重算一檔，其餘 cache hit 跳過。
+// Design, as settled by the PoC:
+//   - One SQLite database per project, project_key = sha1(absolute repo path), so projects never
+//     cross-talk.
+//   - The file content hash (sha256) is the invalidation key: edit one file and only that file is
+//     recomputed, everything else is a cache hit.
 //
-// 職責（單一）：管一個專案的 SQLite 庫——開庫、建表、查/寫檔案 hash、存/取符號、存/取引用邊、
-// 給統計。不碰 tree-sitter、不碰 ts-morph。預設庫位置：~/.codesextant/<project_key>.db。
+// Single responsibility: own one project's SQLite database (open it, create tables, read/write file
+// hashes, store and fetch symbols, store and fetch reference edges, report statistics). It touches
+// neither tree-sitter nor ts-morph. Default database location: ~/.codesextant/<project_key>.db.
 //
-// 與 Python 版的刻意差異（不影響輸出/落盤 parity）：
-//   - project_key：Python 用 os.path.normcase(os.path.abspath())；TS 用 path.resolve() + normcaseAbs
-//     對齊（小寫化 + 統一反斜線 + 元件尾點尾空格剝除），確保同一專案 TS/Python 算出相同 sha1、共用同一個 .db。
-//   - better-sqlite3 預設 autocommit（無顯式 BEGIN 時每句各自 commit），故 Python 的 conn.commit()
-//     多數可省；但「先 DELETE 再批次 INSERT」想原子者一律用 db.transaction() 包，保持與 Python 一致。
-//   - better-sqlite3 不接受 undefined 作為綁定值 → Python 的 dict.get(k)（缺則 None）平移為 v ?? null。
+// Deliberate differences from the Python version (none affect output or persistence parity):
+//   - project_key: Python uses os.path.normcase(os.path.abspath()); TypeScript uses path.resolve()
+//     plus normcaseAbs (lowercase, unify backslashes, strip trailing dots and spaces from components)
+//     to match it, so both compute the same sha1 for a project and share one .db.
+//   - better-sqlite3 autocommits by default (without an explicit BEGIN every statement commits on its
+//     own), so most of Python's conn.commit() calls drop out; anything that wants "DELETE then batch
+//     INSERT" to be atomic is wrapped in db.transaction(), matching Python.
+//   - better-sqlite3 rejects undefined as a bound value, so Python's dict.get(k) (None when absent)
+//     ports to v ?? null.
 //
-// 已知邊界（producer 不觸發、故不影響實務 parity，標記在此避免日後誤判）：
-//   - dict.get(k, D)（D 非 None，如 comments 的 kind→"line"/scope→""）：Python 只在「key 缺席」回退 D，
-//     對「key 存在但值 None」直接存 None（NOT NULL 欄 → fail-loud IntegrityError）；TS 的 v ?? D 對
-//     「undefined 或 null」都回退 D（fail-soft）。兩版對「缺 key」與「給數字」路徑一致——comments 產出端
-//     恆填值、永不發顯式 null，故實務落盤一致；唯「顯式給 null」這條不可達髒輸入分歧（TS fail-soft）。
-//   - REAL 欄整數值（indexed_at/last_indexed_at）：Python sqlite3 取 REAL 恆回 float（2000→2000.0、
-//     JSON 序列化 "2000.0"），better-sqlite3 回 JS number（JSON.stringify 成 "2000"）。重寫期 Python 凍結、
-//     TS 達 parity 才切，不會同時對外服務同一庫，故 wire 不需同時 parity；消費端勿對 REAL 做精確字串比較。
+// Known edges. The producers never trigger these, so practical parity is unaffected; they are
+// recorded here so nobody misreads them later:
+//   - dict.get(k, D) where D is not None (e.g. comments kind→"line" / scope→""): Python falls back to
+//     D only when the key is absent, and stores None when the key exists with value None (a NOT NULL
+//     column then fails loud with IntegrityError); TypeScript's v ?? D falls back for undefined and
+//     null alike (fail-soft). Both versions agree on the "key absent" and "value given" paths: the
+//     comments producer always fills a value and never emits an explicit null, so what lands on disk
+//     is identical. Only the unreachable "explicit null" dirty input diverges, where TypeScript is
+//     fail-soft.
+//   - Integer values in REAL columns (indexed_at/last_indexed_at): Python's sqlite3 always returns a
+//     float for REAL (2000 → 2000.0, serialized as "2000.0"); better-sqlite3 returns a JS number
+//     (JSON.stringify gives "2000"). During the rewrite the Python version is frozen and the switch
+//     only happens once TypeScript reaches parity, so the two never serve the same database at the
+//     same time and the wire format needs no simultaneous parity. Consumers must not compare a REAL
+//     as an exact string.
 import DatabaseConstructor from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { readFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
@@ -29,20 +43,23 @@ import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import type { SymbolDef } from "./symbols.js";
 
-/** better-sqlite3 的 Database 實例型別（namespace 型別，配合 esModuleInterop default import）。 */
+/** The better-sqlite3 Database instance type (a namespace type, paired with the esModuleInterop default import). */
 type DB = DatabaseConstructor.Database;
 
-// 庫的綱要版本（schema 改了就 +1，未來可據此做遷移）。
-// ⚠ 遷移機制誠實：open() 跑 exec(CREATE TABLE IF NOT EXISTS) 冪等補表 + ensureColumns() 純加欄 hook。
-// 無條件覆寫 meta.schema_version——version 號僅 stats 回報、不 gate 任何遷移。對「加表/加欄」安全。
-export const SCHEMA_VERSION = 3; // v0.11.x P3：fingerprints 加 cognitive 欄；v2=功能 B 三表
+// Schema version of the database (bump by one whenever the schema changes; future migrations can key
+// off it).
+// ⚠ Be honest about what the migration mechanism is: open() runs exec(CREATE TABLE IF NOT EXISTS) to
+// add missing tables idempotently, plus the add-column-only ensureColumns() hook. meta.schema_version
+// is overwritten unconditionally; the number is only reported in stats and gates no migration. That
+// is safe for "add a table" and "add a column" changes.
+export const SCHEMA_VERSION = 3; // v0.11.x P3: fingerprints gained the cognitive column; v2 = the three feature-B tables
 
-/** 一筆已落盤符號（= SymbolDef + 所屬檔路徑）。 */
+/** One persisted symbol (= SymbolDef + the path of the file it lives in). */
 export interface SymbolRow extends SymbolDef {
   path: string;
 }
 
-/** 一條引用邊（呼叫端某行用到了某個被定義的符號）。 */
+/** One reference edge (some line at a call site uses a defined symbol). */
 export interface RefEdge {
   src_path: string;
   src_line: number;
@@ -52,7 +69,7 @@ export interface RefEdge {
   confidence: string; // "high"(resolved-import) / "low"(name-match)
 }
 
-/** 功能 B：一個可執行單元的結構指紋（給重複偵測 GROUP BY shape_hash）。 */
+/** Feature B: the structural fingerprint of one executable unit (duplicate detection groups by shape_hash). */
 export interface Fingerprint {
   name?: string | null;
   kind?: string | null;
@@ -65,16 +82,16 @@ export interface Fingerprint {
   node_count?: number | null;
   nstmts?: number | null;
   has_control_flow?: boolean | number | null;
-  cognitive?: number | null; // P3 D3：高信心語言 int / 其餘語言 null=UNKNOWN
+  cognitive?: number | null; // P3 D3: an int for high-confidence languages, null = UNKNOWN for the rest
 }
 
-/** 功能 B：winnowing k-gram 倒排索引一筆。 */
+/** Feature B: one entry in the winnowing k-gram inverted index. */
 export interface WinnowEntry {
   line?: number | null;
   fp_value?: number | null;
 }
 
-/** 功能 B：一個 comment 節點 + 行號 + 歸屬符號。 */
+/** Feature B: one comment node + its line number + the symbol it belongs to. */
 export interface CommentRow {
   line?: number | null;
   end_line?: number | null;
@@ -86,7 +103,7 @@ export interface CommentRow {
   text?: string | null;
 }
 
-/** 呼叫鏈一個節點（call hierarchy 遞迴 CTE 結果）。 */
+/** One node in a call chain (a row from the call-hierarchy recursive CTE). */
 export interface CallGraphNode {
   name: string;
   path: string;
@@ -95,7 +112,7 @@ export interface CallGraphNode {
   confidence: string;
 }
 
-/** 單專案統計（給 status / 面板）。 */
+/** Statistics for one project (used by status and the panel). */
 export interface ProjectStats {
   project_key: string;
   repo_path: string;
@@ -110,7 +127,7 @@ export interface ProjectStats {
   indexed_git_sha: string | null;
 }
 
-/** 列舉本機所有已索引專案一筆。 */
+/** One entry when listing every indexed project on this machine. */
 export interface IndexedProject {
   project_key: string;
   db_file: string;
@@ -123,52 +140,62 @@ export interface IndexedProject {
   error?: string;
 }
 
-/** 複刻 Python os.path.normcase(os.path.abspath()) 的複合效果（win32）：
- *  - abspath/GetFullPathName：剝除路徑元件結尾的點/空格（Windows 檔名語義；path.resolve 不做這步）。
- *    ⚠ 實測 GetFullPathName 細則（_dbg 坐實）：尾「點」所有元件都剝（'foo.'→'foo'）；尾「空格」
- *    只剝 basename（最後元件），中間元件的尾空格保留（'E:\\專案 \\Foo.'→'e:\\專案 \\foo'）。
- *  - normcase：小寫化 + 統一反斜線。POSIX 全程 no-op（保留大小寫與正斜線）。
- *  ⚠ 此剝除是 project_key 命脈：user 手誤多打尾點/尾空格（'E:\\foo. '）時，實體目錄是 'E:\\foo'，
- *  TS/Python 須算出同一把 key、共用同一個 .db。病態混合路徑（如中間元件 'foo. '）不保證完美複刻。 */
+/** Reproduces the combined effect of Python's os.path.normcase(os.path.abspath()) on win32:
+ *  - abspath/GetFullPathName: strips trailing dots and spaces from path components (Windows filename
+ *    semantics; path.resolve does not do this).
+ *    ⚠ Measured GetFullPathName behaviour (confirmed with _dbg): a trailing dot is stripped from every
+ *    component ('foo.' → 'foo'); a trailing space is stripped only from the basename (the last
+ *    component), and intermediate components keep theirs ('E:\\Proj \\Foo.' → 'e:\\proj \\foo').
+ *  - normcase: lowercase + unify backslashes. A no-op throughout on POSIX (case and forward slashes
+ *    are kept).
+ *  ⚠ This stripping is load-bearing for project_key: when the user mistypes a trailing dot or space
+ *  ('E:\\foo. ') the real directory is 'E:\\foo', and TypeScript and Python have to compute the same
+ *  key and share one .db. Pathological mixed paths (an intermediate component like 'foo. ') are not
+ *  guaranteed to reproduce exactly. */
 function normcaseAbs(resolved: string): string {
   if (process.platform !== "win32") return resolved;
   const parts = resolved.replace(/\//g, "\\").split("\\");
   const last = parts.length - 1;
   const stripped = parts.map((seg, i) => {
-    if (i === 0) return seg; // drive（'E:'）或 UNC 起始空段，不剝
-    if (i === last) return seg.replace(/[. ]+$/, ""); // basename：尾點 + 尾空格都剝
-    return seg.replace(/\.+$/, ""); // 中間元件：只剝尾點，尾空格保留（對齊 GetFullPathName）
+    if (i === 0) return seg; // drive ('E:') or the empty leading segment of a UNC path, never stripped
+    if (i === last) return seg.replace(/[. ]+$/, ""); // basename: strip both trailing dots and trailing spaces
+    return seg.replace(/\.+$/, ""); // intermediate component: strip trailing dots only, keep spaces (matches GetFullPathName)
   });
   return stripped.join("\\").toLowerCase();
 }
 
-/** 專案隔離鍵 = sha1(規範化的 repo 絕對路徑)。複刻 Python normcase(abspath())，確保同專案任何相對/
- *  大小寫/正反斜線/尾點尾空格寫法進來都對應同一把 key、共用同一個 .db（不混線命脈）。 */
+/** Project isolation key = sha1(normalized absolute repo path). Reproduces Python's
+ *  normcase(abspath()) so that any relative, differently-cased, slash-flipped or
+ *  trailing-dot-or-space spelling of the same project maps to one key and one shared .db, which is
+ *  what keeps projects from crossing wires. */
 export function projectKey(repoPath: string): string {
   const abs = normcaseAbs(resolve(repoPath));
   return createHash("sha1").update(abs, "utf-8").digest("hex");
 }
 
-/** 對齊 Python os.path.normcase(os.path.abspath(p)) 的單一真相源——給 ranking/namegraph 等模組
- *  做路徑配對用（引用邊的 def_path/src_path 與符號 path 必須走同一正規化才對得上同一節點）。
- *  ⚠ 與 projectKey 共用同一個 normcaseAbs，避免兩份 normcase 邏輯漂移。空字串由呼叫端自理
- *  （此處不擋空：normPath("") 會回 cwd，與 Python abspath("") 行為一致）。 */
+/** The single source of truth matching Python's os.path.normcase(os.path.abspath(p)), used by
+ *  modules such as ranking and namegraph for path matching (a reference edge's def_path/src_path and
+ *  a symbol's path must go through the same normalization to land on the same node).
+ *  ⚠ Shares one normcaseAbs with projectKey so the two normalizations cannot drift apart. Empty
+ *  strings are the caller's business (not guarded here: normPath("") returns cwd, matching Python's
+ *  abspath("")). */
 export function normPath(p: string): string {
   return normcaseAbs(resolve(p));
 }
 
-/** 預設庫目錄 ~/.codesextant/。可用環境變數 CODESEXTANT_HOME 覆寫（方便測試隔離）。 */
+/** Default database directory ~/.codesextant/. Override it with the CODESEXTANT_HOME environment
+ *  variable, which is what test isolation uses. */
 export function defaultDbDir(): string {
   const home = process.env["CODESEXTANT_HOME"];
   return home ? home : join(homedir(), ".codesextant");
 }
 
-/** 某專案對應的 SQLite 庫檔路徑。 */
+/** The SQLite database file path for a given project. */
 export function dbPathFor(repoPath: string): string {
   return join(defaultDbDir(), `${projectKey(repoPath)}.db`);
 }
 
-/** 檔案內容 sha256（增量的失效 key）。 */
+/** File content sha256: the invalidation key for incremental indexing. */
 export function fileContentHash(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -252,10 +279,11 @@ CREATE INDEX IF NOT EXISTS idx_comments_tag  ON comments(tag);
 CREATE INDEX IF NOT EXISTS idx_comments_doc  ON comments(is_doc);
 `;
 
-/** 既有庫加欄位的 migration hook（CREATE TABLE IF NOT EXISTS 不會對既有表加欄）。純加欄、冪等、可逆。 */
+/** Migration hook that adds columns to an existing database, since CREATE TABLE IF NOT EXISTS never
+ *  adds a column to a table that already exists. Add-only, idempotent, reversible. */
 function ensureColumns(db: DB): void {
   const expected: Record<string, [string, string][]> = {
-    fingerprints: [["cognitive", "INTEGER"]], // P3 D3：高信心語言 int / 其餘 NULL
+    fingerprints: [["cognitive", "INTEGER"]], // P3 D3: an int for high-confidence languages, NULL for the rest
   };
   for (const [table, cols] of Object.entries(expected)) {
     const have = new Set(
@@ -271,7 +299,7 @@ function ensureColumns(db: DB): void {
   }
 }
 
-/** 一個專案的 SQLite 索引庫門面。用法：const store = ProjectStore.open(repo); try { ... } finally { store.close(); } */
+/** Facade over one project's SQLite index. Usage: const store = ProjectStore.open(repo); try { ... } finally { store.close(); } */
 export class ProjectStore {
   readonly db: DB;
   readonly repoPath: string;
@@ -285,17 +313,18 @@ export class ProjectStore {
     this.dbFile = dbFile;
   }
 
-  // ── 開 / 關 ──
+  // ── open / close ──
   static open(repoPath: string): ProjectStore {
     const dbFile = dbPathFor(repoPath);
     mkdirSync(defaultDbDir(), { recursive: true });
     const db = new DatabaseConstructor(dbFile);
-    // ⚠ 對齊 Python sqlite3 預設：foreign_keys OFF。better-sqlite3 預設 ON，但 Python 版整個設計
-    // （storeFileSymbols 先 INSERT symbol 後 UPSERT file 的順序）假設 FK 不強制——schema 裡的
-    // FOREIGN KEY 宣告只是文件、Python 版從不強制。關掉以保持落盤/操作順序 parity。
+    // ⚠ Match the Python sqlite3 default: foreign_keys OFF. better-sqlite3 defaults to ON, but the
+    // whole Python design (storeFileSymbols inserts symbols before upserting the file row) assumes
+    // foreign keys are not enforced: the FOREIGN KEY declarations in the schema are documentation
+    // that the Python version never enforced. Turn it off to keep persistence and ordering parity.
     db.pragma("foreign_keys = OFF");
     db.exec(SCHEMA);
-    ensureColumns(db); // 既有庫補新欄（migration hook）
+    ensureColumns(db); // add new columns to an existing database (migration hook)
     const store = new ProjectStore(db, repoPath, dbFile);
     store.setMeta("schema_version", String(SCHEMA_VERSION));
     store.setMeta("repo_path", store.repoPath);
@@ -324,12 +353,12 @@ export class ProjectStore {
     return row ? row.value : defaultValue;
   }
 
-  /** 坑6：記錄本次索引時 repo 的 git HEAD sha（freshness 比對用）。 */
+  /** Pitfall 6: record the repo's git HEAD sha at index time, for freshness comparison. */
   recordGitSha(sha: string): void {
     this.setMeta("git_head_sha", sha);
   }
 
-  // ── 增量核心：判斷某檔要不要重算 ──
+  // ── incremental core: decide whether a file needs recomputing ──
   needsReindex(path: string, currentHash: string): boolean {
     const row = this.db
       .prepare("SELECT content_hash FROM files WHERE path=?")
@@ -337,7 +366,8 @@ export class ProjectStore {
     return row === undefined || row.content_hash !== currentHash;
   }
 
-  /** 重算後落盤：清掉該檔舊符號，寫入新符號，更新 hash。整批一個 transaction。 */
+  /** Persist after recomputing: drop the file's old symbols, write the new ones, update the hash.
+   *  The whole batch is one transaction. */
   storeFileSymbols(
     path: string,
     contentHash: string,
@@ -362,7 +392,8 @@ export class ProjectStore {
     tx();
   }
 
-  /** 功能 B：落盤某檔的結構指紋 + winnowing 倒排（先清該檔舊的再寫）。content_hash 由 storeFileSymbols 管。 */
+  /** Feature B: persist one file's structural fingerprints + winnowing inverted index, clearing that
+   *  file's old rows first. content_hash is owned by storeFileSymbols. */
   storeFileFingerprints(
     path: string,
     fingerprints: Fingerprint[],
@@ -405,7 +436,8 @@ export class ProjectStore {
     tx();
   }
 
-  /** 功能 B：落盤某檔的註解（先清該檔舊的再寫）。content_hash 同上由 storeFileSymbols 管。 */
+  /** Feature B: persist one file's comments, clearing that file's old rows first. content_hash is
+   *  likewise owned by storeFileSymbols. */
   storeFileComments(path: string, comments: CommentRow[]): void {
     const delC = this.db.prepare("DELETE FROM comments WHERE path=?");
     const insC = this.db.prepare(
@@ -431,7 +463,8 @@ export class ProjectStore {
     tx();
   }
 
-  /** 檔被刪了 → 從索引移除：符號 + 檔記錄 + 它發出/指向它的引用邊 + 功能 B 三表。 */
+  /** A file was deleted, so remove it from the index: its symbols, its file row, the reference edges
+   *  it emits or that point at it, and the three feature-B tables. */
   removeFile(path: string): void {
     const tx = this.db.transaction(() => {
       this.db.prepare("DELETE FROM symbols WHERE path=?").run(path);
@@ -446,8 +479,8 @@ export class ProjectStore {
     tx();
   }
 
-  // ── 查詢 ──
-  /** 取符號。給 filePath 只取該檔，否則取全專案。 */
+  // ── queries ──
+  /** Fetch symbols. With filePath, only that file; without it, the whole project. */
   getSymbols(filePath?: string): SymbolRow[] {
     if (filePath !== undefined) {
       return this.db
@@ -463,7 +496,7 @@ export class ProjectStore {
       .all() as SymbolRow[];
   }
 
-  /** 找某名稱的所有定義（給找引用二段式第一段——粗篩候選用）。 */
+  /** Find every definition of a name: stage one of two-stage reference finding, the coarse candidate filter. */
   findSymbolDefinitions(name: string): SymbolRow[] {
     return this.db
       .prepare(
@@ -480,8 +513,9 @@ export class ProjectStore {
     ).map((r) => r.path);
   }
 
-  // ── 引用邊 ──
-  /** 落盤某檔發出的引用邊（先清該檔的舊邊再寫，保持單一真相）。 */
+  // ── reference edges ──
+  /** Persist the reference edges a file emits, clearing that file's old edges first so there is one
+   *  source of truth. */
   replaceRefsFor(srcPath: string, edges: RefEdge[]): void {
     const delR = this.db.prepare("DELETE FROM refs WHERE src_path=?");
     const insR = this.db.prepare(
@@ -511,10 +545,14 @@ export class ProjectStore {
       .all() as RefEdge[];
   }
 
-  /** 在落盤 refs 邊上跑遞迴 CTE 算傳遞呼叫鏈（call hierarchy）。
-   *  direction='up' 找 callers（誰傳遞地呼叫此符號）；'down' 找 callees（此符號傳遞地呼叫誰）。
-   *  max_hops 限深度防環；信心傳播：鏈中任一邊 low 則該路徑降 low、節點取是否存在全 high 路徑。
-   *  回 [{name,path,line,depth,confidence}]，DISTINCT 節點取最小 depth；refs 表為空 → 回 []。 */
+  /** Run a recursive CTE over the persisted refs edges to compute the transitive call chain (call
+   *  hierarchy).
+   *  direction='up' finds callers (who transitively calls this symbol); 'down' finds callees (whom
+   *  this symbol transitively calls).
+   *  max_hops caps the depth to guard against cycles. Confidence propagates: one low edge anywhere in
+   *  a chain drops that path to low, and a node counts as high if any all-high path reaches it.
+   *  Returns [{name,path,line,depth,confidence}], one row per distinct node at its smallest depth; an
+   *  empty refs table gives []. */
   traverseCallGraph(
     symbol: string,
     defPath: string,
@@ -524,19 +562,21 @@ export class ProjectStore {
     const absDefPath = resolve(defPath);
     let joinClause: string;
     if (direction === "up") {
-      // 誰引用了當前符號（r.symbol_name=c.name 且 r.def_path=c.path）→ 引用點 src_line 落在哪個符號 body = caller
+      // who references the current symbol (r.symbol_name=c.name and r.def_path=c.path) → whichever
+      // symbol body contains src_line is the caller
       joinClause =
         "JOIN refs r ON r.symbol_name = c.name AND r.def_path = c.path " +
         "JOIN symbols s ON s.path = r.src_path " +
         "AND s.line <= r.src_line AND r.src_line <= s.end_line";
     } else if (direction === "down") {
-      // 當前符號 body 範圍內的引用（src 在 c 的 [line,end_line]）→ 被引用符號定義 = callee
+      // references inside the current symbol's body (src within c's [line,end_line]) → the referenced
+      // symbol's definition is the callee
       joinClause =
         "JOIN refs r ON r.src_path = c.path " +
         "AND r.src_line >= c.line AND r.src_line <= c.end_line " +
         "JOIN symbols s ON s.path = r.def_path AND s.name = r.symbol_name";
     } else {
-      throw new Error(`direction 必須是 'up' 或 'down'，收到 ${direction as string}`);
+      throw new Error(`direction must be 'up' or 'down', got ${direction as string}`);
     }
 
     const cte = `
@@ -573,7 +613,7 @@ export class ProjectStore {
     }));
   }
 
-  // ── 統計（給 status / 面板用） ──
+  // ── statistics (for status and the panel) ──
   stats(): ProjectStats {
     const c = this.db;
     const count = (sql: string): number =>
@@ -581,7 +621,8 @@ export class ProjectStore {
     const nFiles = count("SELECT COUNT(*) AS n FROM files");
     const nSymbols = count("SELECT COUNT(*) AS n FROM symbols");
     const nRefs = count("SELECT COUNT(*) AS n FROM refs");
-    // 功能 B：便宜的 COUNT(*) 放 stats；⛔ dup_groups（要 GROUP BY shape_hash HAVING）絕不放 stats。
+    // Feature B: a cheap COUNT(*) belongs in stats; ⛔ dup_groups (which needs GROUP BY shape_hash
+    // HAVING) must never go in stats.
     const nFingerprints = count("SELECT COUNT(*) AS n FROM fingerprints");
     const nComments = count("SELECT COUNT(*) AS n FROM comments");
     const lastIndexed = (
@@ -600,13 +641,17 @@ export class ProjectStore {
       comments: nComments,
       last_indexed_at: lastIndexed,
       schema_version: parseInt(this.getMeta("schema_version", "0"), 10),
-      indexed_git_sha: this.getMeta("git_head_sha"), // 坑6：索引時的 sha
+      indexed_git_sha: this.getMeta("git_head_sha"), // pitfall 6: the sha at index time
     };
   }
 }
 
-/** 掃庫目錄下所有 *.db，反查各自的 repo_path（meta 表）+ 統計。給中文面板「列出本機所有已索引專案」用。
- *  壞庫（讀不了/缺表）跳過並標 error，不讓單一壞庫炸掉整個列舉（fail-soft 列舉、fail-loud 留給單專案操作）。 */
+/** Scan every *.db under the database directory and look up each one's repo_path (from the meta
+ *  table) plus its statistics. This is what backs the panel's "list every indexed project on this
+ *  machine".
+ *  A broken database (unreadable, or missing tables) is skipped and marked with error, so one bad
+ *  database cannot blow up the whole listing. Listing is fail-soft; fail-loud is reserved for
+ *  single-project operations. */
 export function listIndexedProjects(): IndexedProject[] {
   const dbDir = defaultDbDir();
   const out: IndexedProject[] = [];
@@ -616,7 +661,7 @@ export function listIndexedProjects(): IndexedProject[] {
       .filter((f) => f.endsWith(".db"))
       .sort();
   } catch {
-    return out; // 目錄不存在 → 空列舉
+    return out; // directory does not exist → empty listing
   }
   for (const fname of entries) {
     const dbFile = join(dbDir, fname);
@@ -657,11 +702,11 @@ export function listIndexedProjects(): IndexedProject[] {
         path_exists: pathExists,
       });
     } catch (exc) {
-      // 列舉層 fail-soft：任何讀庫錯誤都只跳過該庫並標 error。
+      // Fail-soft at the listing layer: any read error just skips that database and records error.
       out.push({
         project_key: stem,
         db_file: dbFile,
-        error: `讀庫失敗: ${exc instanceof Error ? exc.message : String(exc)}`,
+        error: `failed to read database: ${exc instanceof Error ? exc.message : String(exc)}`,
       });
     } finally {
       conn?.close();

@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# The name comes from the sextant -- an instrument for fixing your position when
+# The name comes from the sextant, an instrument for fixing your position when
 # there is no landmark in sight. Earlier candidates were dropped for collisions:
 # "codemap" was taken on PyPI and clashed with a VSCode extension and a USPTO
 # trademark; "tracemap" was taken by a traceroute visualiser.
@@ -13,17 +13,32 @@ description = "Local code map service for AI agents: tree-sitter symbols across 
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
+authors = [{name = "AI King"}]
+keywords = ["code-map", "static-analysis", "tree-sitter", "ai-agents", "call-graph", "pagerank"]
 dependencies = [
     "tree-sitter>=0.25",
     "tree-sitter-language-pack",
     "jedi>=0.19",
 ]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Operating System :: OS Independent",
 ]
+
+# Without these, the PyPI page has no route back to the source. Anyone
+# evaluating the package sees a description and nothing to verify it against.
+[project.urls]
+Homepage = "https://github.com/Zeroxrain99/CodeSextant"
+Repository = "https://github.com/Zeroxrain99/CodeSextant"
+Issues = "https://github.com/Zeroxrain99/CodeSextant/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
@@ -39,8 +54,8 @@ packages = ["codesextant"]
 
 # This project sets its own line length rather than inheriting the tool default
 # of 88. Under the default, a single run reports 359 findings here, almost none
-# of which are real defects -- and once a report is mostly noise, nobody reads
-# the findings that matter.
+# of which are real defects. Once a report is mostly noise, nobody reads the
+# findings that matter.
 [tool.ruff]
 line-length = 100
 target-version = "py311"

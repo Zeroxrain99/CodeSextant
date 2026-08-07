@@ -9,18 +9,18 @@ without importing the parser/index engine.
 
 Residual risks (documented deliberately, honesty over cover-up):
 
-* Deadline stacking — the client's heavy deadline (default 900s via
+* Deadline stacking: the client's heavy deadline (default 900s via
   ``CODESEXTANT_HEAVY_TIMEOUT_SEC``; ``CODESEXTANT_MAP_TIMEOUT_SEC`` /
   ``CODESEXTANT_REINDEX_TIMEOUT_SEC`` override per action) covers FIFO
   queue wait plus one run for typical loads, but several stacked
   near-deadline jobs can exceed a queued client's deadline.  The client
   deliberately does NOT resend on timeout (no duplicate amplification);
   the caller retries later or raises the env deadline.
-* Handler threads — stdlib ``ThreadingHTTPServer`` spawns one thread per
+* Handler threads: stdlib ``ThreadingHTTPServer`` spawns one thread per
   connection.  This lane bounds the threads *blocked on heavy work*
   (queue cap + per-job follower cap); control endpoints answer
   immediately; total connection threads are not globally capped.
-* Wedged jobs — an active job cannot be cancelled in-process (CPython
+* Wedged jobs: an active job cannot be cancelled in-process (CPython
   has no safe thread kill).  Recovery is external: the supervisor
   recycles the daemon when ``/health`` reports
   ``heavy_work.active_for_sec`` beyond ``CODESEXTANT_HEAVY_STUCK_SEC``
@@ -44,7 +44,7 @@ from typing import Any
 # These lines are what an operator reads when asked "why was my query slow".
 #
 # ⚠ Must be a *child* of "codesextant.daemon".  A sibling logger has no handler
-# of its own, so every line would be silently discarded — observability that
+# of its own, so every line would be silently discarded: observability that
 # exists in the source and nowhere in the log file.  Children propagate up to
 # the daemon logger's RotatingFileHandler; the daemon's own ``propagate=False``
 # only stops it from going further up to root.
@@ -226,7 +226,7 @@ class ShardedHeavyWork:
 
     Sharding alone would be the wrong cure.  Measured on this machine, four
     CPU-bound Python threads complete a fixed workload at **0.64x** the speed of
-    running them sequentially — under the GIL, extra runnable threads make
+    running them sequentially. Under the GIL, extra runnable threads make
     everything slower and starve the control plane (a 135s reindex once pushed
     ``/health`` to 23.6s).  So lanes are split for *fairness*, while a small
     global slot count preserves the contention protection the single lane was
@@ -304,9 +304,9 @@ class ShardedHeavyWork:
                     with self._lock:
                         self._waiting -= 1
                 _log.info(
-                    "全域上限擋下 %s（分片 %s）%.1fs — 上限=%d，調高請設 "
+                    "global cap throttled %s (shard %s) %.1fs; cap=%d, raise it via "
                     "CODESEXTANT_HEAVY_GLOBAL_CAP",
-                    label, shard_name or "(無專案)",
+                    label, shard_name or "(no project)",
                     time.monotonic() - waited_from, self._global_capacity)
             with self._lock:
                 self._in_use += 1
@@ -319,8 +319,8 @@ class ShardedHeavyWork:
                     self._in_use -= 1
                 self._global_slots.release()
                 if elapsed >= self._slow_log_sec:
-                    _log.info("重工作完成 %s（分片 %s）耗時 %.1fs",
-                              label, shard_name or "(無專案)", elapsed)
+                    _log.info("heavy job completed %s (shard %s) took %.1fs",
+                              label, shard_name or "(no project)", elapsed)
 
         return coord.run(key, _globally_gated, label=label)
 

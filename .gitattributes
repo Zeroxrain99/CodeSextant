@@ -1,7 +1,7 @@
 # Normalise line endings to LF in version control (Windows checkouts still get CRLF).
 # Without this, the same file shows up as entirely rewritten on a different machine,
-# burying a real one-line change under thousands of noise lines -- exactly the class
-# of problem this tool exists to help people avoid.
+# burying a real one-line change under thousands of noise lines. That is exactly the
+# class of problem this tool exists to help people avoid.
 
 * text=auto eol=lf
 # Binary / non-diffable files, marked so git does not try to convert them.

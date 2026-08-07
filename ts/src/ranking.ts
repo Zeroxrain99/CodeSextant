@@ -1,28 +1,41 @@
-// 重要度排序模組 — PageRank 給「最重要的 N 個符號」（全 TS 重寫 P1，平移自 Python codesextant/ranking.py）。
+// Importance ranking module: PageRank for "the N most important symbols" (full TypeScript rewrite,
+// P1; ported from Python codesextant/ranking.py).
 //
-// 設計來源（抄 PoC / aider repomap 思路）：把「被定義的符號」當圖節點、引用邊（誰用了誰）當連結；
-// 一個符號被越多「本身也重要」的符號引用 → 它越重要（PageRank 的遞迴定義）。純 power iteration（冪迭代）、
-// 無 networkx/scipy 依賴（保持引擎輕量）。
+// Design, taken from the PoC and aider's repomap: defined symbols are graph nodes and reference edges
+// (who uses whom) are the links; the more symbols that are themselves important reference a symbol,
+// the more important that symbol is (PageRank's recursive definition). Plain power iteration, with no
+// networkx or scipy dependency, which keeps the engine light.
 //
-// 平移原則（對照凍結的 Python 版黃金測試 ground truth：test/fixtures/expected_ranking.json）：
-//   - 浮點 IEEE 754 double 兩語言一致；只要運算「順序」逐行對齊，分數可對到極小容差。
-//   - symbol_id 字串格式（path::scope::name::line）與 Python f-string 完全一致 → scores 的 key 跨語言可對照。
-//   - dict/Counter → Map、list → array；遍歷順序（Map 保插入序、array 保 push 序）對齊 Python，保浮點累加序一致。
-//   - env 解析嚴格對齊 Python float()/int()（空字串/非數字字串退 default、int 不接受小數點字串）。
+// Porting rules, checked against the frozen Python version's golden-test ground truth
+// (test/fixtures/expected_ranking.json):
+//   - IEEE 754 doubles behave identically in both languages; as long as the *order* of operations
+//     lines up statement for statement, the scores match to a very small tolerance.
+//   - The symbol_id string format (path::scope::name::line) is identical to the Python f-string, so
+//     the keys of scores can be compared across languages.
+//   - dict/Counter → Map, list → array. Iteration order (a Map keeps insertion order, an array keeps
+//     push order) matches Python, which keeps floating-point accumulation order identical.
+//   - Environment parsing follows Python's float()/int() strictly: an empty or non-numeric string
+//     falls back to the default, and int refuses a string with a decimal point.
 //
-// 架構備註（P1 暫態）：import storage.normPath 複用「對齊 Python normcase(abspath())」的單一真相源（引用邊
-//   def_path/src_path 與符號 path 必須走同一正規化才對得上節點）。代價＝載入時連帶 storage（拖 better-sqlite3）；
-//   ranking 程式碼本身零 sqlite 調用、仍是純算法。待 namegraph.ts 也需此正規化時抽成獨立 paths.ts 共用。
+// Architecture note (temporary for P1): importing storage.normPath reuses the single source of truth
+//   for "match Python's normcase(abspath())": a reference edge's def_path/src_path and a symbol's
+//   path have to go through the same normalization to land on the same node. The cost is that loading
+//   this module pulls in storage, and with it better-sqlite3; the ranking code itself makes no sqlite
+//   calls and remains pure algorithm. Once namegraph.ts needs the same normalization, extract it into
+//   a shared paths.ts.
 //
-// 職責（單一）：吃「符號清單 + 引用邊清單」，吐出帶 rank 分數、由高到低排序的符號。不碰 SQLite、不碰 ts-morph。
-// 所有狀態都在函數內局部，重入安全、無全域污染。
+// Single responsibility: take a list of symbols and a list of reference edges, return the symbols
+// carrying a rank score, sorted high to low. It touches neither SQLite nor ts-morph. All state is
+// local to the functions, so it is re-entrant and pollutes nothing global.
 import { normPath } from "./storage.js";
 
-// 高信心引用邊的權重（jedi/ts-morph 確認的指向比名稱比對可信，給更高權重）。
+// Weights for reference edges by confidence. A link confirmed by jedi or ts-morph is more
+// trustworthy than a name match, so it weighs more.
 const CONFIDENCE_WEIGHT: Record<string, number> = { high: 1.0, low: 0.25 };
 
-/** ranking 的輸入符號（比 storage.SymbolRow 寬鬆：path/end_line/scope 皆可缺，對齊 Python 的 dict.get 容錯）。
- *  index signature 讓 rank_symbols 能 {...s, rank} 原樣保留其他欄位回傳。 */
+/** A symbol going into ranking. Looser than storage.SymbolRow: path, end_line and scope may all be
+ *  absent, matching the dict.get tolerance on the Python side.
+ *  The index signature is what lets rank_symbols return {...s, rank} with every other field intact. */
 export interface RankSymbol {
   name: string;
   line: number;
@@ -33,7 +46,8 @@ export interface RankSymbol {
   [extra: string]: unknown;
 }
 
-/** ranking 的輸入引用邊（欄位皆可選，對齊 Python e.get(...) 容錯；def 未解析時 def_path/def_line 為 null）。 */
+/** A reference edge going into ranking. Every field is optional, matching Python's e.get(...)
+ *  tolerance; def_path and def_line are null when the definition was never resolved. */
 export interface RankRef {
   def_path?: string | null;
   def_line?: number | null;
@@ -42,33 +56,39 @@ export interface RankRef {
   confidence?: string;
 }
 
-// ── env helpers（嚴格對齊 Python float()/int() 的「非法字串退 default」語義）──
+// ── env helpers (following Python's float()/int() semantics exactly: an invalid string falls back to
+//    the default) ──
 
-/** 對齊 Python float(os.environ.get(name, ""))：空/非數字字串退 default（Python 對這些 raise ValueError）。 */
+/** Matches Python's float(os.environ.get(name, "")): an empty or non-numeric string falls back to the
+ *  default, which is where Python raises ValueError. */
 function envFloat(name: string, def: number): number {
   const raw = process.env[name];
-  if (raw === undefined || raw.trim() === "") return def; // float("")/float("  ") 皆 raise
+  if (raw === undefined || raw.trim() === "") return def; // float("") and float("  ") both raise
   const v = Number(raw);
-  return Number.isNaN(v) ? def : v; // "1.5x" → NaN → default（對齊 Python raise）
+  return Number.isNaN(v) ? def : v; // "1.5x" → NaN → default (Python raises here)
 }
 
-/** 對齊 Python int(os.environ.get(name, ""))：只接受整數字串，"5.5"/""/"abc"/"0x1f" 皆退 default。 */
+/** Matches Python's int(os.environ.get(name, "")): only integer strings are accepted, so "5.5", "",
+ *  "abc" and "0x1f" all fall back to the default. */
 function envInt(name: string, def: number): number {
   const raw = process.env[name];
   if (raw === undefined) return def;
   const t = raw.trim();
-  if (!/^[+-]?\d+$/.test(t)) return def; // Python int() 對小數點/非數字字串 raise
+  if (!/^[+-]?\d+$/.test(t)) return def; // Python's int() raises on decimal points and non-numeric strings
   return parseInt(t, 10);
 }
 
-/** 命名規範的公開符號（含底線分隔或大小寫混合＝snake/camel/Pascal）。 */
+/** A public symbol that follows a naming convention: it contains an underscore separator or mixes
+ *  case, i.e. snake_case, camelCase or PascalCase. */
 export function wellNamed(name: string): boolean {
   if (name.startsWith("_")) return false;
   return name.includes("_") || (name !== name.toLowerCase() && name !== name.toUpperCase());
 }
 
-/** queue 5（邊權重符號品質係數，aider 啟發式）——凸顯架構性公開 API、壓低低訊號/氾濫符號。
- *  well-named 公開符號(len>=門檻) ×WELLNAMED；私有 _開頭 ×PRIVATE；在 >N 檔重複定義(氾濫名) ×COMMON。 */
+/** queue 5 (symbol quality factor on edge weights, an aider heuristic): bring architectural public
+ *  APIs forward and push low-signal or ubiquitous symbols back.
+ *  A well-named public symbol (length >= the threshold) gets ×WELLNAMED; a private one starting with
+ *  _ gets ×PRIVATE; one defined in more than N files (a ubiquitous name) gets ×COMMON. */
 export function symbolQualityMult(name: string, definesCount: number): number {
   let mult = 1.0;
   if (name.startsWith("_")) {
@@ -82,18 +102,20 @@ export function symbolQualityMult(name: string, definesCount: number): number {
   return mult;
 }
 
-/** 符號的唯一識別：path::scope::name::line。用 line 一起當 id，避免同檔同名互相蓋掉。
- *  ⚠ 與 Python f-string 完全一致（黃金測試的 scores key 靠此對照）。 */
+/** A symbol's unique id: path::scope::name::line. Including line keeps same-named symbols in one file
+ *  from overwriting each other.
+ *  ⚠ Identical to the Python f-string; the golden test's scores keys depend on it. */
 export function symbolId(sym: RankSymbol): string {
   return `${sym.path}::${sym.scope ?? ""}::${sym.name}::${sym.line}`;
 }
 
-/** 路徑正規化（對齊 Python os.path.normcase(os.path.abspath()) if path else ""）。 */
+/** Path normalization (matches Python's os.path.normcase(os.path.abspath()) if path else ""). */
 function norm(path: string | null | undefined): string {
   return path ? normPath(path) : "";
 }
 
-/** 從 symbol_id 取出 line（id 格式 path::scope::name::line）。解析不到回極大值（對齊 Python 1<<30）。 */
+/** Pull the line out of a symbol_id (format path::scope::name::line). Returns a very large value when
+ *  it cannot be parsed, matching Python's 1<<30. */
 function lineOf(sid: string): number {
   const i = sid.lastIndexOf("::");
   if (i === -1) return 1 << 30;
@@ -101,9 +123,12 @@ function lineOf(sid: string): number {
   return Number.isNaN(v) ? 1 << 30 : v;
 }
 
-/** queue 4（query-aware PageRank）——把呼叫端顯式傳入的 focus set 轉成 personalization 向量。
- *  ⛔ boost 來源是「呼叫端顯式說我在改 X」(focusSymbols/focusFiles)，非監聽對話/接 LLM（守零雲端鐵則）。
- *  focus 命中符號的 teleport 權重 +boost 倍。無 focus 回 null（退均勻 teleport＝原靜態行為）。 */
+/** queue 4 (query-aware PageRank): turn the focus set the caller passes in into a personalization
+ *  vector.
+ *  ⛔ The boost comes from the caller explicitly stating "I am working on X" (focusSymbols/
+ *  focusFiles), never from listening to a conversation or calling an LLM. The zero-cloud rule holds.
+ *  Symbols hit by the focus get boost added to their teleport weight. With no focus this returns
+ *  null, which falls back to uniform teleport, the original static behaviour. */
 export function buildPersonalization(
   symbols: RankSymbol[],
   focusSymbols?: string[] | null,
@@ -123,12 +148,16 @@ export function buildPersonalization(
   return p;
 }
 
-/** 對符號圖跑 PageRank，回傳 Map{symbol_id → score}。
+/** Run PageRank over the symbol graph and return Map{symbol_id → score}.
  *
- *  邊方向：src（引用端所在檔的代表符號）→ def（被引用的符號定義）。PageRank 讓分數從引用端流向被引用端，
- *  所以「被很多重要符號引用」的符號得高分。src 對應不到節點時（如模組頂層呼叫），當外部入流均攤計入。
- *  queue 5：邊權重疊「被引用符號的品質係數」。queue 4：personalization 灌進 teleport＝query-aware；null 退均勻。
- *  symbols 為空回空 Map。所有中間狀態皆局部，呼叫間互不影響。 */
+ *  Edge direction: src (the representative symbol of the file the reference sits in) → def (the
+ *  referenced symbol's definition). PageRank flows score from the referencing side to the referenced
+ *  side, so a symbol referenced by many important symbols scores high. When src maps to no node (a
+ *  module-top-level call, for instance), it is counted as evenly-shared external inflow.
+ *  queue 5 multiplies the edge weight by the referenced symbol's quality factor. queue 4 feeds
+ *  personalization into teleport, which is what makes it query-aware; null falls back to uniform.
+ *  An empty symbols list returns an empty Map. Every intermediate is local, so calls cannot affect
+ *  each other. */
 export function computePagerank(
   symbols: RankSymbol[],
   refs: RankRef[],
@@ -145,11 +174,12 @@ export function computePagerank(
   const nodeIds = symbols.map((s) => symbolId(s));
   const n = nodeIds.length;
   const idx = new Map<string, number>();
-  nodeIds.forEach((sid, i) => idx.set(sid, i)); // 重複 id 後寫贏（對齊 Python dict comprehension）
+  nodeIds.forEach((sid, i) => idx.set(sid, i)); // on a duplicate id the later write wins (matching the Python dict comprehension)
   const nameOf = new Map<string, string>();
   nodeIds.forEach((sid, i) => nameOf.set(sid, symbols[i]!.name));
 
-  // queue 5：name → 在幾個 distinct (name, normPath) 定義（過於常見＝低訊號，邊權重打折）。
+  // queue 5: name → the number of distinct (name, normPath) definitions it has. Too common means low
+  // signal, and the edge weight is discounted accordingly.
   const seenNp = new Set<string>();
   const defines = new Map<string, number>();
   for (const s of symbols) {
@@ -160,13 +190,14 @@ export function computePagerank(
     }
   }
 
-  // (檔絕對路徑, 定義行) → symbol_id（讓引用邊的 def_path/def_line 對上節點）；
-  // 檔絕對路徑 → 該檔第一個符號 symbol_id（當引用端代表節點）。
+  // (absolute file path, definition line) → symbol_id, so a reference edge's def_path/def_line can
+  // find its node; absolute file path → the symbol_id of that file's first symbol, used as the
+  // representative node for the referencing side.
   const byPos = new Map<string, string>();
   const fileRep = new Map<string, string>();
   for (const s of symbols) {
     const p = s.path;
-    if (p === null || p === undefined) continue; // 對齊 Python `if p is None: continue`（空字串不跳）
+    if (p === null || p === undefined) continue; // matches Python's `if p is None: continue` (an empty string is not skipped)
     const sid = symbolId(s);
     const np = norm(p);
     byPos.set(`${np} ${s.line}`, sid);
@@ -174,15 +205,17 @@ export function computePagerank(
     if (cur === undefined || s.line < lineOf(cur)) fileRep.set(np, sid);
   }
 
-  // path → sorted [(line, end_line, sid)]：給「src_line 映射到包含它的 caller 符號」用。
-  // 紅隊 L1-HIGH 修正（Python 端）：同檔邊來源用「真正包含 src_line 的 caller」當節點，而非 collapse 到
-  // 檔第一符號 fileRep——否則被呼叫者剛好是檔第一符號時邊成 i==j 被跳過，同檔引用結構對 PageRank 不可見。
+  // path → sorted [(line, end_line, sid)], used to map a src_line to the caller symbol containing it.
+  // Red-team L1-HIGH fix (made on the Python side): for an edge inside one file, use the caller that
+  // actually contains src_line as the node instead of collapsing to the file's first symbol
+  // (fileRep). Otherwise, whenever the callee happens to be the file's first symbol, the edge
+  // becomes i==j and is skipped, leaving same-file reference structure invisible to PageRank.
   const byBody = new Map<string, Array<[number, number, string]>>();
   for (const s of symbols) {
     const p = s.path;
     if (p === null || p === undefined) continue;
     const np = norm(p);
-    const el = Number(s.end_line ?? s.line) || s.line; // 對齊 int(s.get("end_line", line) or line)
+    const el = Number(s.end_line ?? s.line) || s.line; // matches int(s.get("end_line", line) or line)
     let arr = byBody.get(np);
     if (arr === undefined) {
       arr = [];
@@ -191,11 +224,13 @@ export function computePagerank(
     arr.push([s.line, el, symbolId(s)]);
   }
   for (const arr of byBody.values()) {
-    // 對齊 Python tuple sort：(line, end_line, sid) 字典序；sid 用 code-unit 比較（中文在 BMP 同 code point）。
+    // Matches the Python tuple sort: (line, end_line, sid) lexicographic. sid compares by code unit,
+    // which orders identically to code point for anything in the BMP.
     arr.sort((a, b) => a[0] - b[0] || a[1] - b[1] || (a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0));
   }
 
-  // src_line 映射到「包含它的最內層符號」當來源節點；無 src_line / 找不到 → fallback fileRep。
+  // Map a src_line to the innermost symbol containing it and use that as the source node; with no
+  // src_line, or when nothing matches, fall back to fileRep.
   const srcNode = (
     srcPath: string | null | undefined,
     srcLine: number | null | undefined,
@@ -205,14 +240,14 @@ export function computePagerank(
       let best: string | undefined = undefined;
       for (const [ln, el, sid] of byBody.get(np)!) {
         if (ln > srcLine) break;
-        if (ln <= srcLine && srcLine <= el) best = sid; // 持續更新→最內層（line 最大者）
+        if (ln <= srcLine && srcLine <= el) best = sid; // keep updating → ends on the innermost one (largest line)
       }
       if (best !== undefined) return best;
     }
     return fileRep.get(np);
   };
 
-  // 建鄰接 outTargets[i] = [(j, weight), ...]；外部入流 externalInflow[j]。
+  // Build the adjacency outTargets[i] = [(j, weight), ...], plus external inflow in externalInflow[j].
   const outTargets: Array<Array<[number, number]>> = Array.from({ length: n }, () => []);
   const externalInflow = new Map<number, number>();
 
@@ -224,7 +259,7 @@ export function computePagerank(
     if (target === undefined) continue;
     const j = idx.get(target)!;
     let w = CONFIDENCE_WEIGHT[e.confidence ?? "low"] ?? 0.25;
-    // queue 5：疊被引用符號的品質係數。
+    // queue 5: multiply in the referenced symbol's quality factor.
     const tname = nameOf.get(target) ?? "";
     w *= symbolQualityMult(tname, defines.get(tname) ?? 1);
 
@@ -239,7 +274,8 @@ export function computePagerank(
   }
 
   const nRefs = Math.max(1, refs.length);
-  // queue 4：personalization teleport 向量 P（focus 偏好）；無則均勻 1/n（原靜態行為，向後相容）。
+  // queue 4: the personalization teleport vector P (the focus preference); without one, a uniform
+  // 1/n, which is the original static behaviour and stays backward compatible.
   let P: number[];
   if (personalization !== null && personalization.size > 0) {
     let totP = 0;
@@ -269,7 +305,7 @@ export function computePagerank(
       for (const [j, w] of edges) newScore[j]! += damping * score[i]! * (w / totalW);
     }
     if (danglingSum) {
-      // dangling 質量按 personalization 分布回流（aider dangling=P）。
+      // Dangling mass flows back along the personalization distribution (aider uses dangling=P).
       for (let j = 0; j < n; j++) newScore[j]! += damping * danglingSum * P[j]!;
     }
     for (const [j, infl] of externalInflow) {
@@ -287,9 +323,11 @@ export function computePagerank(
   return out;
 }
 
-/** 對符號排重要度，回傳帶 "rank" 分數、由高到低排序的符號清單（原欄位 + rank）。
- *  topN 給了就只回前 N 個。focusSymbols/focusFiles（queue 4 query-aware）：呼叫端顯式傳入「在改/在問的
- *  符號/檔」，讓排序偏向相關處；不傳＝原靜態結構中心度排序。 */
+/** Rank symbols by importance and return them carrying a "rank" score, sorted high to low (the
+ *  original fields plus rank).
+ *  Passing topN returns only the first N. focusSymbols/focusFiles (queue 4, query-aware) are the
+ *  symbols and files the caller explicitly says are being edited or asked about, which biases the
+ *  ranking toward them; omit them for the original static structural-centrality ranking. */
 export function rankSymbols<T extends RankSymbol>(
   symbols: T[],
   refs: RankRef[],
@@ -304,7 +342,8 @@ export function rankSymbols<T extends RankSymbol>(
   const personalization = buildPersonalization(symbols, focusSymbols, focusFiles);
   const scores = computePagerank(symbols, refs, { damping, personalization });
   const ranked = symbols.map((s) => ({ ...s, rank: scores.get(symbolId(s)) ?? 0.0 }));
-  // 穩定降序：rank 相同保持原相對順序（對齊 Python sort(reverse=True) 的穩定性）。
+  // Stable descending sort: equal ranks keep their original relative order, matching the stability of
+  // Python's sort(reverse=True).
   ranked.sort((a, b) => b.rank - a.rank);
   return topN !== null ? ranked.slice(0, topN) : ranked;
 }

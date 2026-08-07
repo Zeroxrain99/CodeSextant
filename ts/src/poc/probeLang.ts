@@ -1,6 +1,7 @@
-// 探測工具：印出 tree-sitter-wasms 某語言 grammar 對某檔的 named 節點型別 + AST 結構。
-// 用於坐實「tree-sitter-wasms grammar」vs「Python 版 tree-sitter-language-pack grammar」的節點型別差異。
-// 跑法（在 ts/ 下，argv 一律 ASCII 相對路徑避中文編碼坑）：
+// Probe tool: print the named node types and AST shape a tree-sitter-wasms grammar produces
+// for one file. Used to pin down where tree-sitter-wasms grammars differ in node type from the
+// tree-sitter-language-pack grammars the Python version uses.
+// Usage (from ts/, keep argv paths ASCII and relative to dodge non-ASCII encoding trouble):
 //   npx tsx src/poc/probeLang.ts lua test/fixtures/samples/sample.lua
 import { Parser, Language, type Node } from "web-tree-sitter";
 import { readFileSync } from "node:fs";
@@ -23,7 +24,7 @@ async function main(): Promise<void> {
   parser.setLanguage(lang);
   const tree = parser.parse(readFileSync(file, "utf-8"));
   if (tree === null) {
-    console.error("parse 回 null");
+    console.error("parse returned null");
     process.exit(1);
   }
   const types = new Set<string>();
@@ -40,7 +41,7 @@ async function main(): Promise<void> {
     for (const c of n.children) if (c !== null) print(c, depth + (n.isNamed ? 1 : 0));
   };
   print(tree.rootNode, 0);
-  console.log("\n=== named 節點型別（去重）===");
+  console.log("\n=== named node types (deduped) ===");
   console.log([...types].sort().join("  "));
 }
 

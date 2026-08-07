@@ -1,20 +1,24 @@
-"""引用解析模組 — jedi 二段式 goto（定義在哪）+ get_references（被誰用）。
+"""Reference resolution module: jedi's two-stage goto (where is it defined) + get_references (who uses it).
 
-設計來源（PoC 已坐實，這是整條路線的命脈）：
-  - ⛔ 不可全量跑 jedi（18k 檔要 17 分鐘）。jedi 只在「要查某符號定義在哪 /
-    被誰用」時按需精解（實測 74 ms/次）。
-  - 找引用二段式：
-      第一段 = tree-sitter / 文字粗篩，先用「名稱」掃出候選檔（便宜）；
-      第二段 = jedi 只對候選檔精解（jedi 對全 repo get_references 太慢）。
-  - jedi 精度實測完勝名稱比對（同名 check：名稱比對 99% 誤判 vs jedi 0% 誤判）。
-  - 專案隔離：jedi.Project(path=src_root) 天然按專案根隔離。
+Design origin (proved out by a PoC; this is the lifeline of the whole approach):
+  - Do not run jedi over the whole codebase (18k files would take 17 minutes). jedi only does
+    precise resolution on demand, when asked "where is symbol X defined / who uses it"
+    (measured at 74 ms/call).
+  - Two-stage find-references:
+      Stage 1 = tree-sitter / text coarse filter, scan for candidate files by "name" first (cheap);
+      Stage 2 = jedi does precise resolution only on the candidate files (jedi's get_references
+      over the whole repo is too slow).
+  - jedi's precision measurably beats name matching (same-name check: 99% false positives for
+    name matching vs 0% for jedi).
+  - Per-project isolation: jedi.Project(path=src_root) isolates by project root naturally.
 
-confidence 標記規則（對齊主架構「引用邊標信心度」）：
-  - "high"  = jedi 真 import 解析命中（resolved-import），agent 可自動信任。
-  - "low"   = 只靠名稱比對的候選，未經 jedi 確認（name-match），僅供人看。
+Confidence marking rule (matches the main architecture's "reference edges carry a confidence
+level"):
+  - "high" = a real jedi import resolution hit (resolved-import); an agent can trust it automatically.
+  - "low"  = a candidate found only by name matching, not confirmed by jedi (name-match); for human eyes only.
 
-職責（單一）：給「某符號定義在哪 / 被誰用」的精解。
-不碰 SQLite、不碰排序——呼叫端（engine）負責落盤與組裝。
+Responsibility (single): precise resolution of "where is a symbol defined / who uses it".
+Does not touch SQLite, does not touch ordering; the caller (engine) owns persistence and assembly.
 """
 from __future__ import annotations
 
@@ -28,7 +32,7 @@ import jedi
 
 from . import symbols
 
-# 用於粗篩的「該行可能用到某符號」的樣式快取（避免每檔重編譯 regex）
+# Pattern cache for the coarse filter's "this line might use symbol X" check (avoids recompiling the regex per file)
 _word_re_cache: dict[str, re.Pattern] = {}
 
 
@@ -42,7 +46,7 @@ def _word_re(symbol: str) -> re.Pattern:
 
 def _iter_python_files(root: str):
     for dirpath, dirnames, filenames in os.walk(root):
-        # 跳過常見的雜訊目錄（避免掃 .git / venv / __pycache__）
+        # Skip the usual noise directories (avoid scanning .git / venv / __pycache__)
         dirnames[:] = [d for d in dirnames
                        if d not in (".git", "__pycache__", ".venv", "venv",
                                     "node_modules", ".mypy_cache", ".pytest_cache")]
@@ -52,9 +56,9 @@ def _iter_python_files(root: str):
 
 
 def _prefilter_candidate_files(src_root: str, symbol: str) -> list[str]:
-    """第一段（粗篩）：名稱出現在哪些檔。便宜、寬鬆，寧可多框幾個。
+    """Stage 1 (coarse filter): which files does the name appear in. Cheap and loose, so it is better to over-include a few.
 
-    回傳含該符號名（當作獨立 word）的所有 .py 檔。jedi 只精解這些。
+    Returns every .py file that contains the symbol name (as a standalone word). jedi only does precise resolution on these.
     """
     pat = _word_re(symbol)
     candidates: list[str] = []
@@ -70,22 +74,22 @@ def _prefilter_candidate_files(src_root: str, symbol: str) -> list[str]:
 
 
 def _make_project(src_root: str) -> jedi.Project:
-    """每專案一個 jedi.Project（天然按專案根隔離）。"""
+    """One jedi.Project per project (isolates by project root naturally)."""
     return jedi.Project(path=os.path.abspath(src_root))
 
 
 def goto_definition(src_root: str, file_path: str, line: int, column: int) -> list[dict]:
-    """jedi goto：某位置的符號，定義在哪（follow_imports，跨 import 鏈精確指向）。
+    """jedi goto: where is the symbol at this position defined (follow_imports, points precisely across import chains).
 
-    參數 line/column：line 1-based、column 0-based（jedi 慣例：column 指到識別字內）。
-    回傳 list[dict]：{path, line, name, type, confidence:"high"}。
-    解析不到回 []（這是 jedi 真的查無，不是錯誤——但呼叫端應視為「沒高信心定義」）。
+    Parameters line/column: line is 1-based, column is 0-based (jedi's convention: column points inside the identifier).
+    Returns list[dict]: {path, line, name, type, confidence:"high"}.
+    Returns [] when unresolved (this is a genuine jedi miss, not an error, but the caller should treat it as "no high-confidence definition").
     """
     try:
         with open(file_path, encoding="utf-8") as f:
             source = f.read()
     except OSError as exc:
-        raise FileNotFoundError(f"goto 失敗：讀不到 {file_path}（{exc}）") from exc
+        raise FileNotFoundError(f"goto failed: cannot read {file_path} ({exc})") from exc
 
     project = _make_project(src_root)
     script = jedi.Script(source, path=file_path, project=project)
@@ -97,17 +101,17 @@ def goto_definition(src_root: str, file_path: str, line: int, column: int) -> li
             "line": d.line,
             "name": d.name,
             "type": d.type,
-            "confidence": "high",  # jedi 解析命中 = 高信心
+            "confidence": "high",  # jedi resolution hit = high confidence
         })
     return out
 
 
 def _locate_definition_position(src_root: str, def_name: str,
                                 def_path: str | None) -> tuple[str, int, int] | None:
-    """在定義檔裡定位 `def_name` 的 def/class 那一行（jedi get_references 要有起點）。
+    """Locate the def/class line for `def_name` in its definition file (jedi's get_references needs a starting point).
 
-    若給了 def_path 就只找該檔；否則跨 src_root 找第一個命中。
-    回傳 (path, line, column 1-based 指到名稱起點) 或 None。
+    If def_path is given, search only that file; otherwise search src_root for the first hit.
+    Returns (path, line, column 1-based, pointing at the start of the name) or None.
     """
     pat = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+(" + re.escape(def_name) + r")\b")
     search_files = [def_path] if def_path else list(_iter_python_files(src_root))
@@ -126,9 +130,9 @@ def _locate_definition_position(src_root: str, def_name: str,
 
 
 def _occurrences_in_file(file_path: str, symbol: str) -> list[tuple[int, int]]:
-    """檔內 `symbol`（當獨立 word）每個出現位置，回 [(line 1-based, col 0-based), ...]。
+    """Every occurrence of `symbol` (as a standalone word) inside a file, returns [(line 1-based, col 0-based), ...].
 
-    col 用 0-based（jedi goto/column 慣例）。供第二段對每個出現點做 goto 用。
+    col is 0-based (jedi's goto/column convention). Feeds stage 2's per-occurrence goto call.
     """
     pat = _word_re(symbol)
     out: list[tuple[int, int]] = []
@@ -145,32 +149,41 @@ def _occurrences_in_file(file_path: str, symbol: str) -> list[tuple[int, int]]:
 def find_references(src_root: str, symbol: str, def_path: str | None = None,
                     *, include_low_confidence: bool = True,
                     max_candidate_files: int = 400) -> dict:
-    """找「symbol 被誰用」——二段式精解（方向：呼叫點 goto 回定義）。
+    """Find "who uses symbol": two-stage precise resolution (direction: call site goto's back to the definition).
 
-    為什麼是這個方向（PoC + 本機實測雙重坐實，不是隨意選）：
-      - jedi 的「從定義端 get_references 找呼叫者」在大型專案只回已載入模組範圍，
-        對 importlib 動態載入的入口（例如掛鉤系統用字串組出模組名再載入）會漏抓真實呼叫者。
-      - jedi 的「從呼叫點 goto 回定義」極準：能無視 N 個同名定義精確指向唯一那個。
-    所以二段式 = 粗篩候選檔（便宜文字篩）→ 對每個候選檔內 symbol 的每個出現點做
-    goto，**指向目標定義** 才收為高信心引用。這把「找引用」轉成「對每個候選呼叫點
-    各跑一次 goto」，每次 goto 都是 jedi 最擅長的精確方向。
+    Why this direction (validated twice over, by both the PoC and local measurements, not
+    picked arbitrarily):
+      - jedi's "get_references from the definition side to find callers" only returns results
+        within the already-loaded module scope on a large project, and misses real callers
+        reached through importlib dynamic loading (e.g. a hook system that assembles a module
+        name from a string before loading it).
+      - jedi's "goto from the call site back to the definition" is extremely precise: it can
+        point to exactly the right one out of N same-named definitions.
+    So the two-stage approach is: coarse-filter candidate files (cheap text filter) -> for every
+    occurrence of the symbol inside each candidate file, run goto, and only count it as a
+    high-confidence reference if it **points at the target definition**. This turns "find
+    references" into "run one goto per candidate call site", exactly the precise direction
+    jedi is best at.
 
-    參數
-    ----
-    src_root : 專案原始碼根（jedi.Project 隔離 + import 解析根）。
-    symbol   : 要找引用的符號名（如 "check"）。
-    def_path : 該符號定義所在檔；給了能精確鎖定「要找哪一個同名定義的引用」。
-    include_low_confidence : True 時把「名稱命中但 goto 不指向目標定義」的點也回（標 low）。
-    max_candidate_files : 候選檔數上限（防超大 repo 上 goto 次數爆炸）。超過會截斷並標記。
+    Parameters
+    ----------
+    src_root : project source root (the isolation + import-resolution root for jedi.Project).
+    symbol   : the symbol name to find references for (e.g. "check").
+    def_path : the file containing that symbol's definition; when given, precisely pins down
+               "which same-named definition's references we're looking for".
+    include_low_confidence : when True, also returns points where "the name matches but goto
+               doesn't point at the target definition" (marked low).
+    max_candidate_files : cap on the number of candidate files (prevents a goto-count blowup on
+               a very large repo). Exceeding it truncates the list and flags it.
 
-    回傳 dict（可直接轉 JSON）：
+    Returns a dict (JSON-serializable directly):
       {
-        "symbol", "definition": {path,line,column} 或 None,
+        "symbol", "definition": {path,line,column} or None,
         "high_confidence": [{src_path, line, column, confidence:"high"}, ...],
         "low_confidence":  [{src_path, line, column, confidence:"low", note}, ...],
-        "name_match_file_count": int,        # 純名稱比對會框到幾個檔（對比基準）
-        "name_match_hit_count": int,         # 純名稱比對的總文字命中數（含定義/同名）
-        "candidates_scanned": int,           # 實際 goto 掃描的候選檔數
+        "name_match_file_count": int,        # how many files a pure name match would catch (baseline for comparison)
+        "name_match_hit_count": int,         # total text hits from pure name matching (includes the definition/same names)
+        "candidates_scanned": int,           # candidate files actually scanned by goto
         "truncated": bool,
       }
     """
@@ -186,13 +199,13 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
         "name_match_hit_count": 0,
         "candidates_scanned": 0,
         "truncated": False,
-        "engine": "jedi",  # 序1：三路都標解析引擎（jedi=Python 真 import 解析）
+        "engine": "jedi",  # Step 1: all three code paths tag which resolution engine ran (jedi = real Python import resolution)
     }
 
     if located is None:
         result["error"] = (
-            f"在 src_root 內找不到 '{symbol}' 的 def/class 定義行"
-            f"（def_path={def_path}）；無法做高信心引用解析。"
+            f"could not find a def/class definition line for '{symbol}' within src_root "
+            f"(def_path={def_path}); cannot do high-confidence reference resolution."
         )
         return result
 
@@ -224,20 +237,21 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
             try:
                 defs = script.goto(line, col, follow_imports=True)
             except Exception:
-                # 單一位置 goto 失敗（語法殘缺等）不該炸整個查詢，記為低信心
+                # A goto failure at a single position (broken syntax, etc.) shouldn't blow up
+                # the whole query; record it as low confidence
                 if include_low_confidence:
                     result["low_confidence"].append({
                         "src_path": fp, "line": line, "column": col,
-                        "confidence": "low", "note": "goto 解析失敗，無法確認指向"})
+                        "confidence": "low", "note": "goto resolution failed, cannot confirm target"})
                 continue
-            # 這個出現點是否指向「目標定義」？
+            # Does this occurrence point at the "target definition"?
             points_to_target = any(
                 d.module_path
                 and os.path.normcase(os.path.abspath(str(d.module_path))) == def_file_norm
                 and d.line == def_line
                 for d in defs
             )
-            # 排除「定義自身那一行」（不算引用）
+            # Exclude "the definition's own line" (doesn't count as a reference)
             is_definition_site = (os.path.normcase(os.path.abspath(fp)) == def_file_norm
                                   and line == def_line)
             if points_to_target and not is_definition_site:
@@ -246,19 +260,19 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
             elif include_low_confidence and not is_definition_site:
                 result["low_confidence"].append({
                     "src_path": fp, "line": line, "column": col, "confidence": "low",
-                    "note": "名稱命中，但 goto 指向別的同名符號（非此定義）"})
+                    "note": "name matches, but goto points at a different same-named symbol (not this definition)"})
 
     result["name_match_hit_count"] = total_hits
     return result
 
 
-# ── C5：非 Python 語言的「找引用」退化版（純名稱比對，全低信心） ──
+# ── C5: degraded "find references" for non-Python languages (pure name matching, all low confidence) ──
 _SKIP_DIRS_MULTI = (".git", "__pycache__", ".venv", "venv", "node_modules",
                     ".mypy_cache", ".pytest_cache", "build", "dist", "target", ".tox")
 
 
 def _iter_files_by_ext(root: str, exts):
-    """掃 root 下指定副檔名的檔（跳過雜訊目錄）。給跨語言名稱比對用。"""
+    """Scan files under root with the given extensions (skipping noise directories). Used by cross-language name matching."""
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS_MULTI]
         for fn in filenames:
@@ -269,13 +283,15 @@ def _iter_files_by_ext(root: str, exts):
 def name_match_references(src_root: str, symbol: str, *, def_path: str | None = None,
                           lang: str | None = None, include_low_confidence: bool = True,
                           max_candidate_files: int = 400) -> dict:
-    """非 Python 語言的找引用——純名稱比對退化（jedi 限 Python，無真 import 解析）。
+    """Find references for non-Python languages: degrades to pure name matching (jedi is Python-only, no real import resolution here).
 
-    ⛔ 全部標 **low confidence**：誠實表明未經 jedi / ts-morph 級解析確認、會把同名
-    干擾也框進來。TS/JS 的高信心解析待 C5b（ts-morph）。回傳結構與 jedi 版
-    find_references 對齊（high_confidence 恆空），讓 engine / 面板無痛共用。
+    Do not skip: everything is marked **low confidence**, an honest signal that this hasn't
+    been confirmed by jedi- / ts-morph-level resolution, and will catch same-named noise too.
+    High-confidence resolution for TS/JS is C5b (ts-morph). The return shape matches the jedi
+    version of find_references (high_confidence is always empty), so engine / panel code can
+    consume either without special-casing.
 
-    參數 lang：只掃該語言的副檔名（None 則掃全部支援副檔名）。
+    Parameter lang: scan only that language's extensions (None scans every supported extension).
     """
     if lang and lang in symbols.LANGUAGE_SPECS:
         exts = frozenset(symbols.LANGUAGE_SPECS[lang]["exts"])
@@ -291,15 +307,15 @@ def name_match_references(src_root: str, symbol: str, *, def_path: str | None = 
         "name_match_hit_count": 0,
         "candidates_scanned": 0,
         "truncated": False,
-        "engine": "name-match",  # 序1：名稱比對退化（未經真 import 解析、全低信心）
+        "engine": "name-match",  # Step 1: degraded name matching (no real import resolution, all low confidence)
         "note": (
-            f"語言 '{lang or '?'}' 的高信心 import 解析尚未支援（jedi 限 Python）；"
-            "以下為名稱比對結果、全部低信心（含同名干擾）。"
-            "TS/JS 高信心解析待 C5b（ts-morph）。"
+            f"High-confidence import resolution for language '{lang or '?'}' is not yet supported "
+            "(jedi is Python-only); the results below are from name matching and are all low "
+            "confidence (including same-name noise). High-confidence resolution for TS/JS is C5b (ts-morph)."
         ),
     }
     if def_path and os.path.exists(def_path):
-        # 名稱比對無法精確定位定義行，只標檔（行/欄留 None）
+        # Name matching can't precisely locate the definition line, only tag the file (line/column left None)
         result["definition"] = {"path": def_path, "line": None, "column": None}
 
     files = list(_iter_files_by_ext(src_root, exts))
@@ -318,24 +334,24 @@ def name_match_references(src_root: str, symbol: str, *, def_path: str | None = 
             total += 1
             result["low_confidence"].append({
                 "src_path": fp, "line": line, "column": col,
-                "confidence": "low", "note": "名稱比對（未經真 import 解析）",
+                "confidence": "low", "note": "name matching (no real import resolution)",
             })
     result["name_match_hit_count"] = total
     return result
 
 
-# ── C5b：TS/JS 高信心解析（ts-morph Node 子進程橋；不可用自動 fallback 回名稱比對） ──
+# ── C5b: high-confidence resolution for TS/JS (ts-morph Node subprocess bridge; unavailable falls back automatically to name matching) ──
 def _ts_bridge_dir() -> str:
-    """ts_bridge/ 在 CodeSextant 根（references.py 在 codesextant/ 內、上一層即根）。"""
+    """ts_bridge/ lives at the CodeSextant root (references.py is inside codesextant/, one level up is the root)."""
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ts_bridge")
 
 
 def ts_morph_available() -> bool:
-    """node 在 PATH 且 ts_bridge 已備妥（find_refs.mjs + node_modules/ts-morph）。
-    任一不滿足 → 回 False，呼叫端據此 fallback 回 C5a 名稱比對（不爆）。
+    """node is on PATH and ts_bridge is ready (find_refs.mjs + node_modules/ts-morph).
+    Either condition unmet -> returns False, and the caller falls back to C5a name matching (never explodes).
 
-    開關（L0 鐵律 #6）：env CODESEXTANT_TS_MORPH_DISABLED=1 → 強制停用 ts-morph、
-    一律走 C5a 名稱比對（給「不想要 Node 子進程」或除錯時用）。"""
+    Switch (L0 hard rule #6): env CODESEXTANT_TS_MORPH_DISABLED=1 -> force-disable ts-morph,
+    always go through C5a name matching (for when you don't want a Node subprocess, or while debugging)."""
     if os.environ.get("CODESEXTANT_TS_MORPH_DISABLED", "").lower() in ("1", "true", "yes", "on"):
         return False
     if shutil.which("node") is None:
@@ -346,10 +362,12 @@ def ts_morph_available() -> bool:
 
 
 def _run_ts_bridge(payload: dict, timeout: float) -> dict | None:
-    """跑 ts_bridge/find_refs.mjs（stdin JSON → stdout JSON）。失敗/畸形/逾時 → None。永不拋。
+    """Run ts_bridge/find_refs.mjs (stdin JSON -> stdout JSON). Failure/malformed output/timeout -> None. Never raises.
 
-    用 bytes stdin（UTF-8）——中文路徑經 stdin 不會像 PS Invoke-WebRequest 那樣編碼壞。
-    CREATE_NO_WINDOW（Windows）：不彈 node 黑窗干擾 user（2026-06-19 user 反映補上、序4+5 沿用）。
+    Uses bytes stdin (UTF-8), so non-ASCII paths sent via stdin don't get mangled the way PowerShell's
+    Invoke-WebRequest can mangle them.
+    CREATE_NO_WINDOW (Windows): don't pop up a black node console window to bother the user
+    (added after a 2026-06-19 user report; carried forward through steps 4+5).
     """
     bridge = _ts_bridge_dir()
     raw = json.dumps(payload).encode("utf-8")
@@ -370,12 +388,16 @@ def _run_ts_bridge(payload: dict, timeout: float) -> dict | None:
 
 
 def _shape_ts_one(symbol: str, r: dict) -> dict:
-    """把 mjs 回的單符號結果轉成與 jedi/name_match 對齊的 dict（含序4 is_reexport）。
+    """Convert the mjs bridge's per-symbol result into a dict aligned with the jedi/name_match shape (includes step 4's is_reexport).
 
-    防禦式取欄位（M1）：不依賴 mjs 永遠輸出完整 shape，缺/畸形元素跳過——維持「永不拋」契約。
-    路徑統一 os.path.normpath（M2：與 jedi 反斜線格式一致，persist 累加 merge 比對才對得上）。
-    保留 high 的 is_reexport 旗標 + reexport_count——序4 據此把「只被 barrel re-export、無真消費」
-    標 REEXPORT_ONLY 而非誤判 LIKELY_UNUSED。error 欄位原樣帶回（orphan 用來判 UNKNOWN_UNRESOLVED）。
+    Defensive field access (M1): doesn't assume the mjs bridge always emits a complete shape --
+    missing/malformed elements are skipped, preserving the "never raises" contract.
+    Paths are normalized with os.path.normpath (M2: matches jedi's backslash format, so persisted
+    cumulative-merge comparisons line up).
+    Keeps the high-confidence entries' is_reexport flag + reexport_count; step 4 uses this to
+    label "only consumed via a barrel re-export, no real usage" as REEXPORT_ONLY instead of
+    misclassifying it as LIKELY_UNUSED. The error field is passed through as-is (orphan detection
+    uses it to decide UNKNOWN_UNRESOLVED).
     """
     high = []
     reexport = 0
@@ -412,13 +434,15 @@ def _shape_ts_one(symbol: str, r: dict) -> dict:
 
 def ts_morph_references(src_root: str, symbol: str, *, def_path: str | None,
                         timeout: float | None = None) -> dict | None:
-    """單一符號 TS/JS 高信心 import 解析（findReferences 排除同名干擾）。
+    """High-confidence TS/JS import resolution for a single symbol (findReferences excludes same-name noise).
 
-    不可用（無 node / 未 npm install / 子進程失敗 / 逾時 / 找不到定義 / 輸出畸形）→ 回 None，
-    讓呼叫端 fallback 回 name_match_references（C5a 名稱比對）。**永不拋**。
+    Unavailable (no node / npm install not run / subprocess failure / timeout / definition not
+    found / malformed output) -> returns None, and the caller falls back to name_match_references
+    (C5a name matching). **Never raises**.
 
-    timeout：None 時取 env CODESEXTANT_TS_MORPH_TIMEOUT（預設 30 秒；L0 鐵律 #6 可調閾值
-    ——超大 TS 專案 ts-morph 載入較久時可調高，逾時會靜默降級成名稱比對）。
+    timeout: when None, reads env CODESEXTANT_TS_MORPH_TIMEOUT (default 30 seconds; a tunable
+    threshold per L0 hard rule #6; raise it for very large TS projects where ts-morph takes
+    longer to load; a timeout silently degrades to name matching).
     """
     if not def_path or not ts_morph_available():
         return None
@@ -434,7 +458,7 @@ def ts_morph_references(src_root: str, symbol: str, *, def_path: str | None,
     }, timeout)
     if data is None:
         return None
-    # ts-morph 找不到定義（error 且無引用）→ 視為不可用，讓 fallback 名稱比對（一般查詢場景）
+    # ts-morph couldn't find the definition (error, no references) -> treat as unavailable, fall back to name matching (the common query case)
     if data.get("error") and not data.get("high_confidence"):
         return None
     try:
@@ -445,15 +469,17 @@ def ts_morph_references(src_root: str, symbol: str, *, def_path: str | None,
 
 def ts_morph_references_batch(src_root: str, def_file: str, symbols,
                               *, timeout: float | None = None) -> dict | None:
-    """序5：一次 spawn node 批查「同一檔多符號」（orphan 專用，避免逐符號各重載整個專案）。
+    """Step 5: one node spawn batch-queries "multiple symbols in the same file" (dedicated to orphan detection, avoids reloading the whole project per symbol).
 
-    回 {symbol: result_dict|None}；ts-morph 不可用 / 子進程失敗 / 輸出畸形 → None
-    （呼叫端據此逐符號 fallback 或整批標 UNKNOWN）。**永不拋**。
+    Returns {symbol: result_dict|None}; ts-morph unavailable / subprocess failure / malformed
+    output -> None (the caller falls back per-symbol or marks the whole batch UNKNOWN).
+    **Never raises**.
 
-    與單一版的關鍵差異：error **不**回 None 而是帶 error 的 dict——orphan 場景要的是「ts-morph
-    沒定位到 → UNKNOWN_UNRESOLVED」，⛔ 不該 fallback 名稱比對給低信心垃圾冒充。
+    Key difference from the single-symbol version: an error does **not** return None, it returns
+    a dict carrying the error; orphan detection wants "ts-morph couldn't locate it ->
+    UNKNOWN_UNRESOLVED"; it must not fall back to name matching and pass off low-confidence junk as an answer.
 
-    timeout：None 時取 env CODESEXTANT_TS_MORPH_BATCH_TIMEOUT（預設 90 秒；批量符號多、給更長）。
+    timeout: when None, reads env CODESEXTANT_TS_MORPH_BATCH_TIMEOUT (default 90 seconds; longer because batches have more symbols).
     """
     syms = [s for s in (symbols or []) if s]
     if not syms or not def_file or not ts_morph_available():

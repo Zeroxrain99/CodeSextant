@@ -1,6 +1,8 @@
-// P0 硬前置閘 PoC：驗證 web-tree-sitter 在 Node 能跨語言抽符號（全 TS 重寫路線的核心假設）。
-// 對 Python/TypeScript/Go 各抽 function/class/method，印出名+行號。通過＝TS 路線坐實。
-// 跑法：npm run poc:symbols
+// P0 hard gate PoC: prove web-tree-sitter can extract symbols across languages under Node
+// (the core assumption behind the full TypeScript rewrite).
+// Extracts function/class/method from Python/TypeScript/Go and prints name + line number.
+// Passing means the TypeScript route holds up.
+// Usage: npm run poc:symbols
 import { Parser, Language, type Node } from "web-tree-sitter";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -12,7 +14,7 @@ const wasmDir = join(here, "..", "..", "node_modules", "tree-sitter-wasms", "out
 interface LangSpec {
   wasm: string;
   code: string;
-  defTypes: string[]; // 結構定義節點型別（對應 Python symbols.py LANGUAGE_SPECS 的 always）
+  defTypes: string[]; // structural definition node types (the `always` set in Python symbols.py LANGUAGE_SPECS)
 }
 
 const samples: Record<string, LangSpec> = {
@@ -43,7 +45,7 @@ async function main(): Promise<void> {
     parser.setLanguage(language);
     const tree = parser.parse(spec.code);
     if (!tree) {
-      console.log(`[${lang}] ❌ parse 回 null`);
+      console.log(`[${lang}] ❌ parse returned null`);
       continue;
     }
     const found: string[] = [];
@@ -58,18 +60,18 @@ async function main(): Promise<void> {
     };
     walk(tree.rootNode);
     totalFound += found.length;
-    console.log(`\n[${lang}] 抽到 ${found.length} 個符號：`);
+    console.log(`\n[${lang}] extracted ${found.length} symbols:`);
     for (const f of found) console.log("  " + f);
   }
-  console.log(`\n=== P0 PoC 結果：3 語言共抽 ${totalFound} 個符號 ===`);
+  console.log(`\n=== P0 PoC result: ${totalFound} symbols across 3 languages ===`);
   if (totalFound < 8) {
-    console.log("⚠ 少於預期(8)，需檢查節點型別/grammar");
+    console.log("⚠ fewer than expected (8): check the node types / grammar");
     process.exit(1);
   }
-  console.log("✅ web-tree-sitter 在 Node 跨語言抽符號可行 — 全 TS 路線坐實");
+  console.log("✅ web-tree-sitter extracts symbols across languages under Node; the full TypeScript route holds");
 }
 
 main().catch((e) => {
-  console.error("❌ PoC 失敗：", e);
+  console.error("❌ PoC failed:", e);
   process.exit(1);
 });

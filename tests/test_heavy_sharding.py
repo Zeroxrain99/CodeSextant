@@ -1,4 +1,4 @@
-"""Per-project heavy lanes — fairness without raising CPU concurrency.
+"""Per-project heavy lanes: fairness without raising CPU concurrency.
 
 Measured problem (2026-07-18 production log): a query against a 23-file,
 *unindexed* project returned ``count=0 symbols=0`` after **152 seconds**, purely
