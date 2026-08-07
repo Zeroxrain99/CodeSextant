@@ -33,3 +33,9 @@ tools/__pycache__/
 # PoC 合成資料（2.2MB，可由 _poc_graph_c/export_graph.py 重跑產出）
 _poc_graph_c/graph_synth.json
 _poc_graph_c/graph_real.json
+
+# 資產集中地（2026-08-07 站長指令：統一放一起、防誤刪）
+# 內容不進版控：adjudication 150MB、holdout 是盲測答案不可公開、wip-snapshots 是未提交碼的副本
+# ⛔ 但 README.md 必須進版控 —— 它是「刪除前先讀」的唯一守門員，自己沒版控就守不住
+_assets/*
+!_assets/README.md
