@@ -22,7 +22,7 @@ CodeSextant resolves imports instead of matching text, and it keeps the resultin
 |---|---|
 | **Import resolution, not name matching** | Python goes through jedi (which understands import chains and scope); TS/JS through ts-morph (`findReferences`, so same-name symbols in unrelated modules do not collide). Results are labelled high or low confidence, and an agent is expected to auto-trust only the high-confidence ones. |
 | **One daemon, shared by every agent** | A single process per machine (cross-process file lock plus an exclusive listen socket, with idempotent startup). Claude Code, Cursor, or any HTTP client talk to the same instance. Projects are isolated by `sha1(absolute repo path)` into separate SQLite databases. |
-| **Six languages** | Python, JavaScript, TypeScript, TSX, Go, Rust. Symbols come from tree-sitter everywhere; reference resolution is high-confidence for Python and TS/JS, and **honestly degrades to name matching** — clearly labelled as such — for the rest. |
+| **Python and TypeScript/JavaScript** | These are the languages CodeSextant actually resolves imports for, and the ones it is tested against. tree-sitter can extract symbols from a dozen more (Go, Rust, C#, Java, C, C++, Kotlin, Swift, PHP, Ruby, Bash, Lua) but **those get name-matched references, not resolved ones** — treat them as experimental. Broader real support is a goal, not a claim. |
 | **Local only** | No cloud calls, no API key, nothing leaves the machine. This is stricter than "local LSP tooling" — there is no key to configure at all. |
 | **Budgeted output** | `map` uses weighted PageRank to return the most important N symbols that fit a token budget, rather than dumping the whole graph. |
 
@@ -111,6 +111,15 @@ We would rather state these than have you discover them.
 - High-confidence TS/JS resolution requires `npm install` in `ts_bridge/`. Without it, results degrade to name matching — labelled, not silent.
 - Go and Rust get tree-sitter symbols but name-matched references. This is a real accuracy ceiling, not a temporary gap.
 - Index freshness is content-hash incremental plus a git HEAD comparison; `status?fresh=1` tells you whether the index has fallen behind.
+
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `codesextant/` | The Python implementation. This is what `pip install codesextant` gives you and what the docs above describe. |
+| `ts_bridge/` | A small Node helper the Python side shells out to for ts-morph reference resolution. |
+| `tests/` | Test suite for the Python implementation. |
+| `ts/` | **An in-progress TypeScript rewrite, not yet wired to anything.** Nothing in `codesextant/` imports it and it is not published. It is in the repository because the work is real and ongoing, but do not mistake it for the shipping implementation. |
 
 ## Licence
 

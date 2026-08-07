@@ -1,9 +1,10 @@
-# 行尾統一走 LF 進版控（Windows 工作區 checkout 仍是 CRLF）。
-# 不統一的話，同一份檔在不同機器上會整檔顯示為「全部改過」，把真正的
-# 一行改動淹沒在幾千行雜訊裡——這正是這個工具想幫人避免的那類問題。
-* text=auto eol=lf
+# Normalise line endings to LF in version control (Windows checkouts still get CRLF).
+# Without this, the same file shows up as entirely rewritten on a different machine,
+# burying a real one-line change under thousands of noise lines -- exactly the class
+# of problem this tool exists to help people avoid.
 
-# 二進位／不可 diff 的檔，明確標出來免得 git 嘗試轉換而損毀內容
+* text=auto eol=lf
+# Binary / non-diffable files, marked so git does not try to convert them.
 *.png binary
 *.jpg binary
 *.gz  binary

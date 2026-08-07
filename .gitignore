@@ -27,15 +27,15 @@ tools/__pycache__/
 
 _poc_graph_c/graph_synth.json
 _poc_graph_c/graph_real.json
-
-# 資產集中地（2026-08-07 站長指令：統一放一起、防誤刪）
-# 內容不進版控：adjudication 150MB、holdout 是盲測答案不可公開、wip-snapshots 是未提交碼的副本
-# ⛔ 但 README.md 必須進版控 —— 它是「刪除前先讀」的唯一守門員，自己沒版控就守不住
-# Internal asset registry: local paths + benchmark internals; this repo is public.
 _assets/*
 
-交接_*.md
-使用日誌_*.md
 _index_results_*.md
 coverage_report.json
 _poc_graph_c/**/*.json
+
+# Not part of the product: development probes, internal planning docs, and the
+# internal discipline-ratchet config. They stay on disk but are not published.
+tools/
+docs/
+.wiredo-audit.json
+.codesextant-baseline.json

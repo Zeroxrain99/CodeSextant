@@ -3,12 +3,13 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# 品牌＝CodeSextant（2026-06-19 user 拍板全面改名）。PyPI／npm 名 `codesextant` 已查證可用（404）。
-# 命名史：舊候選 codemap（PyPI 被占＋VSCode 擴充/USPTO 商標四重撞名）、tracemap（PyPI 被占＝
-# 一個 traceroute 視覺化工具）皆棄用；改用 sextant（六分儀，代碼導航定位意象）＝全乾淨無撞名。
+# The name comes from the sextant -- an instrument for fixing your position when
+# there is no landmark in sight. Earlier candidates were dropped for collisions:
+# "codemap" was taken on PyPI and clashed with a VSCode extension and a USPTO
+# trademark; "tracemap" was taken by a traceroute visualiser.
 name = "codesextant"
 version = "0.15.0"
-description = "CodeSextant 代碼地圖引擎 — tree-sitter 多語言抽符號(16 種:Py/JS/TS/TSX/Go/Rust/C#/Java/C/C++/Kotlin/Swift/PHP/Ruby/Bash/Lua) + 找引用(Python jedi / TS-JS ts-morph / 其他名稱比對) + SQLite 增量 + PageRank + 單例 daemon + 中文面板"
+description = "Local code map service for AI agents: tree-sitter symbols across 16 languages, import-resolved references for Python and TS/JS, incremental SQLite index, weighted PageRank ranking, single shared daemon."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
@@ -36,23 +37,26 @@ codesextant = "codesextant.__main__:main"
 [tool.setuptools]
 packages = ["codesextant"]
 
-# CodeSextant 自己的程式碼規範。獨立產品要有自己的標準，否則外部工具會拿它的
-# 預設值（88 字元）來評判這個專案，一次報 359 個「問題」，其中絕大多數不是問題
-# ——雜訊一多，真正的告警就沒人看了。
+# This project sets its own line length rather than inheriting the tool default
+# of 88. Under the default, a single run reports 359 findings here, almost none
+# of which are real defects -- and once a report is mostly noise, nobody reads
+# the findings that matter.
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# _poc_graph_c 是概念驗證留下的一次性實驗腳本，不是產品碼；拿產品標準去評判它
-# 只會製造 76 筆永遠不會有人修的雜訊，把產品碼真正的 15 筆蓋掉。
+# _poc_graph_c holds one-off prototype scripts, not product code. Judging them
+# by product standards produces 76 findings nobody will ever fix, which buries
+# the 15 real ones in the product code.
 exclude = ["build", "dist", ".venv", "_poc_graph_c"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 ignore = [
-    "E501",    # 行長交給 formatter；此處只擋真正的邏輯問題
-    "SIM105",  # contextlib.suppress 對熱路徑反而多一層呼叫
+    "E501",    # line length is the formatter's job; this list is for logic defects
+    "SIM105",  # contextlib.suppress adds a call frame on a hot path
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# panel.py 內嵌前端資源（HTML/CSS/JS 字串），行長與跳脫規則不適用
+# panel.py embeds frontend assets as HTML/CSS/JS string literals, where line
+# length and escaping rules do not apply.
 "codesextant/panel.py" = ["E", "W"]
