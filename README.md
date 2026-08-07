@@ -99,7 +99,7 @@ A few lower-level language-inference knobs (`CODESEXTANT_INFER_LANG_*`) are docu
 python -m pytest tests/ -q
 ```
 
-337 tests as of 2026-07-15, covering the daemon lifecycle, map scalability, and snapshot regressions.
+440 tests, passing in about 90 seconds as of 2026-08-07. They cover the daemon lifecycle, incremental indexing, map scalability, snapshot invalidation, and reference resolution across the supported languages.
 
 ## Known limitations
 
