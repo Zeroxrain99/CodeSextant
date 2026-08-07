@@ -65,11 +65,21 @@ CodeSextant 的 SQLite 索引在 `~/.codesextant/<sha1(repo絕對路徑)>.db`，
 
 現況（2026-08-07）：
 
-| 檔 | 對應 repo | 體積 |
+⭐ **要查某個 db 是誰的，直接讀它自己的 `meta` 表** —— 裡面有 `repo_path`（有些還有 `git_head_sha`、`schema_version`）：
+
+```bash
+sqlite3 "<db>" "select * from meta"
+```
+
+⛔ **本檔初版寫「sha1 不可逆所以來源不明」是錯的**（2026-08-07 當天更正）。sha1 確實不可逆，但**根本不需要反解** —— db 自己就記著來源。那句話的危險不在於它不準，而在於它會讓讀的人以為這件事查不出來，於是不去查。
+
+| 檔 | `meta.repo_path`（權威） | 體積 · 狀態 |
 |---|---|---|
-| `8c24fd8362c9…db` | `E:\ai-king\項目資料\CodeSextant\.worktrees\codesextant-sota-gate` | 133 MB |
-| `ae7dc3bc1cbc…db` | ⚠ 來源不明（sha1 不可逆，未對上任何已知路徑） | 98 KB |
-| `dc29d092eac3…db` | ⚠ 來源不明 | 938 KB |
+| `8c24fd8362c9…db` | `E:\ai-king\項目資料\CodeSextant\.worktrees\codesextant-sota-gate` | 133 MB · schema v5 · ⚠ **2026-08-07 下午正在增長中**（25 秒內 +282 files／+4,895 symbols ＝ 有 session 正在重建，⛔ 別碰） |
+| `ae7dc3bc1cbc…db` | `E:\Temp\bare-index-fq_dmq45\repository` | 98 KB · 5 檔 · **測試殘留**（Temp 下的臨時 fixture，可刪） |
+| `dc29d092eac3…db` | `E:\ai-king\scripts\windows` | 938 KB · 20 檔 · schema **v4**（舊版）· 別條工作線的小索引，與 CodeSextant 無關 |
+
+⚠ **交接說的「570,651 symbols / 2.33 GB 不見了」講的不是上面這個** —— 那是某個大型外部 repo 的規模驗證索引。產品自己的 repo 索引一直都在（8 萬多 symbols 這個量級），而交接 P1 第一條自己就寫著「⭐ 先從產品自己的 repo 開始」。診斷「索引不見了」時先讀 `meta` 分清楚是哪一個，⛔ 別直接重跑數小時。
 
 - ⭐ **索引可重建**（re-index 即可），所以它是本專案唯一「真的能當快取看待」的資產。
 - ⚠ 但重建要數小時。交接 P1 第一條「Re-index first」講的 570,651 symbols / 2.33 GB 版本目前**確實不在**（現存最大的只有 133 MB）。
