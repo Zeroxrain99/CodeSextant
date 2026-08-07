@@ -11,12 +11,16 @@
 - ⛔ **「gitignored」不等於「可拋棄」** —— 這裡每一份都是**證據級產物**，不是快取。
 - ⭐ 真正的保護只有這份登記表：想刪的人會先撞到它，看到每份的重建成本與依賴。
 
+⚠ **`holdout/` 是唯一的例外，⛔ 別把上面三條套到它身上**（2026-08-07 加）：它已有第二份備份，
+且那份**在主 repo 的版控裡**，誤刪救得回來 —— 見下方 §holdout 備份。`adjudication/` 與
+`wip-snapshots/` 仍然是「刪了就沒」，上面三條對它們完全成立。
+
 ## 資產清單
 
 | 目錄 | 體積 | 是什麼 | 能重建嗎 | 刪除後果 |
 |---|---|---|---|---|
 | `adjudication/` | 150 MB · 659 檔 | G4.3 外部審查證據 —— reviewer/custodian 的 candidates 與 2-of-3 裁決輸出（`candidates-reset-v2-1`…`v4-1`、`custodian-reset-v4r1-k` 等） | ⚠ 理論上可重跑，但需重新跑完整 adjudication 流程；revision-4r1 的 4,249 rows 是**已定案的否證證據**，重跑不保證得到同一批 | G4.3「H1 已被證偽」失去原始證據，結論退回未驗證 |
-| `holdout/` | 672 KB · 6 檔 | 正式 holdout 資料集（`impact/map/miswires/navigation/references/symbols.jsonl`） | ⛔ **不能** —— 這是盲測答案 | 整條 G4 benchmark 失去評分基準；⛔ 這是本目錄**最不可替代**的一份 |
+| `holdout/` | 672 KB · 6 檔 | 正式 holdout 資料集（`impact/map/miswires/navigation/references/symbols.jsonl`） | ⛔ **不能** —— 這是盲測答案 | 整條 G4 benchmark 失去評分基準；⛔ 本目錄**最不可替代**的一份，**故已另做版控備份**（見 §holdout 備份） |
 | `wip-snapshots/` | 382 KB | worktree 未提交變更的時點快照（見下節） | ⛔ 不能（原檔本身就未提交） | 見下節 |
 
 ### `holdout/` 的額外禁令（來自交接 §3）
@@ -32,6 +36,28 @@ worktree `codesextant-sota-gate` 在 2026-08-07 15:46 的 **8 項未提交變更
 - **為什麼存在**：那 8 項在原 worktree 裡是 modified/untracked 狀態，**未提交＝無任何版控保護**，一個 `git checkout .` 或 `git clean` 就永久消失。交接 §3 又明令不得 reset/stash/checkout/`git add -A`，所以只能複製、不能提交。
 - ⛔ **這是副本不是真相源**。真相源是 worktree 本身。要改就改 worktree，⛔ 不要改這份快照，也⛔ 不要拿它覆蓋回去（會蓋掉之後的進展）。
 - 快照當下的 branch / HEAD / `git status` 全記在同目錄 `_SNAPSHOT_PROVENANCE.txt`。
+
+## §holdout 備份（2026-08-07 建立·**唯一有版控的一份資產**）
+
+| 項目 | 值 |
+|---|---|
+| 備份檔 | `E:\ai-king\_AI_BRAIN\06_Handoffs\codesextant\holdout-backup-20260807.tar.gz`（71 KB） |
+| 校驗 | 同目錄 `.sha256`；驗證＝`cd` 到該目錄後 `sha256sum -c holdout-backup-20260807.tar.gz.sha256` |
+| 還原 | `tar --force-local -xzf <備份檔> -C <目標目錄>` ⚠ git bash 少了 `--force-local` 會把 `E:` 當成遠端主機名而失敗 |
+| 已驗證 | 建立當下解壓到暫存區與 `holdout/` 逐檔 `diff -r`，6 檔完全一致 —— ⭐ 不是「檔案存在」而是「真的還原得出來」 |
+
+**為什麼放主 repo 而不是別處**（三個約束同時成立才選它）：
+
+1. **主 repo `E:\ai-king` 沒有任何 remote**（純本機 git）⇒ 不可能誤 push 外洩。⛔ 產品 repo `Zeroxrain99/CodeSextant` 是 **PUBLIC**，holdout 放進去等於公開盲測答案。
+2. **git 有版控** ⇒ 誤刪可 `git checkout` 救回。單純多複製一份到別的目錄**不具備回滾能力**，那只是多一個同樣會被刪的東西。
+3. **打包成單一 `.tar.gz`** ⇒ 不會被人 `grep`/`Read` 順手讀到逐案例答案，交接 §3 的隔離語意保住。
+
+⛔ **沒有走「`項目資料/` 底下開 gitignore 例外」那條路**：`項目資料/CodeSextant` 自己是獨立 git repo，主 repo 去追蹤它會撞上 nested repo 陷阱（同一份檔在兩段歷史裡，兩邊判定必然相反）。
+
+⚠ **這個備份需要一條 `.gitignore` 例外才存在**：主 repo `.gitignore` 有 `**/*.tar.gz`（原意是「>50MB 大檔防護」，本備份 71 KB 不在其射程），故加了
+`!_AI_BRAIN/06_Handoffs/codesextant/holdout-backup-*.tar.gz`。⛔ 那條例外被刪掉的話，**下一份備份會安靜地進不了版控**，而且不會有任何錯誤訊息。
+
+⚠ **剩餘風險（誠實邊界）**：主副本與備份**都在 E: 這顆磁碟**。防得住誤刪與誤改，**防不住磁碟故障或整機遺失**。要補這一層需要離機備份，那牽涉「誰讀得到盲測答案」的隔離決策。
 
 ## 索引資料庫**不在這裡**（刻意的）
 
