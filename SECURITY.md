@@ -10,8 +10,8 @@ Expect an initial response within a week.
 
 ## Threat model
 
-CodeSextant runs entirely on your machine. It makes no network calls, requires
-no API keys, and sends nothing anywhere. The main exposure is therefore local:
+CodeSextant runs locally and makes no external network calls. Its primary
+exposure is local access:
 
 - **The daemon listens on `127.0.0.1:8790`.** Any process on the machine that
   can reach loopback can query indexed projects, which means it can read symbol
@@ -26,6 +26,5 @@ no API keys, and sends nothing anywhere. The main exposure is therefore local:
   parses your project files, so treat it with the same trust you give any tool
   that opens the repo.
 
-Reports that reduce to "someone with full access to your user account can read
-your files" are out of scope; a process at that privilege level can read the
-repos directly.
+Access by a process already running with the user's file permissions is outside
+this threat model.

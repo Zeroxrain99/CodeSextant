@@ -1,18 +1,9 @@
-"""codesextant C4: the panel (self-contained HTML served by the daemon's GET /).
+"""Self-contained dashboard served by the daemon's ``GET /`` endpoint.
 
-One HTML document serves three places (design §multiple front ends):
-  - the daemon itself, GET /   (open http://127.0.0.1:8790/ in a browser)
-  - a standalone Tauri shell   (iframe / webview pointed at the same daemon URL)
-  - an IDE extension webview (iframe embedding the same daemon URL)
-
-Deliberately self-contained (inline CSS + plain JS, no external CDN) to match
-CodeSextant's position as a local-only service with no cloud and no API keys: the
-panel opens without a network connection. The panel is presentation only. Every
-piece of data is fetched by the front end from the daemon's existing endpoints
-(/health /projects /status /reindex /get_map /find_references). render_panel()
-therefore returns a static skeleton with no data in it, which needs no server-side
-string interpolation (and so avoids clashes between Python format strings and
-CSS/JS braces).
+The same HTML document can run in a browser, a Tauri webview, or an IDE webview.
+It uses inline CSS and JavaScript so it works without a network connection.
+Dynamic data comes from the daemon's existing endpoints. ``render_panel()``
+returns static HTML without server-side interpolation.
 """
 from __future__ import annotations
 
@@ -123,7 +114,7 @@ _PANEL_HTML = r"""<!DOCTYPE html>
     <h1>CodeSextant <small>Code Map Overview</small></h1>
     <span class="badge"><span id="hdot" class="dot"></span><span id="hstat">Connecting…</span></span>
   </header>
-  <div class="sub">A local-only code map service with no cloud and no API keys. Every AI agent shares one global graph built from real import resolution.</div>
+  <div class="sub">A local code map shared by AI coding agents and developers. Projects stay on this machine.</div>
 
   <div class="card">
     <h2>Service status</h2>
@@ -138,18 +129,18 @@ _PANEL_HTML = r"""<!DOCTYPE html>
       <button onclick="loadAll()">↻ Refresh</button>
     </div>
     <div id="projects"><div class="empty">Loading <span class="spin"></span></div></div>
-    <div class="hint">"Reindex" re-runs indexing (only changed files are recomputed, so it is fast). "Map" lists the most important symbols that fit the token budget. "References" shows who calls a given symbol.</div>
+    <div class="hint">"Reindex" updates changed files. "Map" lists the most important symbols that fit the token budget. "References" shows callers for a symbol.</div>
   </div>
 
   <div class="card">
-    <h2>Markdown link hygiene <span class="n" id="lgstat">&mdash;</span></h2>
+    <h2>Markdown link check <span class="n" id="lgstat">&mdash;</span></h2>
     <div class="toolbar">
-      <span class="muted">Dangling wiki links and orphans across memory / HANDOFF / kb / SKILL / cbua (read-only: it lists, it never deletes)</span>
+      <span class="muted">Scan configured Markdown namespaces for dangling wiki links and unindexed nodes. The scan is read-only.</span>
       <span class="spacer"></span>
       <button class="primary" onclick="loadLinks()">Scan</button>
     </div>
-    <div id="linkgraph"><div class="empty">Press "Scan" to compute (read-only, about 1 second, on demand; it does not run by itself).</div></div>
-    <div class="hint">dangling = a [[link]] pointing at a node that does not exist (fix these); orphan = missing from the index, which is not the same as dead (advisory, ⛔ listed only, never deleted; orphans under skill/cbua are usually fine).</div>
+    <div id="linkgraph"><div class="empty">Press "Scan" to run the check.</div></div>
+    <div class="hint">Dangling links point to missing nodes. Unindexed nodes are advisory and are never deleted.</div>
   </div>
 
   <div class="sub muted" style="text-align:center;margin-top:28px">
@@ -331,8 +322,7 @@ function shortPath(full, root) {
 }
 
 async function loadLinks() {
-  // Phase 1 (wiki linkgraph, 2026-07-09): computed on demand. ⛔ Do not add this to
-  // loadAll; it is an on-demand debugging tool and must not be pushed in the user's face.
+  // Link checks run on demand and are not part of the main dashboard refresh.
   const box = $("linkgraph");
   box.innerHTML = `<div class="empty">Scanning <span class="spin"></span></div>`;
   try {
@@ -343,13 +333,13 @@ async function loadLinks() {
     const dRows = dang.slice(0, 60).map(x =>
       `<div class="row"><span class="rk">[${esc(x.from_ns)}] ${esc(x.from)}</span><span class="err-line">→ [[${esc(x.to)}]] does not exist</span></div>`).join("");
     const oRows = Object.entries(orph).map(([ns, lst]) =>
-      `<div class="row"><span class="rk">[${esc(ns)}]${(ns === "skill" || ns === "cbua") ? " (usually fine)" : " (★ should this be indexed?)"}</span><span class="muted">${lst.slice(0, 14).map(esc).join(", ")}${lst.length > 14 ? " …+" + (lst.length - 14) : ""}</span></div>`).join("");
+      `<div class="row"><span class="rk">[${esc(ns)}] (advisory)</span><span class="muted">${lst.slice(0, 14).map(esc).join(", ")}${lst.length > 14 ? " …+" + (lst.length - 14) : ""}</span></div>`).join("");
     const disc = d.discipline_tail === null
       ? `<div class="row"><span class="rk">Discipline source</span><span class="muted">not configured (optional: set the CODESEXTANT_DISCIPLINE_LOG environment variable to a line-delimited JSON audit file)</span></div>`
       : `<div class="row"><span class="rk">Discipline source tail</span><span class="muted">${(d.discipline_tail || []).length} entries · ${esc(d.discipline_source || "source not reported")}</span></div>`;
     box.innerHTML = `<div class="detail">
       <div class="row"><span class="rk">🔗 dangling links</span><span>${dang.length ? dang.length + " (fix these)" : "0 (clean ✓)"}</span></div>${dRows}
-      <div class="row"><span class="rk">🟡 orphans</span><span class="muted">advisory · ⛔ listed only, never deleted</span></div>${oRows}
+      <div class="row"><span class="rk">unindexed nodes</span><span class="muted">advisory only</span></div>${oRows}
       ${disc}</div>`;
   } catch (e) { $("lgstat").textContent = "failed"; box.innerHTML = `<div class="err-line">Scan failed: ${esc(e.message)}</div>`; }
 }

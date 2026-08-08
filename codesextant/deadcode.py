@@ -1,41 +1,15 @@
-"""Dead-code clue layer (C5c): unused imports (wrapping ruff/eslint) + orphan grading
-+ entrypoint exemptions.
+"""Classify dead-code evidence from linters and reference resolvers.
 
-Core discipline, established during an adversarial design review (2026-06-19):
-  - ⛔ **Do not build a bare tree-sitter AST diff** to decide unused imports. That approach
-    hands out *wrong deletion permission*: side-effect imports
-    (`import side_effect`), re-exports (`from x import y` for someone else to use) and
-    type-only imports all get misjudged as deletable. Wrap **ruff (F401) / eslint**
-    instead: less work, and an order of magnitude more correct.
-  - ⛔ **A verdict never gives a "safe to delete" green light.** When the real
-    resolution engine (jedi/ts-morph) is unavailable, return `UNKNOWN_*`, an honest
-    "I don't know", and never degrade into a confident false positive. **An honest
-    UNKNOWN is far more useful than a confident, wrong deletion permission.** This is
-    the design linchpin of the whole dead-code layer (red team B2: marking every export
-    in a TS project deletable because ts-morph happens to be unavailable is a disaster).
-  - Orphan status trusts only jedi (Python) / ts-morph (TS) real resolution; if the
-    engine is unavailable the whole symbol returns `UNKNOWN_NO_RESOLVER`.
-  - Entrypoints and reflective entries (pages/route/test_/__main__/decorators/__all__)
-    are always `PUBLIC_API` and never enter the deletion candidate list.
+Unused-import checks delegate to Ruff or ESLint. Orphan classification requires
+jedi for Python or ts-morph for TypeScript and JavaScript. Missing or incomplete
+resolution returns an ``UNKNOWN_*`` verdict. Entrypoints and reflective symbols
+are classified as ``PUBLIC_API``. Every result is evidence to review, not a
+deletion instruction.
 
-Verdict grades (the icon is for people, the verdict is for programs):
-  UNKNOWN_NO_RESOLVER ❔  no real import resolver, so orphan status is not judged (the
-                          **safety gate**, guarding the most dangerous degradation path)
-  UNKNOWN_NO_LINTER   ❔  no ruff/eslint, so unused imports are not judged
-  LIKELY_UNUSED       🟡  a real engine confirmed zero high-confidence references and it
-                          is not an entrypoint (**review it yourself and run the build
-                          before deleting**)
-  REEXPORT_ONLY       🟡  only re-exported from a barrel/__init__ (a step 4 refinement;
-                          step 3 does not judge this separately yet)
-  PUBLIC_API          ⚪  entrypoint / reflective entry / __all__; never a deletion candidate
-  KEEP                ✅  has high-confidence references
+This module contains linter wrappers, entrypoint detection, and verdict grading.
+``engine.find_deadcode`` assembles the resolver results.
 
-This module holds **pure helpers only** (linter subprocess wrappers, entrypoint
-detection, verdict grading) and does not import engine (the dependency runs one way,
-engine → deadcode, to avoid a cycle). Reusing real resolution for orphans is assembled
-in engine.find_deadcode.
-
-Switches (L0 hard rule #6, all tolerant via .lower()):
+Environment switches, parsed case-insensitively:
   - CODESEXTANT_DEADCODE_LINTER = ruff | eslint | auto | off (default auto: chosen by
     language; off runs no linter at all)
   - CODESEXTANT_DEADCODE_ENTRYPOINT_EXTRA = extra entrypoint path fragments (separated by
@@ -76,7 +50,7 @@ def _lint_timeout(default: float) -> float:
         return default
 
 
-# ── unused imports: wrap ruff (Python F401) / eslint (TS/JS). ⛔ Do not build a bare AST diff. ──
+# ── Unused imports: wrap ruff for Python and eslint for TS/JS ──
 def _run_ruff_f401(target: str) -> dict:
     """ruff check --select F401 (unused imports). Returns {available, findings|reason}.
 
@@ -125,9 +99,8 @@ _ESLINT_CONFIGS = (".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json
 def _run_eslint_unused(target: str, root: str) -> dict:
     """eslint --format json, filtered to no-unused-vars / unused-imports rule hits.
 
-    ⚠ eslint needs the project to bring its own config (rules differ per project, and
-    ⛔ we do not guess them). No config or no eslint means unavailable, and the caller
-    marks it UNKNOWN_NO_LINTER, an honest "I don't know" rather than a made-up verdict.
+    eslint requires the project's own configuration because rules differ by project.
+    Missing configuration or eslint returns UNKNOWN_NO_LINTER.
     """
     if shutil.which("eslint") is None and shutil.which("npx") is None:
         return {"available": False, "reason": "eslint/npx is not installed (cannot detect unused TS/JS imports)"}
@@ -169,10 +142,10 @@ def detect_unused_imports(target: str, *, root: str, lang: str | None = None) ->
     """Detect unused imports, auto-picking ruff (Python) or eslint (TS/JS) by language.
 
     Returns a dict:
-      available   → {available:True, linter, findings:[{path,line,code,message}]}
-      unavailable → {available:False, linter, verdict:"UNKNOWN_NO_LINTER", reason, findings:[]}
-      disabled    → {available:False, linter:None, reason:"disabled", findings:[]}
-    ⛔ Unavailable always means UNKNOWN_NO_LINTER (honest); it never degrades into
+      available: {available:True, linter, findings:[{path,line,code,message}]}
+      unavailable: {available:False, linter, verdict:"UNKNOWN_NO_LINTER", reason, findings:[]}
+      disabled: {available:False, linter:None, reason:"disabled", findings:[]}
+    Unavailable always means UNKNOWN_NO_LINTER; it never degrades into
     hand-rolled AST false positives.
     """
     mode = linter_mode()
@@ -190,7 +163,7 @@ def detect_unused_imports(target: str, *, root: str, lang: str | None = None) ->
         else:
             # 2026-06-22: the other languages (C#/Java/C/C++/Lua/Ruby/PHP/Bash/Kotlin/
             # Swift) have no corresponding unused-import linter (ruff is Python-only,
-            # eslint is TS/JS-only) → return an honest UNKNOWN. ⛔ Do not force ruff to
+            # eslint is TS/JS-only), so return UNKNOWN. Do not force ruff to
             # run against .cs/.java and friends, where it reports "no files" and misleads.
             # This upholds the dead-code layer's linchpin: UNKNOWN over a false positive.
             return {"available": False, "linter": None, "findings": [],
@@ -209,7 +182,7 @@ def detect_unused_imports(target: str, *, root: str, lang: str | None = None) ->
             "verdict": "UNKNOWN_NO_LINTER", "reason": r.get("reason")}
 
 
-# ── entrypoint / reflective-entry detection (fix 2): a match means PUBLIC_API, never deleted ──
+# ── Entrypoint and reflective-entry detection ──
 # Filename conventions (matched against posix-style paths; covers web framework routes,
 # tests, module entrypoints and barrels).
 _ENTRYPOINT_FILE_PATTERNS = [
@@ -228,7 +201,7 @@ _ENTRYPOINT_FILE_PATTERNS = [
 ]
 # Reflective-entry decorators (Python; a hit among the run of @decorators directly above
 # a symbol definition means the framework calls it reflectively).
-# Red team L3-MEDIUM fix: match loosely on "@<any object>.<verb>" rather than pinning the
+# Match loosely on "@<any object>.<verb>" rather than pinning the
 # object name to app/router, because FastAPI code conventionally uses api/application and
 # Flask Blueprint variables are named freely (users_bp). Also add FastAPI's common
 # websocket/on_event/exception_handler/middleware. Exempting loosely is preferred: it
@@ -262,7 +235,7 @@ def entry_point_func_names(root: str) -> set[str]:
     pyproject.toml and return the set of function names console_scripts point at
     ("pkg.cli:main" → "main").
 
-    Red team L3-HIGH: a console_scripts entrypoint is called reflectively by the wrapper
+    A console_scripts entrypoint is called reflectively by the wrapper
     installed alongside the package, and nothing in the source mentions its name, so its
     name-level external usage is necessarily 0. Without this exemption, find_unwired
     would misreport almost every CLI main entrypoint as unwired.
@@ -328,8 +301,8 @@ def is_entrypoint(path: str, *, symbol_name: str | None = None,
     """Whether a symbol is an entrypoint or reflectively called (→ PUBLIC_API, never a
     deletion candidate).
 
-    Order of checks: filename convention → the user's extra list → (when source and
-    symbol are supplied) decorators / __all__.
+    Order of checks: filename convention, configured extra paths, then decorators
+    and ``__all__`` when source and symbol are supplied.
     Returns (is_entrypoint, reason).
     """
     posix = path.replace("\\", "/")
@@ -349,13 +322,12 @@ def is_entrypoint(path: str, *, symbol_name: str | None = None,
     return False, None
 
 
-# ── availability of the real resolver (the criterion behind the UNKNOWN gate; fix 1's safety gate) ──
+# ── Resolver availability for the UNKNOWN safety gate ──
 def resolver_available(lang: str | None) -> tuple[bool, str | None]:
     """Whether this language has a real import resolver able to judge orphan status.
 
-    Python → jedi (installed with the package, always available).
-    TS/JS  → ts-morph (needs node + node_modules/ts-morph; references.ts_morph_available()).
-    Anything else → none → returns False (the caller marks it UNKNOWN_NO_RESOLVER).
+    Python uses jedi. TS/JS uses ts-morph when Node and the package are available.
+    Other languages return False, and the caller marks the result UNKNOWN_NO_RESOLVER.
     """
     if lang in (None, "python"):
         return True, None
@@ -368,7 +340,7 @@ def resolver_available(lang: str | None) -> tuple[bool, str | None]:
     return False, f"language '{lang}' has no real import resolver (jedi is Python-only, ts-morph is TS/JS-only)"
 
 
-# ── orphan verdict grading (fix 1) ──
+# ── Orphan verdict grading ──
 _VERDICT_ICON = {
     "UNKNOWN_NO_RESOLVER": "❔",
     "UNKNOWN_NO_LINTER": "❔",
@@ -384,20 +356,14 @@ def classify_orphan(refs_result: dict | None, *, is_entry: bool,
                     entry_reason: str | None) -> dict:
     """Grade a symbol's find_references result into an orphan verdict.
 
-    Two safety gates, both following "UNKNOWN over a false positive":
-      1. The engine is not a real resolver (jedi/ts-morph) → UNKNOWN_NO_RESOLVER (red team
-         B2: with no engine, deletability cannot be judged).
+    Two checks prevent false-positive orphan verdicts:
+      1. Without a real resolver, return UNKNOWN_NO_RESOLVER.
       2. Resolution ran but **did not locate the symbol definition** (an error, or no
-         definition) → UNKNOWN_UNRESOLVED. This one matters enormously: high=0 can mean
+         definition), return UNKNOWN_UNRESOLVED. A high=0 result can mean
          "genuinely unreferenced" **or** "the resolver never located the definition at
          all" (jedi's two-stage lookup only recognizes def/class lines, so a module-level
-         assignment `NAME = ...` is not located → straight to error → high=0). Without
-         this gate, module-level constants and variables get confidently misjudged as
-         LIKELY_UNUSED (during the 2026-06-19 step 3 run, daemon.py's
-         SERVICE_NAME/HOST/_ROUTES_GET surfaced exactly this false positive). Real
-         resolution for variables is step 4 work.
-    Only "real resolution + definition located + high=0" earns LIKELY_UNUSED 🟡, and even
-    then it still needs a human review and a build.
+         assignment `NAME = ...` is not located and produces high=0).
+    Only a located definition with zero resolved references earns LIKELY_UNUSED.
     """
     if is_entry:
         return {"verdict": "PUBLIC_API", "icon": _VERDICT_ICON["PUBLIC_API"],
@@ -414,9 +380,9 @@ def classify_orphan(refs_result: dict | None, *, is_entry: bool,
                            "does not mean it is genuinely unreferenced → deletability is not judged")}
     high = refs_result.get("high_confidence") or []
     if high:
-        # Step 4: if every high-confidence reference is a re-export (a barrel
+        # If every high-confidence reference is a re-export (a barrel
         # `export {X} from`, or this file's own `export {X}`) with no real internal
-        # consumption → REEXPORT_ONLY. ⛔ Do not call it KEEP (nobody actually uses it),
+        # consumption, classify it as REEXPORT_ONLY rather than KEEP,
         # and do not misjudge it as LIKELY_UNUSED (it genuinely is exported and may be a
         # public API). jedi (Python) high-confidence entries carry no is_reexport flag, so
         # all() is False and Python falls through to KEEP unaffected.
@@ -440,10 +406,12 @@ def verdict_icon(verdict: str) -> str:
 
 
 def read_code_advisory(unused: dict, orphans: list) -> list:
-    """Step 6: from the blind spots in the dead-code result, state plainly which parts the
+    """Describe dead-code blind spots that still require source inspection.
+
+    State which parts the
     tool could not help with and where you have to read the code yourself.
 
-    ⛔ Tool silence is not the same as safe to delete. Spell out the real boundaries of
+    Tool silence is not the same as safe to delete. Spell out the boundaries of
     UNKNOWN, missing linter, LIKELY_UNUSED and REEXPORT_ONLY, so nobody reads "it has been
     scanned" as "it has been cleaned". The dead-code layer is a clue, not deletion
     permission.
@@ -458,7 +426,7 @@ def read_code_advisory(unused: dict, orphans: list) -> list:
                      "did not help here; install ruff/eslint or check by hand.")
     if unknown:
         notes.append(f"{unknown} symbol(s) the tool cannot decide on (module-level variables, or no "
-                     "real resolver). The tool is silent here, which ⛔ does not mean they are "
+                     "real resolver). The tool is silent here, which does not mean they are "
                      "deletable. You have to read the code and confirm these yourself.")
     if likely:
         notes.append(f"{likely} suspected dead symbol(s) are a clue, not a verdict. Before deleting, "

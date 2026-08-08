@@ -1,64 +1,24 @@
 # CodeSextant
 
-**AI coding agents can generate code faster than they can understand a repository. They search for names, reread files, miss call sites, and break B while fixing A. The bottleneck is not model intelligence alone. It is the missing index.**
+**A practical code navigation and change-impact tool for AI coding agents and human developers.**
 
-CodeSextant is a local, shared code index for coding agents. It builds an import-aware symbol graph and answers the questions an agent needs before editing: who calls this symbol, what depends on it, and which few files are actually worth reading?
+CodeSextant builds a local graph of symbols and reference edges so agents and developers can trace callers, locate code, and estimate change impact before editing.
 
-Python and TypeScript/JavaScript get resolved references. Other supported languages are clearly labelled when results come from low-confidence name matching. Index once, then every agent on the machine reuses the same map. No cloud, no API keys, and no source code leaves your machine.
+For AI agents, the index turns repository structure into targeted queries for the files and symbols worth reading. Developers can use the same graph through the CLI or HTTP API. The daemon updates it from native file events.
 
-The name is from the **sextant**: an instrument for fixing your position when there is no landmark in sight.
+Python and TypeScript/JavaScript references are resolved through imports. Other supported languages return low-confidence name matches. CodeSextant runs locally without an API key and does not send source code off the machine.
 
----
+[Install](#quick-start) · [Give it to an AI agent](#give-codesextant-to-your-agent) · [Language support](#how-it-works)
 
-## A codebase you can see and open
-
-Both views below use **CodeSextant mapping CodeSextant itself**. There is no sample repository
-and no synthetic source code behind the demo.
-
-![CodeSextant visual map prototype](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/docs/assets/visual-map-prototype.png)
-
-The overview turns real symbols and reference edges into structural communities. Cohesive
-communities form tighter, separated constellations. Tangled coupling creates overlap and visual
-noise. The shape is a consequence of the code, not decorative particle placement.
+## See the codebase
 
 ![A selected CodeSextant symbol with its source and resolved callers](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/docs/assets/visual-map-symbol-inspector.png)
 
-Every star represents an actual symbol and carries its file, line, and source snippet. Click one
-to open its code. Its direct relationships stay bright and named while unrelated symbols fade,
-so the local blast radius remains visible without losing the surrounding architecture. Production
-callers and tests use different edge treatments, and the inspector exposes references and impact
-without leaving the map.
+*CodeSextant indexed its own repository for this WebGPU prototype. The published package exposes the graph through the CLI and HTTP API in text or JSON. The renderer is not included in the package.*
 
-The selected star above is the real `index_paths()` function at `codesextant/engine.py:257`.
-CodeSextant's own Python resolver found its production and test callers at high confidence, then
-grouped the affected files for the impact summary. In other words, the product is demonstrating
-its value by inspecting itself.
+Each star is a symbol with a file, line number, and source snippet. Selecting one opens the code and highlights its direct callers while unrelated symbols fade. Production and test edges use separate styles.
 
-The working WebGPU prototype already supports single-click source inspection, rotation, semantic
-zoom, and flying from the overview into a symbol. The focused relationship treatment in the
-second capture defines the next renderer integration step.
-
-The visual renderer is not wired into the published Python package yet. Layout normalization,
-cross-machine reproducibility, and module-level aggregation for very large repositories remain
-open work. The current `map` command returns a ranked text map, not this renderer.
-
-## The problem
-
-The hidden cost of agentic coding is token budget. An agent that starts editing without a global picture rewrites things that already exist, misses call sites, and creates conflicts.
-
-The usual fallback is `grep`. But name matching treats every identically-named symbol as the same thing, so in a codebase with common names like `handle`, `run`, or `Config`, the results are mostly noise. We have measured cases where **every returned "reference" was wrong**.
-
-CodeSextant resolves imports instead of matching text, and it keeps the resulting graph in a single resident service that every agent on the machine queries.
-
-## What makes it different
-
-| | |
-|---|---|
-| **Import resolution, not name matching** | Python goes through jedi (which understands import chains and scope); TS/JS through ts-morph (`findReferences`, so same-name symbols in unrelated modules do not collide). Results are labelled high or low confidence, and an agent is expected to auto-trust only the high-confidence ones. |
-| **One daemon, shared by every agent** | A single process per machine (cross-process file lock plus an exclusive listen socket, with idempotent startup). Claude Code, Cursor, or any HTTP client talk to the same instance. Projects are isolated by `sha1(absolute repo path)` into separate SQLite databases. |
-| **Python and TypeScript/JavaScript** | These are the languages CodeSextant actually resolves imports for, and the ones it is tested against. tree-sitter can extract symbols from a dozen more (Go, Rust, C#, Java, C, C++, Kotlin, Swift, PHP, Ruby, Bash, Lua) but **those get name-matched references, not resolved ones**. Treat them as experimental. Broader real support is a goal, not a claim. |
-| **Local only** | No cloud calls, no API key, nothing leaves the machine. This is stricter than "local LSP tooling": there is no key to configure at all. |
-| **Budgeted output** | `map` uses weighted PageRank to return the most important N symbols that fit a token budget, rather than dumping the whole graph. |
+The selected symbol is `index_paths()` at `codesextant/engine.py:257`. The inspector shows six high-confidence callers across two affected files.
 
 ## Quick start
 
@@ -66,15 +26,36 @@ Requires Python 3.10 or newer.
 
 ```bash
 pip install codesextant
+codesextant index .
+codesextant map . --budget 1500
 ```
 
-`watchdog` is installed with CodeSextant. The first index scans the repository once. After that,
-the daemon listens for native OS file events and sends only created, edited, moved, or deleted
-paths to the indexer after a short debounce. A normal save does not walk the repository. A full
-reconciliation is reserved for initial indexing, daemon restart recovery, lost watcher state, or
-an explicit forced rebuild.
+To connect an AI coding agent, add the [CodeSextant skill](#give-codesextant-to-your-agent) after installation.
 
-### Give CodeSextant to your agent
+## Visual map
+
+![CodeSextant visual map prototype](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/docs/assets/visual-map-prototype.png)
+
+The overview groups symbols by their reference edges. Tightly connected code forms compact constellations, while tangled coupling produces overlap and visual noise.
+
+The prototype supports source inspection, rotation, semantic zoom, and navigation from the repository overview to an individual symbol. It does not yet normalize layouts across machines or aggregate modules for very large repositories.
+
+## Why use an index
+
+Name matching cannot distinguish same-named symbols in different scopes. In collision-heavy repositories, searches for names such as `handle`, `run`, and `Config` can return many false positives. For Python and TypeScript/JavaScript, CodeSextant resolves imports and stores the graph in a shared local service.
+
+## How it works
+
+| | |
+|---|---|
+| **Import resolution** | Python uses jedi, and TS/JS uses ts-morph `findReferences`. Resolved references are high confidence, while name matches are low confidence and require source verification. |
+| **One shared daemon** | A cross-process file lock and exclusive listen socket keep one process alive per machine. Claude Code, Cursor, the CLI, and HTTP clients can use the same instance. Projects have separate SQLite databases keyed by absolute repository path. |
+| **Language coverage** | Python and TypeScript/JavaScript have import-resolved references. Go, Rust, C#, Java, C, C++, Kotlin, Swift, PHP, Ruby, Bash, and Lua use tree-sitter symbol extraction with low-confidence name-matched references. |
+| **Event-driven updates** | Native file events send created, edited, moved, and deleted paths to the indexer. Full scans are reserved for initial indexing and recovery. |
+| **Local only** | Runs without cloud calls or API keys. Source and index data stay on the machine. |
+| **Budgeted output** | `map` uses weighted PageRank to return the most important N symbols that fit a token budget, rather than dumping the whole graph. |
+
+## Give CodeSextant to your agent
 
 Download the single [CodeSextant SKILL.md](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/skills/codesextant/SKILL.md) after installation and
 place it in your agent's skill directory. For example:
@@ -92,7 +73,9 @@ to follow it before editing. The skill starts the shared daemon, binds the curre
 uses the map to narrow what should be read, checks references and impact before changes, and
 preserves confidence labels instead of treating name matches as confirmed callers.
 
-High-confidence TS/JS resolution needs two more things: Node on your PATH, and a one-time `npm install` inside `ts_bridge/`. That directory ships in the git repository, not in the pip package. So a `pip install` gives you resolved references for Python and name-matched ones for TS/JS; clone the repository instead if you need TS/JS resolved. Either way the result carries its confidence label, and a missing bridge degrades the answer rather than breaking the tool.
+Resolved TS/JS references require Node and `npm install` inside `ts_bridge/`, which is available only in the GitHub repository. The PyPI package resolves Python references and returns low-confidence name matches for TS/JS. Clone the repository if you need ts-morph resolution.
+
+## Commands
 
 ```bash
 python -m codesextant index      <repo>                     # build or incrementally update the index
@@ -121,16 +104,16 @@ On Windows, `tools/register_windows_startup.ps1` registers the daemon to start o
 ## Architecture
 
 ```text
-┌── CodeSextant daemon (Python, port 8790, single instance, shared by all agents) ──┐
+┌── CodeSextant daemon (Python, port 8790, single instance, shared by local tools) ─┐
 │   tree-sitter symbol extraction + jedi / ts-morph import resolution               │
 │   incremental SQLite (content hash + git HEAD freshness) + weighted PageRank      │
 │   per-project isolation: sha1(repo path) -> ~/.codesextant/<key>.db               │
 │   HTTP API, plus a self-contained dashboard on GET /                              │
 └───────────────────────────────────────────────────────────────────────────────────┘
-        ▲ one daemon, many front-ends: standalone shell, IDE webview, agent HTTP clients
+        ▲ one daemon, many clients: CLI, agent skills, IDE webviews, HTTP clients
 ```
 
-Single-instance startup is what makes "every agent shares one map" work at all. Without it, each agent would build and hold its own copy of the graph.
+An exclusive socket and cross-process file lock keep one daemon alive per machine, so agents and developer tools share one graph instead of starting separate indexers.
 
 Large cold `map` queries are served from a SQLite covering index plus a revision-checked JSON snapshot, with a small in-process LRU on top. Every snapshot is a cache keyed on index revision and query parameters; SQLite remains the only source of truth, and any change invalidates them.
 
@@ -162,18 +145,16 @@ A few lower-level language-inference knobs (`CODESEXTANT_INFER_LANG_*`) are docu
 python -m pytest tests/ -q
 ```
 
-443 tests, about a minute on a developer laptop. They cover the daemon lifecycle, incremental indexing, map scalability, snapshot invalidation, and reference resolution across the supported languages.
+The suite covers the daemon lifecycle, incremental indexing, map scalability, snapshot invalidation, and reference resolution across the supported languages.
 
 ## Known limitations
-
-We would rather state these than have you discover them.
 
 - Reference lookup needs the right `--src-root` when the import root lives in a subdirectory (`.../src`). Get it wrong and high-confidence references are silently missed.
 - When several symbols share a name, omitting `--def-path` means the first candidate definition wins, and high-confidence results may legitimately come back as zero. All candidates are listed so you can disambiguate.
 - PageRank quality depends on how dense the reference edges are, and those accumulate as `find_references` is called. A freshly indexed repo produces a rougher map than one that has been queried for a while.
-- High-confidence TS/JS resolution requires `npm install` in `ts_bridge/`, which only the git repository carries. A pip install therefore gets name-matched TS/JS references, and the confidence label says so rather than hiding it.
-- Go and Rust get tree-sitter symbols but name-matched references. This is a real accuracy ceiling, not a temporary gap.
-- Index freshness is content-hash incremental plus a git HEAD comparison; `status?fresh=1` tells you whether the index has fallen behind.
+- High-confidence TS/JS resolution requires `npm install` in `ts_bridge/`, which is included only in the GitHub repository. PyPI installations return low-confidence name matches for TS/JS.
+- Go and Rust use tree-sitter symbols and low-confidence name-matched references. Their imports are not resolved.
+- Event-driven updates require the daemon to be running. After downtime or a missed event, `status?fresh=1` checks the index against git HEAD and a reindex restores it.
 
 ## Repository layout
 
@@ -182,10 +163,12 @@ We would rather state these than have you discover them.
 | `codesextant/` | The Python implementation. This is what `pip install codesextant` gives you and what the docs above describe. |
 | `ts_bridge/` | A small Node helper the Python side shells out to for ts-morph reference resolution. Git only; the pip package does not carry it. |
 | `tests/` | Test suite for the Python implementation. |
-| `ts/` | **An in-progress TypeScript rewrite, not yet wired to anything.** Nothing in `codesextant/` imports it and it is not published. It is in the repository because the work is real and ongoing, but do not mistake it for the shipping implementation. |
+| `ts/` | In-progress TypeScript rewrite. It is not imported by `codesextant/` or included in the published package. |
 
 ## Licence
 
 MIT. See [LICENSE](https://github.com/Zeroxrain99/CodeSextant/blob/master/LICENSE).
 
-The core is free and open source. A commercial edition is planned around what open source deliberately does not cover: a shared central map for teams and multi-agent fleets, access control with audit logs, private deployment, and supported integrations.
+The name comes from the sextant, an instrument used to find a position when landmarks are out of sight.
+
+The core is free and open source. A planned commercial edition will add a shared team index, multi-agent access controls and audit logs, private deployment, and supported integrations.

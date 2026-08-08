@@ -6,7 +6,7 @@ description: Use CodeSextant's shared local symbol graph before modifying a repo
 # CodeSextant
 
 Use the installed `codesextant` package as the navigation layer before broad text search.
-It is local only and shares one daemon and one per-project index across agents.
+It runs locally. All agents on the machine share one daemon and one index per project.
 
 ## Start a task
 
@@ -29,7 +29,7 @@ if not state["indexed"]:
 4. Before changing a symbol, call `cs.find_references(symbol, def_path=...)` and
    `cs.impact(symbol, def_path=...)`.
 
-## Trust results correctly
+## Use confidence labels
 
 - Auto-trust only `confidence="high"` references.
 - Treat low-confidence name matches as search leads and verify them in source.

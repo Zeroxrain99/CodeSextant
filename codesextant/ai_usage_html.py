@@ -1,16 +1,8 @@
-"""ai-usage dark HUD relationship-graph renderer: takes a scan result, emits a
-self-contained .html.
+"""Render an AI usage scan as a self-contained relationship graph.
 
-The template is the version that rendered correctly under headless WebKit and
-Chromium (the interactive drawer, hover focus and fit-to-viewport were all
-verified). It shares panel.py's design language: pure-black HUD background,
-hairline borders, and a cyan/orange/red palette. Channels are colour-coded:
-cli=cyan (compliant) / direct=red (violation) / local=gray (local, not metered).
-
-No CDN, no fetch (CSP-safe, everything inline). The graph is embedded as
-window.GRAPH via json.dumps; the rest of the HTML/CSS/JS is copied verbatim from
-the verified template. Stats are not injected. The JS recomputes them from
-nodes/edges, so there is a single source of truth.
+The HTML includes its CSS, JavaScript, and graph data without external requests.
+Channels use distinct colors for CLI, direct API, and local-model access. The
+browser computes summary counts from the embedded nodes and edges.
 """
 from __future__ import annotations
 
@@ -20,15 +12,10 @@ _TEMPLATE = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n
 
 
 def render_ai_usage(result: dict) -> str:
-    """Take scan_ai_usage()'s {meta,nodes,edges} → a self-contained dark HUD .html string.
+    """Render ``meta``, ``nodes``, and ``edges`` as self-contained HTML.
 
-    Only meta/nodes/edges are injected; the HTML computes stats itself so the two
-    can never disagree. Snippets and paths are escaped on display by the
-    template's own esc(). ⚠ JSON embedded inside <script> still has to defend
-    against "</script> closes the script tag early": the HTML parser does not
-    understand JS string context, so a snippet containing </script> would cut the
-    script short and inject HTML (a real XSS vector). The payload is therefore
-    escaped for <script>: </ → <\\/, <!-- → <\\!--, U+2028/2029 → \\u escapes.
+    Snippets and paths are escaped on display by the template. The embedded JSON
+    also escapes script-closing and line-separator sequences before insertion.
     """
     graph = {
         "meta": result.get("meta", {}),

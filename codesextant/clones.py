@@ -1,47 +1,37 @@
-"""Duplicate / near-duplicate detection (shared core): structural fingerprints +
-winnowing, strictly non-semantic (the first half of feature B).
+"""Detect duplicate and near-duplicate code with structural fingerprints.
 
-The central tension (design §1.2): "similar functionality" is exactly where
-embedding-based semantic similarity is tempting, and CodeSextant's hard rules
-reject it. This module reduces "similar" to **discrete structural and lexical
-signals**: AST shape hashes, called-name sets, winnowing k-gram fingerprints.
-Everything is hashing, sets and counting: ⛔ no vectors, no semantic models, no
-GPU, no new dependencies.
+The implementation uses AST shape hashes, called-name sets, and winnowed k-gram
+fingerprints. It relies on deterministic hashing and counting rather than embeddings,
+semantic models, GPU processing, or optional dependencies.
 
-Three orthogonal fingerprints (design §3.A.1):
+The detector combines three fingerprints:
   - shape_hash (primary, catches Type-1/2): a pre-order traversal of the body's
     node types with identifier→ID, literal→LIT, anonymous punctuation and comments
     dropped, and keyword node kinds and control-flow structure **kept** → sha1.
     Once values are erased, renaming or swapping constants keeps the same shape and
     therefore the same hash.
   - raw_token_hash (verbatim Type-1 decision): the **un-normalized** terminal token
-    values concatenated → sha1. ⛔ EXACT_DUP is only awarded when raw_token_hash
-    also matches (red team FIX-2: otherwise three semantically unrelated __init__
-    methods collide).
+    values concatenated → sha1. EXACT_DUP requires a matching raw_token_hash so
+    unrelated functions with the same structure do not collide.
   - call_hash (call pattern, an orthogonal reinforcement): the sorted multiset of
     called names at call nodes inside the body → sha1.
   - winnowing fingerprint set (catches Type-3): the normalized token stream is cut
     into k-grams → crc32 → a sliding window of size w keeps the minimum (the chosen
     representative). Guarantee threshold t=w+k−1. The k-gram hash is the standard
     library's **zlib.crc32** (fast, stable across processes, no new dependency).
-    ⛔ Do not use Python's hash() (PYTHONHASHSEED makes it unstable), do not use
+    Python's hash() is unsuitable because PYTHONHASHSEED makes it unstable. Avoid
     sha1 (too slow for short k-grams), do not use xxhash/mmh3 (new dependencies).
 
-Structural-significance hard gate (red team FIX-2/3, which stops the flood of
-__init__/getter false positives): after leaves are dropped, a body **must contain at
+Structural-significance gate: after leaves are dropped, a body **must contain at
 least one control-flow node** (if/for/while/try/match…) to be eligible for
 RENAMED_DUP or above. Plain assignment runs, plain attribute returns and plain
-delegating calls are suppressed to BOILERPLATE_SUPPRESSED. This hard rule replaces
-the kind_diversity heuristic, which did not work (the red team measured a getter at
-diversity=4, which the heuristic let through).
+delegating calls are suppressed to BOILERPLATE_SUPPRESSED.
 
-⛔ Hard rule 3 (read-only navigation map): never emit a "should be deleted / should
-be merged" decision. Report only the group of structurally identical units, their
-locations, and a confidence level. Read the code yourself and run CI before deleting
-or changing anything.
+Results are navigation clues, not deletion or merge recommendations. The output reports
+structurally similar units, locations, and confidence. Review the code and run its tests
+before changing it.
 
-Switches (L0 hard rule #6, all tolerant via .lower()): see §3.C / switches.md
-`codesextant_dedup`.
+Configuration switches accept case-insensitive values.
 """
 from __future__ import annotations
 
@@ -61,7 +51,7 @@ _IDENT_TYPES = {
     "private_property_identifier", "statement_identifier", "label_name",
 }
 # Leaf nodes treated as literals (erased to "LIT", so swapping a constant does not
-# change the shape). ⚠ Red team L1-MEDIUM: Go integers are int_literal (not
+# change the shape). Go integers are int_literal rather than
 # integer/integer_literal), and imaginary_literal must be listed too, otherwise Go
 # numbers are not erased to LIT and int↔float pairs miss their shared shape.
 _LITERAL_TYPES = {
@@ -73,7 +63,7 @@ _LITERAL_TYPES = {
 }
 # Control-flow nodes (the structural-significance gate: a body containing any of
 # these is "complex enough" to be eligible for RENAMED_DUP or above).
-# ⚠ Red team L1-HIGH: a plain Go switch parses as expression_switch_statement, not
+# A plain Go switch parses as expression_switch_statement rather than
 # switch_statement. Omitting it gives Go switch-dispatch functions
 # has_control_flow=False, so they are systematically misclassified as boilerplate
 # and suppressed.
@@ -88,7 +78,7 @@ _CONTROL_FLOW = {
 # Call node types per language (the 2026-06-19 set plus the 2026-06-22 batch of
 # mainstream languages, proved out by tools/_probe_extra.py). Values are sets
 # (PHP and Ruby have several call node types); _call_names matches with `in`.
-# ⚠ Type-4 CALL_PATTERN_SIM is an opt-in secondary feature: the field holding the
+# CALL_PATTERN_SIM is an opt-in secondary feature. The field holding the
 # called name has not been probed per language, so _call_names falls back through
 # the common field names and its precision is best-effort.
 _CALL_TYPES: dict[str, set[str]] = {
@@ -119,7 +109,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_float(name: str, default: float) -> float:
-    # Red team L4-LOW: guard against NaN ('nan' makes `sim < nan` always False, which
+    # Guard against NaN ('nan' makes `sim < nan` always False, which
     # silently disables the threshold). Out-of-range clamping is the caller's job.
     import math
     try:
@@ -199,7 +189,7 @@ def _last_identifier(src: bytes, node) -> str | None:
 
 
 # Subscript callees (handlers[key]()): _last_identifier would wrongly take the
-# subscript index name as the called name (red team L1-LOW), so skip them entirely
+# subscript index name as the called name, so skip them entirely
 # and contribute nothing to call_hash.
 _SUBSCRIPT_TYPES = {"subscript", "subscript_expression", "index_expression"}
 
@@ -292,10 +282,10 @@ def _fingerprint_unit(src: bytes, def_node, lang_key: str, *,
     """Compute the fingerprint of one function/method definition node. If the body
     cannot be obtained, return None (no fingerprint).
 
-    Winnowing runs only when node_count ≥ min_node_count (FIX-2, to save work:
-    winnowing a small unit is meaningless).
+    Winnowing runs only when node_count ≥ min_node_count because fingerprints from
+    very small units are not useful.
     Returns {shape_hash, raw_token_hash, call_hash, node_count, nstmts,
-    has_control_flow, cognitive, winnow:[...]}. cognitive is the P3 D3 cognitive
+    has_control_flow, cognitive, winnow:[...]}. cognitive is the cognitive
     complexity (an int for high-confidence languages, None for the rest).
     """
     body = complexity.function_body(def_node, lang_key)  # Kotlin has no function_body field → per-language fallback
@@ -308,11 +298,11 @@ def _fingerprint_unit(src: bytes, def_node, lang_key: str, *,
     calls = _call_names(src, body, lang_key)
     k = _env_int("CODESEXTANT_DEDUP_WINNOW_K", 5)
     w = _env_int("CODESEXTANT_DEDUP_WINNOW_W", 4)
-    # Deduplicate winnow fingerprints before persisting (red team L4-HIGH: within one
+    # Deduplicate winnow fingerprints before persisting. Within one
     # function, winnowing emits the same fp_value at several positions; without
     # deduplication the DF-cap's COUNT(*) reads "repeated inside a single function" as
     # "flooding across functions" and prunes away the real Type-3 near-clones).
-    # Also gate on has_cf (red team L2-HIGH/L4-LOW: large boilerplate __init__/builder
+    # Also gate on has_cf. Large boilerplate __init__/builder
     # bodies with no control flow never enter the stage-2 inverted index, so stage-2
     # STRUCTURAL_NEAR inherits the structural-significance hard gate automatically,
     # stops misjudging boilerplate, and saves work at the same time).
@@ -354,7 +344,7 @@ def extract_fingerprints_from_source(source: bytes, lang_key: str = "python", *,
     always: dict = spec["always"]
     scope_only: dict = spec.get("scope_only", {})
     name_rules: dict = spec.get("name_rules", {})   # naming strategy for nodes with no name field (C/C++ c_declarator, Kotlin child:)
-    if tree is None:    # red team L4-MEDIUM: share the tree with indexing to avoid parsing twice
+    if tree is None:    # The index can provide its tree to avoid parsing twice.
         parser = tree_sitter.Parser(symbols._ts_language(spec["language"]))
         tree = parser.parse(bytes(source))
 
@@ -365,7 +355,7 @@ def extract_fingerprints_from_source(source: bytes, lang_key: str = "python", *,
         if node.type in always:
             # Apply name_rules (matching symbols.extract_symbols); for languages that
             # do have a name field the rule is None, so _name_of behaves as before.
-            # ⛔ Calling _name_of directly without the rule made every C/C++/Kotlin
+            # Calling _name_of without the rule gives every C/C++/Kotlin
             # fingerprint name <anon>, corrupting the persisted dedup/cognitive names.
             name = symbols._extract_name(source, node, name_rules.get(node.type))
             if always[node.type] in ("function", "method"):

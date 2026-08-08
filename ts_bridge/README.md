@@ -1,23 +1,22 @@
-# ts_bridge: the CodeSextant C5b real-resolution bridge for TypeScript/JavaScript
+# TypeScript/JavaScript reference bridge
 
-Gives TS/JS **high-confidence** import resolution through ts-morph's `findReferences`, which rules
-out same-name noise. It replaces the C5a fallback to name matching for non-Python code. On the Python
-side, `ts_morph_references()` in `codesextant/references.py` calls `find_refs.mjs` over stdin/stdout
-JSON.
+`ts_bridge` resolves TypeScript and JavaScript references through ts-morph's `findReferences`.
+This avoids collisions between same-named symbols in unrelated modules. The Python function
+`ts_morph_references()` calls `find_refs.mjs` over JSON on standard input and output.
 
-## First-time install (when node_modules is missing)
+## Install
 
 ```
 cd ts_bridge && npm install
 ```
 
-`node_modules/` is not version-controlled (see `.gitignore`; about 14.5 MB).
+`node_modules/` is not version-controlled; see `.gitignore`.
 
-## Fallback (never breaks)
+## Fallback
 
 When CodeSextant cannot find `node`, or `ts_bridge/node_modules/ts-morph` is not installed, or the
-subprocess fails, `engine.find_references` falls back to C5a name matching (low confidence) without
-raising. The bridge is therefore an **optional enhancement** rather than a hard dependency.
+subprocess fails, `engine.find_references` returns low-confidence name matches without raising an
+error. The bridge is optional.
 
 ## Protocol
 

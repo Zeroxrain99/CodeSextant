@@ -1,57 +1,16 @@
-"""D3 Cognitive Complexity (G. Ann Campbell / SonarSource) - the complexity dimension of "discipline turned aesthetic".
+"""Compute cognitive complexity from tree-sitter syntax trees.
 
-Pure function, zero randomness, zero new dependencies (uses tree-sitter nodes only).
-Computes cognitive complexity for a function/method body: each "break in linear
-control flow" is +1; when nested, a flow-breaking structure gets **an additional**
-+current nesting depth.
+The implementation follows the SonarSource cognitive complexity model. A break in
+linear control flow adds one point, and nested flow structures add their current
+nesting depth. The walker handles each supported language through a small grammar
+specification. Unsupported grammars return ``None`` instead of a numeric score.
 
-Three rule categories (per blueprint Section 1, verified version):
-  B1 base increment (+1): if/else if/else, ternary, switch, for/while/do-while,
-                     catch/except, labeled jump (continue/break LABEL), consecutive
-                     logical operators (+1 per run), direct recursion.
-  B2 nesting-level increase: if/else if/else, ternary, switch, loops, catch,
-                     nested function/lambda.
-  B3 nesting increment (+nesting): if, ternary, switch, loops, catch. Do not
-                     apply B3 to else/else-if (continuation of the same decision chain).
+Only direct recursion is counted. Python comprehension clauses count as loop and
+condition nodes. Very deep trees return ``None`` on ``RecursionError``. C# ``goto``
+is not counted because its label structure differs from labeled break and continue
+statements.
 
-High-confidence languages (P3: Python/JS/TS/TSX; P4 2026-06-23 expansion:
-Go/Rust/Java/C#, 8 total) are scored; other languages return None (UNKNOWN,
-neutral - not zero-washed) because control-flow grammar varies widely across
-languages (Ruby case / Kotlin when / Swift guard...) and each needs to be
-verified thoroughly before it is added.
-
-P4 walker generalization (confirmed by probes in tools/_probe_if_fields.py +
-_probe_labeled.py; field names are consistent across all 8 languages):
-  - if_style: "wrapper" (else-if wrapped in else_clause/elif_clause, Py/TS/JS/TSX/Rust) vs
-              "field" (else-if = if.alternative field points directly at if, no wrapper,
-              Go/Java/C#, handled by visit_if_field)
-  - if_types: set of node types (mostly if_statement; Rust is expression-based = if_expression)
-  - label_child_types / callee_field: per-language (label detection, direct-recursion
-              callee field name)
-
-Rule verification status: the official SonarSource PDF could not be scraped verbatim,
-so this implementation uses publicly documented standard algorithm knowledge + the
-golden case sumOfPrimes=7 (the white paper's flagship example, verified against
-per-language Go/Java/Rust versions) as deterministic pytest ground truth, plus a
-distinct sub-agent adversarial review.
-
-Documented limitations: (1) only direct recursion is counted (indirect recursion
-is covered by the white paper but is hard to implement and was skipped); direct
-recursion is recognized as "bare name == func_name, or self/cls/this.func_name" -
-a same-named method on a different object (obj.foo() inside a function named foo)
-does not count (tightened per adversarial review). P4: Go/C#'s
-receiver.method()/this.Method() and C#'s member_access recursion are conservatively
-not counted (receiver name is not fixed / node type differs) - this only undercounts,
-it never falsely flags. (2) Python comprehension for/if clauses are counted as
-loop/condition (not explicitly specified by the white paper); but multiple `for`
-clauses in the same comprehension ([x for a in b for x in a]) are siblings in the
-AST, so the second `for` only gets +1 each and nesting increments do not stack.
-(3) Extremely deep ASTs (rare) trigger RecursionError -> returns None (UNKNOWN,
-does not crash). (4) C# has no labeled break/continue (it uses goto); goto is rare
-and its label mechanism differs, so it is honestly not counted (undercounts only).
-
-Switch (L0 hard rule #6, tolerant of .lower()): env CODESEXTANT_COGNITIVE_DISABLED=1
-disables everything (returns None).
+Set ``CODESEXTANT_COGNITIVE_DISABLED=1`` to disable scoring.
 """
 from __future__ import annotations
 
@@ -65,14 +24,13 @@ _IDENT_TYPES = {"identifier", "property_identifier", "field_identifier", "simple
 # Swift grammar has a quirky operator-precedence parse: `n * fact(...)` / `fib(n-1)+fib(n-2)`
 # parse as a whole into call_expression(binary_expr, call_suffix), with the true callee
 # identifier buried in the binary expression's last operand (rhs)
-# -> direct-recursion detection drills into the last operand (same quirk root as the
-# boolean-expression quirk below, per adversarial review wf_ba17da36).
+# Direct-recursion detection drills into the last operand. Boolean expressions use
+# the same parser shape.
 _BINARY_CALLEE_WRAP = {"multiplicative_expression", "additive_expression",
                        "comparison_expression", "equality_expression",
                        "conjunction_expression", "disjunction_expression"}
 
-# Per-language control-flow taxonomy (confirmed empirically by tools/_probe_cflow.py +
-# _probe_if_fields.py + _probe_labeled.py on 2026-06-22~23, not guessed).
+# Per-language control-flow taxonomy.
 #
 # Shared schema fields (per language spec):
 #   incr_nest          B1+B3+nest increase (flow-breaking structures weighted by nesting:
@@ -132,14 +90,13 @@ COGNITIVE_SPECS: dict[str, dict] = {
         "boolean": {"binary_expression"},
         # does NOT include ?? (nullish coalescing): the white paper explicitly says to
         # ignore null-coalescing, since ?? does not break the linear reading flow
-        # (per adversarial review HIGH finding)
         "bool_ops": {"&&", "||"},
         "call": {"call_expression"},
         "callee_field": "function",
         "labeled_jump": {"continue_statement", "break_statement"},  # only counts when labeled
         "label_child_types": {"statement_identifier"},
     },
-    # -- P4 additions (field-style else-if: Go/Java/C#'s if.alternative points directly at if, no wrapper) --
+    # Field-style else-if: Go, Java, and C# point directly at the alternative if.
     "go": {
         # Go: `for` covers every loop form; switch has three variants; no do/while, ternary, or try-catch
         "incr_nest": {"for_statement", "expression_switch_statement",
@@ -160,7 +117,7 @@ COGNITIVE_SPECS: dict[str, dict] = {
         "label_child_types": {"label_name"},  # continue OUT -> continue_statement>label_name
     },
     "java": {
-        # Java: switch is switch_expression (confirmed by probe, not switch_statement)
+        # Java represents switch as switch_expression, not switch_statement.
         "incr_nest": {"for_statement", "enhanced_for_statement", "while_statement",
                       "do_statement", "switch_expression", "ternary_expression",
                       "catch_clause"},
@@ -180,8 +137,7 @@ COGNITIVE_SPECS: dict[str, dict] = {
         "label_child_types": {"identifier"},  # continue OUT; -> continue_statement>identifier
     },
     "csharp": {
-        # C#: two switch forms - switch_statement (classic) + switch_expression
-        # (C# 8.0+ `x switch {...}`, very common; caught by adversarial review CS-1);
+        # C# has classic switch_statement and C# 8.0+ switch_expression forms.
         # ternary is conditional_expression
         "incr_nest": {"for_statement", "foreach_statement", "while_statement",
                       "do_statement", "switch_statement", "switch_expression",
@@ -200,8 +156,7 @@ COGNITIVE_SPECS: dict[str, dict] = {
         "callee_field": "function",
         # C# has no labeled break/continue (it uses goto); break/continue in
         # switch/loop are always bare -> not counted.
-        # goto is rare and its label-child mechanism differs, so it is honestly
-        # not counted here (undercounts only, never falsely flags).
+        # goto has a different label structure and is not counted here.
         "labeled_jump": set(),
         "label_child_types": set(),
     },
@@ -225,7 +180,7 @@ COGNITIVE_SPECS: dict[str, dict] = {
         "labeled_jump": {"break_expression", "continue_expression"},
         "label_child_types": {"label"},  # continue 'outer -> continue_expression>label (break value expr doesn't count)
     },
-    # -- P5 additions (2026-06-23, confirmed by tools/_probe_p5.py + _probe_p5_gap.py) --
+    # Additional language specifications.
     "c": {
         # C: wrapper-style (else_clause is the alternative field, same structure as TS);
         # no try-catch (no exceptions); jumps use goto (goto_statement>statement_identifier),
@@ -278,8 +233,7 @@ COGNITIVE_SPECS: dict[str, dict] = {
         # block form, prevents a gaming vector): if/unless/while/until/rescue _modifier;
         # no labeled break/continue (Ruby's next/break/redo are always bare, jumping
         # the innermost loop only).
-        # Caught by adversarial review (wf_ba17da36): while_modifier/until_modifier/
-        # rescue_modifier/case_match were originally missing from this set.
+        # Modifier forms and case_match use the same control-flow rules as block forms.
         "incr_nest": {"while", "until", "for", "case", "case_match", "conditional", "rescue",
                       "if_modifier", "unless_modifier", "while_modifier", "until_modifier",
                       "rescue_modifier"},
@@ -356,10 +310,7 @@ COGNITIVE_SPECS: dict[str, dict] = {
         "jump_keywords": {"continue", "break"},
     },
 }
-# deepcopy rather than sharing the same object: guards against future per-language
-# mutation (a probe/debug script calling .add() on one language's spec) leaking
-# across languages (per adversarial review LOW footgun finding). All three currently
-# share the same taxonomy, but each gets its own independent object.
+# Deep copies prevent per-language mutations from leaking across related grammars.
 COGNITIVE_SPECS["javascript"] = copy.deepcopy(COGNITIVE_SPECS["typescript"])
 COGNITIVE_SPECS["tsx"] = copy.deepcopy(COGNITIVE_SPECS["typescript"])
 
@@ -375,7 +326,7 @@ def supported(lang_key: str) -> bool:
 
 # Most languages' function-definition nodes have a "body" field; a few (Kotlin's
 # function_declaration) have a body that is an unnamed child node (function_body)
-# requiring a per-language fallback lookup (confirmed by probe). The clone
+# requiring a per-language fallback lookup. The clone
 # fingerprinter and test helpers share this function as the single source of
 # truth for body extraction.
 _BODY_FALLBACK_TYPES: dict[str, set] = {
@@ -429,12 +380,12 @@ def cognitive_complexity(body, lang_key: str, func_name: str | None = None,
     comp_if = spec["comp_if"]
     boolean = spec["boolean"]
     bool_ops = spec["bool_ops"]
-    bool_type_ops = spec.get("bool_type_ops")   # P5: node type -> operator (Kotlin/Swift conjunction/disjunction)
+    bool_type_ops = spec.get("bool_type_ops")   # Kotlin/Swift node type -> operator
     call_t = spec["call"]
     callee_field = spec["callee_field"]
     labeled_jump = spec["labeled_jump"]
     label_child_types = spec["label_child_types"]
-    jump_keywords = spec.get("jump_keywords")   # P5: Swift control_transfer disambiguates continue/break vs return
+    jump_keywords = spec.get("jump_keywords")   # Swift distinguishes jumps from return
     _dbg = _env_on("CODESEXTANT_COG_DEBUG")     # debug trace (env-gated, read once on the hot path)
 
     total = 0
@@ -513,7 +464,7 @@ def cognitive_complexity(body, lang_key: str, func_name: str | None = None,
     def is_direct_recursion(call_node) -> bool:
         # Direct recursion: a bare identifier==func_name, or self/cls/this.<func_name>;
         # a same-named method on a different object, obj.foo() called inside a function
-        # named foo, does NOT count (tightened per adversarial review to avoid a false positive)
+        # named foo does not count, which avoids cross-object false positives.
         if callee_field is not None:
             fn = call_node.child_by_field_name(callee_field)
         else:
@@ -568,9 +519,7 @@ def cognitive_complexity(body, lang_key: str, func_name: str | None = None,
     def visit_if(node, nesting, as_elseif):
         # wrapper-style (Py/TS/JS/TSX/Rust). Recognizes the then-body via the
         # "consequence" field name: a block or an unbraced single statement
-        # (TS `if(x) for(){}`) both get +nesting level - matches
-        # visit_if_field/incr_nest semantics (per adversarial review fix, "missing
-        # brace, missing nesting increase = a gaming vector").
+        # (TS `if(x) for(){}`) both receive the same nesting increment.
         nonlocal total
         total += 1 if as_elseif else (1 + nesting)
         cur = node.walk()
@@ -628,7 +577,7 @@ def cognitive_complexity(body, lang_key: str, func_name: str | None = None,
     def _unwrap_elseif(node):
         # Is the alternative field an else-if? Go/Java/C# point directly at if;
         # Kotlin's else-if is a control_structure_body wrapping a single
-        # if_expression (an extra wrapper layer, confirmed by probe) -> unwrap
+        # if_expression adds an extra wrapper layer that must be unwrapped.
         # to get the inner if. control_structure_body is a Kotlin-only node type
         # that Go/Java/C# never produce -> zero effect on them.
         if node.type in if_types:
@@ -643,8 +592,7 @@ def cognitive_complexity(body, lang_key: str, func_name: str | None = None,
         # field-style else-if (Go/Java/C#/Kotlin): the if's "alternative" field
         # points at an if (else-if) or a block (plain else), with no
         # else_clause/elif_clause wrapper. Uses the "consequence"/"alternative"
-        # field names to distinguish then/else (confirmed consistent across
-        # languages by probe).
+        # field names to distinguish then from else.
         nonlocal total
         total += 1 if as_elseif else (1 + nesting)
         cur = node.walk()
@@ -670,7 +618,7 @@ def cognitive_complexity(body, lang_key: str, func_name: str | None = None,
     def visit_if_swift(node, nesting, as_elseif):
         # Swift-specific: the then-body is an unfielded "statements" node, else
         # is a marker token node, and the else-if/plain-else body is a sibling
-        # of else (confirmed by probe). Uses the seen_else flag to distinguish
+        # of else. The seen_else flag distinguishes
         # then-body from else-body.
         nonlocal total
         total += 1 if as_elseif else (1 + nesting)
@@ -743,8 +691,7 @@ def cognitive_complexity(body, lang_key: str, func_name: str | None = None,
         if t in incr_nest:
             total += 1 + nesting
             for c in node.children:
-                # A loop's else (for-else/while-else) is at sibling level and does
-                # not inherit the loop body's nesting depth (per adversarial review MEDIUM finding)
+                # A loop's else is at sibling level and does not inherit the loop body's nesting.
                 visit(c, nesting if c.type in else_t else nesting + 1)
             return
         if t in nest_only:
@@ -799,10 +746,7 @@ def cognitive_complexity(body, lang_key: str, func_name: str | None = None,
     try:
         visit(body, 0)
     except RecursionError:
-        # An extremely deep AST (rare - autogenerated code / an extremely long
-        # boolean chain / a deep method chain) blows the Python stack -> honestly
-        # return None (UNKNOWN); do not crash, and do not let an upstream engine's
-        # bare except silently swallow the whole file's fingerprint (per
-        # adversarial review CRITICAL finding).
+        # Extremely deep generated code can exhaust the Python stack. Return UNKNOWN
+        # instead of failing the file's entire fingerprint pass.
         return None
     return total

@@ -1,24 +1,9 @@
-"""Reference resolution module: jedi's two-stage goto (where is it defined) + get_references (who uses it).
+"""Resolve symbol references with jedi, ts-morph, or name matching.
 
-Design origin (proved out by a PoC; this is the lifeline of the whole approach):
-  - Do not run jedi over the whole codebase (18k files would take 17 minutes). jedi only does
-    precise resolution on demand, when asked "where is symbol X defined / who uses it"
-    (measured at 74 ms/call).
-  - Two-stage find-references:
-      Stage 1 = tree-sitter / text coarse filter, scan for candidate files by "name" first (cheap);
-      Stage 2 = jedi does precise resolution only on the candidate files (jedi's get_references
-      over the whole repo is too slow).
-  - jedi's precision measurably beats name matching (same-name check: 99% false positives for
-    name matching vs 0% for jedi).
-  - Per-project isolation: jedi.Project(path=src_root) isolates by project root naturally.
-
-Confidence marking rule (matches the main architecture's "reference edges carry a confidence
-level"):
-  - "high" = a real jedi import resolution hit (resolved-import); an agent can trust it automatically.
-  - "low"  = a candidate found only by name matching, not confirmed by jedi (name-match); for human eyes only.
-
-Responsibility (single): precise resolution of "where is a symbol defined / who uses it".
-Does not touch SQLite, does not touch ordering; the caller (engine) owns persistence and assembly.
+Python lookup uses a text prefilter followed by jedi resolution at each candidate
+site. TypeScript and JavaScript use the ts-morph bridge when available. Other
+languages return low-confidence name matches. The engine owns persistence and
+result assembly.
 """
 from __future__ import annotations
 
@@ -151,19 +136,9 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
                     max_candidate_files: int = 400) -> dict:
     """Find "who uses symbol": two-stage precise resolution (direction: call site goto's back to the definition).
 
-    Why this direction (validated twice over, by both the PoC and local measurements, not
-    picked arbitrarily):
-      - jedi's "get_references from the definition side to find callers" only returns results
-        within the already-loaded module scope on a large project, and misses real callers
-        reached through importlib dynamic loading (e.g. a hook system that assembles a module
-        name from a string before loading it).
-      - jedi's "goto from the call site back to the definition" is extremely precise: it can
-        point to exactly the right one out of N same-named definitions.
-    So the two-stage approach is: coarse-filter candidate files (cheap text filter) -> for every
-    occurrence of the symbol inside each candidate file, run goto, and only count it as a
-    high-confidence reference if it **points at the target definition**. This turns "find
-    references" into "run one goto per candidate call site", exactly the precise direction
-    jedi is best at.
+    Candidate files are selected with a text filter. Each occurrence is then resolved
+    from the call site back to the target definition. This distinguishes same-named
+    definitions without asking jedi to scan the entire project at once.
 
     Parameters
     ----------
@@ -199,7 +174,7 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
         "name_match_hit_count": 0,
         "candidates_scanned": 0,
         "truncated": False,
-        "engine": "jedi",  # Step 1: all three code paths tag which resolution engine ran (jedi = real Python import resolution)
+        "engine": "jedi",
     }
 
     if located is None:
@@ -266,7 +241,7 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
     return result
 
 
-# ── C5: degraded "find references" for non-Python languages (pure name matching, all low confidence) ──
+# Low-confidence reference lookup for languages without an import resolver.
 _SKIP_DIRS_MULTI = (".git", "__pycache__", ".venv", "venv", "node_modules",
                     ".mypy_cache", ".pytest_cache", "build", "dist", "target", ".tox")
 
@@ -283,13 +258,11 @@ def _iter_files_by_ext(root: str, exts):
 def name_match_references(src_root: str, symbol: str, *, def_path: str | None = None,
                           lang: str | None = None, include_low_confidence: bool = True,
                           max_candidate_files: int = 400) -> dict:
-    """Find references for non-Python languages: degrades to pure name matching (jedi is Python-only, no real import resolution here).
+    """Find references through low-confidence name matching.
 
-    Do not skip: everything is marked **low confidence**, an honest signal that this hasn't
-    been confirmed by jedi- / ts-morph-level resolution, and will catch same-named noise too.
-    High-confidence resolution for TS/JS is C5b (ts-morph). The return shape matches the jedi
-    version of find_references (high_confidence is always empty), so engine / panel code can
-    consume either without special-casing.
+    The result shape matches ``find_references``, but ``high_confidence`` is always
+    empty. TypeScript and JavaScript callers use ``ts_morph_references`` before
+    falling back here.
 
     Parameter lang: scan only that language's extensions (None scans every supported extension).
     """
@@ -307,11 +280,12 @@ def name_match_references(src_root: str, symbol: str, *, def_path: str | None = 
         "name_match_hit_count": 0,
         "candidates_scanned": 0,
         "truncated": False,
-        "engine": "name-match",  # Step 1: degraded name matching (no real import resolution, all low confidence)
+        "engine": "name-match",
         "note": (
             f"High-confidence import resolution for language '{lang or '?'}' is not yet supported "
             "(jedi is Python-only); the results below are from name matching and are all low "
-            "confidence (including same-name noise). High-confidence resolution for TS/JS is C5b (ts-morph)."
+            "confidence and can include same-name noise. TypeScript and JavaScript use "
+            "ts-morph when the bridge is available."
         ),
     }
     if def_path and os.path.exists(def_path):
@@ -340,7 +314,7 @@ def name_match_references(src_root: str, symbol: str, *, def_path: str | None = 
     return result
 
 
-# ── C5b: high-confidence resolution for TS/JS (ts-morph Node subprocess bridge; unavailable falls back automatically to name matching) ──
+# ── High-confidence TS/JS resolution through the ts-morph bridge ──
 def _ts_bridge_dir() -> str:
     """ts_bridge/ lives at the CodeSextant root (references.py is inside codesextant/, one level up is the root)."""
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ts_bridge")
@@ -348,10 +322,9 @@ def _ts_bridge_dir() -> str:
 
 def ts_morph_available() -> bool:
     """node is on PATH and ts_bridge is ready (find_refs.mjs + node_modules/ts-morph).
-    Either condition unmet -> returns False, and the caller falls back to C5a name matching (never explodes).
+    If either condition is unmet, the caller falls back to name matching.
 
-    Switch (L0 hard rule #6): env CODESEXTANT_TS_MORPH_DISABLED=1 -> force-disable ts-morph,
-    always go through C5a name matching (for when you don't want a Node subprocess, or while debugging)."""
+    Set CODESEXTANT_TS_MORPH_DISABLED=1 to disable the Node subprocess."""
     if os.environ.get("CODESEXTANT_TS_MORPH_DISABLED", "").lower() in ("1", "true", "yes", "on"):
         return False
     if shutil.which("node") is None:
@@ -366,8 +339,7 @@ def _run_ts_bridge(payload: dict, timeout: float) -> dict | None:
 
     Uses bytes stdin (UTF-8), so non-ASCII paths sent via stdin don't get mangled the way PowerShell's
     Invoke-WebRequest can mangle them.
-    CREATE_NO_WINDOW (Windows): don't pop up a black node console window to bother the user
-    (added after a 2026-06-19 user report; carried forward through steps 4+5).
+    CREATE_NO_WINDOW keeps the Node subprocess hidden on Windows.
     """
     bridge = _ts_bridge_dir()
     raw = json.dumps(payload).encode("utf-8")
@@ -388,16 +360,10 @@ def _run_ts_bridge(payload: dict, timeout: float) -> dict | None:
 
 
 def _shape_ts_one(symbol: str, r: dict) -> dict:
-    """Convert the mjs bridge's per-symbol result into a dict aligned with the jedi/name_match shape (includes step 4's is_reexport).
+    """Normalize one bridge result to the common reference-result shape.
 
-    Defensive field access (M1): doesn't assume the mjs bridge always emits a complete shape --
-    missing/malformed elements are skipped, preserving the "never raises" contract.
-    Paths are normalized with os.path.normpath (M2: matches jedi's backslash format, so persisted
-    cumulative-merge comparisons line up).
-    Keeps the high-confidence entries' is_reexport flag + reexport_count; step 4 uses this to
-    label "only consumed via a barrel re-export, no real usage" as REEXPORT_ONLY instead of
-    misclassifying it as LIKELY_UNUSED. The error field is passed through as-is (orphan detection
-    uses it to decide UNKNOWN_UNRESOLVED).
+    Malformed entries are skipped and paths are normalized for persisted edge
+    comparisons. Re-export flags remain available to orphan detection.
     """
     high = []
     reexport = 0
@@ -438,11 +404,10 @@ def ts_morph_references(src_root: str, symbol: str, *, def_path: str | None,
 
     Unavailable (no node / npm install not run / subprocess failure / timeout / definition not
     found / malformed output) -> returns None, and the caller falls back to name_match_references
-    (C5a name matching). **Never raises**.
+    (low-confidence name matching). The function does not raise.
 
-    timeout: when None, reads env CODESEXTANT_TS_MORPH_TIMEOUT (default 30 seconds; a tunable
-    threshold per L0 hard rule #6; raise it for very large TS projects where ts-morph takes
-    longer to load; a timeout silently degrades to name matching).
+    When timeout is None, CODESEXTANT_TS_MORPH_TIMEOUT supplies the value, with a
+    default of 30 seconds. A timeout falls back to name matching.
     """
     if not def_path or not ts_morph_available():
         return None
@@ -469,11 +434,11 @@ def ts_morph_references(src_root: str, symbol: str, *, def_path: str | None,
 
 def ts_morph_references_batch(src_root: str, def_file: str, symbols,
                               *, timeout: float | None = None) -> dict | None:
-    """Step 5: one node spawn batch-queries "multiple symbols in the same file" (dedicated to orphan detection, avoids reloading the whole project per symbol).
+    """Resolve multiple symbols from one file in a single Node process.
 
     Returns {symbol: result_dict|None}; ts-morph unavailable / subprocess failure / malformed
     output -> None (the caller falls back per-symbol or marks the whole batch UNKNOWN).
-    **Never raises**.
+    The function does not raise.
 
     Key difference from the single-symbol version: an error does **not** return None, it returns
     a dict carrying the error; orphan detection wants "ts-morph couldn't locate it ->

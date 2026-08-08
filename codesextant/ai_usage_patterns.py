@@ -1,28 +1,17 @@
-"""ai-usage scan's detection directory (pure data + compiled regex): single source of truth.
+"""Provider metadata and compiled patterns for AI usage detection.
 
-Holds only the patterns and lookup tables for "how to tell which AI/LLM provider a piece
-of code is using, and which channel it goes through", not the scanning logic (that lives
-in ai_usage.py; this file imports zero engine code, to avoid a cycle).
+The scanner in ``ai_usage.py`` uses these tables to identify providers and classify
+their channels. Keeping provider metadata, compatible hosts, and call-site patterns in
+one module lets new providers be added without changing the scanning logic.
 
-Three-channel semantics (aligned with dispatch_policy's "existing-code-audit" + the
-user's 2026-07-16 directive):
-  - cli   = compliant: goes through the Claude Code CLI channel / <x>-cli subprocess
-    (billed via the CC subscription, not metered)
-  - direct= violation: calls a remote metered API directly (Anthropic / OpenAI / Google
-    etc. metered endpoints)
-  - local = neutral: a local model (ollama etc. on localhost), unmetered, not a violation
-    (⛔ never painted red, honestly labeled gray)
+Channels:
+  - cli: subscription-backed CLI subprocess
+  - direct: remote metered API
+  - local: local unmetered model
 
-⚠ Name-level regex detection = a line-level clue, not proof of execution: a concatenated
-   base_url string, a dynamic import, or hitting the API indirectly through a wrapper can
-   all slip past it. Before flagging something as a "violation", read the code yourself to
-   confirm it really hits a metered endpoint.
-   (Aligned with deadcode.py's guiding principle: "an honest clue beats an overconfident
-   false positive".)
-
-Maintenance: adding a new vendor only touches this file (PROVIDER_META +
-OPENAI_COMPAT_HOST_MAP + SITE_RULES); the scanning logic never changes (open/closed,
-matching the existing code skill's OCP).
+The patterns provide line-level evidence only. Dynamic imports, constructed URLs, and
+indirect wrappers can evade detection, so callers must verify direct-channel findings
+against the source and runtime configuration.
 """
 from __future__ import annotations
 
@@ -47,8 +36,7 @@ PROVIDER_META: dict[str, dict[str, str]] = {
 
 
 def provider_meta(pid: str) -> dict[str, str]:
-    """Return a provider's display data; an unknown provider honestly gets a fallback
-    (capitalized initial)."""
+    """Return provider display data, with a generated label for unknown providers."""
     m = PROVIDER_META.get(pid)
     if m:
         return m
@@ -111,8 +99,8 @@ SITE_RULES: list[tuple[re.Pattern[str], str, str | None]] = [
     # 3) constructors (needs the matching import; OpenAI ctor is disambiguated via base_url)
     (re.compile(r"\b(?:Async)?Anthropic\s*\("), "anthropic_ctor", "anthropic"),
     (re.compile(r"\b(?:Async)?OpenAI\s*\("), "openai_ctor", "openai"),
-    # 4) shared call signatures (needs the matching import; ⛔ never resolves a provider on
-    #    its own, and inherits the resolution from within the file)
+    # 4) shared call signatures. Each match requires an import and inherits the provider
+    #    resolved from the surrounding file context.
     (re.compile(r"\.messages\.create\b"), "anthropic_msg_create", "anthropic"),
     (re.compile(r"\.chat\.completions\.create\b"), "openai_chat_create", "openai"),
     (re.compile(r"\.generate_content\b"), "google_generate", "google"),

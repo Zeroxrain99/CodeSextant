@@ -1,15 +1,8 @@
-"""Index storage module: SQLite persistence + content-hash incremental updates + per-project isolation.
+"""Persist each project's CodeSextant index in SQLite.
 
-Design origin (proved out by a PoC):
-  - One SQLite database per project, project_key = sha1(absolute repo path) (no cross-project mixing).
-  - File content hash (sha256) as the invalidation key: changing one file only recomputes that
-    file; everything else is a cache hit and gets skipped.
-
-Responsibility (single): manage one project's SQLite database. Open it, create tables,
-read/write file hashes, store/fetch symbols, store/fetch reference edges, report stats.
-Does not touch tree-sitter, does not touch jedi.
-
-Default database location: ~/.codesextant/<project_key>.db (matches design doc §3③).
+Projects are isolated by a hash of their absolute path. File content hashes drive
+incremental updates, so unchanged files remain cache hits. The default database
+location is ``~/.codesextant/<project_key>.db``.
 """
 from __future__ import annotations
 
@@ -22,14 +15,10 @@ from contextlib import closing
 from pathlib import Path
 
 # Database schema version (bump on schema change; future migrations can key off this).
-# Warning: migration mechanism is honest about its limits (design doc §⑦): open() runs
-# executescript(CREATE TABLE IF NOT EXISTS), which idempotently backfills missing tables,
-# plus _ensure_columns(), an add-column-only migration hook (CREATE TABLE IF NOT EXISTS does
-# not add columns to an existing table). meta.schema_version is overwritten unconditionally.
-# The version number is only reported by stats() and **does not gate any migration**. Safe for
-# "add table / add column"; changing a column's type or dropping a column (not adding) still
-# needs a separate migration.
-SCHEMA_VERSION = 4  # v4: symbols map covering index; v3 = fingerprints.cognitive; v2 = Feature B's three tables
+# ``open()`` creates missing tables and ``_ensure_columns()`` adds missing columns.
+# The reported schema version does not gate migrations. Type changes and removals
+# still require a dedicated migration.
+SCHEMA_VERSION = 4
 _SYMBOL_SNAPSHOT_FORMAT = 1
 _MAP_SNAPSHOT_FORMAT = 1
 
@@ -74,13 +63,12 @@ def _env_int(name: str, default: int) -> int:
 def apply_connection_pragmas(conn: sqlite3.Connection) -> None:
     """Set the connection-level PRAGMAs that let "many readers + one writer" coexist.
 
-    Every AI agent on this machine shares the same daemon, and a read-only worker
-    subprocess is planned; the default rollback journal locks out all readers while
+    Local clients share the same daemon. The default rollback journal locks out readers while
     the writer commits. WAL (write-ahead log) switches this so the writer writes to
     a side file and readers keep reading the last committed snapshot, so neither side
     blocks the other.
 
-    Three switches (all via env, per L0 hard rule #6):
+    Environment switches:
       CODESEXTANT_SQLITE_WAL=0             -> fall back to the classic rollback journal
       CODESEXTANT_SQLITE_BUSY_TIMEOUT_MS   -> max wait under contention (default 5000ms)
       CODESEXTANT_SQLITE_SYNC_NORMAL=0     -> fall back to synchronous=FULL
@@ -222,8 +210,8 @@ CREATE TABLE IF NOT EXISTS refs (
 CREATE INDEX IF NOT EXISTS idx_refs_symbol ON refs(symbol_name);
 CREATE INDEX IF NOT EXISTS idx_refs_def ON refs(def_path);
 
--- Feature B duplicate detection: a structural fingerprint per executable unit (function/method)
--- (design doc §3.A.4). shape_hash = normalized AST shape (identifiers/literals erased, control-flow
+-- Duplicate detection: a structural fingerprint per executable unit (function/method).
+-- shape_hash = normalized AST shape (identifiers/literals erased, control-flow
 -- structure kept); raw_token_hash = unnormalized raw token stream (only counts as EXACT_DUP when
 -- this also matches); call_hash = the set of called names. GROUP BY shape_hash finds duplicate
 -- groups in a single O(n) SQL query.
@@ -240,14 +228,14 @@ CREATE TABLE IF NOT EXISTS fingerprints (
     node_count       INTEGER,
     nstmts           INTEGER,
     has_control_flow INTEGER DEFAULT 0,
-    cognitive        INTEGER,            -- P3 D3 cognitive complexity (int for high-confidence languages / NULL = UNKNOWN for the rest)
+    cognitive        INTEGER,            -- cognitive complexity, or NULL when unsupported
     FOREIGN KEY(path) REFERENCES files(path)
 );
 CREATE INDEX IF NOT EXISTS idx_fp_shape ON fingerprints(shape_hash);
 CREATE INDEX IF NOT EXISTS idx_fp_call  ON fingerprints(call_hash);
 CREATE INDEX IF NOT EXISTS idx_fp_path  ON fingerprints(path);
 
--- Feature B: winnowing k-gram fingerprint inverted index (catches Type-3 near-duplicates).
+-- Winnowing k-gram fingerprint inverted index for Type-3 near-duplicates.
 -- fp_value -> {symbol, line}; only entries sharing a fingerprint get compared.
 CREATE TABLE IF NOT EXISTS fingerprint_index (
     path     TEXT NOT NULL,
@@ -258,8 +246,8 @@ CREATE TABLE IF NOT EXISTS fingerprint_index (
 CREATE INDEX IF NOT EXISTS idx_fpidx_val  ON fingerprint_index(fp_value);
 CREATE INDEX IF NOT EXISTS idx_fpidx_path ON fingerprint_index(path);
 
--- Feature B comment management: one row per comment node + line number + owning symbol
--- (design doc §3.B.3). is_doc=1 = docstring (owner_line points at the owning symbol's
+-- Comment index: one row per comment node, source line, and owning symbol.
+-- is_doc=1 = docstring (owner_line points at the owning symbol's
 -- definition line, used by the coverage JOIN); tag = TODO/FIXME marker (NULL if none).
 CREATE TABLE IF NOT EXISTS comments (
     path       TEXT NOT NULL,
@@ -286,7 +274,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     the new column defaults to NULL). Changing a column's type or dropping one is out of scope.
     """
     expected = {
-        "fingerprints": [("cognitive", "INTEGER")],  # P3 D3: int for high-confidence languages / NULL for the rest
+        "fingerprints": [("cognitive", "INTEGER")],  # NULL when cognitive complexity is unsupported
     }
     for table, cols in expected.items():
         have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -331,9 +319,9 @@ class ProjectStore:
         when no other connection is already open. `query_only` doesn't have this
         problem, and equally raises OperationalError on any write attempt.
 
-        Warning, honest boundary: this guards against slips, not malice. The same
-        connection can still run `PRAGMA query_only=0` to lift it. The real isolation
-        boundary is the process, not this PRAGMA.
+        This guards against accidental cross-project access, not a malicious local
+        process. The same connection can still run `PRAGMA query_only=0` to lift it.
+        The real isolation boundary is the process, not this PRAGMA.
 
         Raises FileNotFoundError when the database doesn't exist (rather than silently
         creating an empty one, which would swallow the "not indexed yet" error and turn
@@ -389,7 +377,7 @@ class ProjectStore:
         return row["value"] if row else default
 
     def record_git_sha(self, sha: str) -> None:
-        """Pitfall 6: record the repo's git HEAD sha at index time (used for freshness comparisons)."""
+        """Record the repository's Git HEAD SHA for freshness comparisons."""
         self._set_meta("git_head_sha", sha)
         self.conn.commit()
 
@@ -433,7 +421,7 @@ class ProjectStore:
 
     def store_file_fingerprints(self, path: str, fingerprints: list[dict],
                                 winnow_index: list[dict]) -> None:
-        """Feature B: persist a file's structural fingerprints + winnowing inverted index (clear the file's old rows first, then write, to keep a single source of truth).
+        """Replace a file's structural fingerprints and winnowing index.
 
         content_hash is owned by store_file_symbols (symbols are extracted first within the same
         per-file loop in index_project); this method does not touch the files table. Incremental
@@ -459,7 +447,7 @@ class ProjectStore:
         cur.commit()
 
     def store_file_comments(self, path: str, comments: list[dict]) -> None:
-        """Feature B: persist a file's comments (clear the file's old rows first, then write). content_hash is owned by store_file_symbols, same as above."""
+        """Replace a file's indexed comments."""
         cur = self.conn
         cur.execute("DELETE FROM comments WHERE path=?", (path,))
         cur.executemany(
@@ -474,7 +462,7 @@ class ProjectStore:
     def remove_file(self, path: str) -> None:
         """A file was deleted -> remove it from the index: symbols + the file record + reference
         edges it emitted (src_path = it) + reference edges pointing at it (def_path = it, to avoid
-        leaving stale edges pointing at a deleted definition file) + Feature B's three tables.
+        leaving stale edges pointing at a deleted definition file) and related index rows.
         """
         self.conn.execute("DELETE FROM symbols WHERE path=?", (path,))
         self.conn.execute("DELETE FROM files WHERE path=?", (path,))
@@ -629,9 +617,8 @@ class ProjectStore:
         n_files = c.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         n_symbols = c.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
         n_refs = c.execute("SELECT COUNT(*) FROM refs").fetchone()[0]
-        # Feature B: cheap COUNT(*) goes in stats; dup_groups (needs GROUP BY shape_hash HAVING)
-        # must never go in stats (design doc FIX-4 lens-3: that isn't a one-line COUNT, it would
-        # slow down every panel render).
+        # Keep stats to cheap COUNT queries. Duplicate groups require aggregation and
+        # would slow down every dashboard refresh.
         n_fingerprints = c.execute("SELECT COUNT(*) FROM fingerprints").fetchone()[0]
         n_comments = c.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
         last_indexed = c.execute("SELECT MAX(indexed_at) FROM files").fetchone()[0]
@@ -646,7 +633,7 @@ class ProjectStore:
             "comments": n_comments,
             "last_indexed_at": last_indexed,
             "schema_version": int(self.get_meta("schema_version", "0")),
-            "indexed_git_sha": self.get_meta("git_head_sha"),  # Pitfall 6: the sha at index time
+            "indexed_git_sha": self.get_meta("git_head_sha"),  # SHA recorded at index time
         }
 
 

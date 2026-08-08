@@ -1,22 +1,12 @@
-"""Importance ranking module: PageRank for "the N most important symbols".
+"""Rank symbols with PageRank over the repository reference graph.
 
-Design origin (borrowed from the PoC / aider repomap approach):
-  - Treat each "defined symbol" as a graph node, and each reference edge
-    (who uses whom) as a link.
-  - A symbol referenced by more symbols that are themselves important is
-    more important (PageRank's recursive definition).
-  - aider's repomap uses the same graph-rank idea to pick which symbols
-    are worth showing the LLM within a token budget.
+Definitions are graph nodes and references are directed edges. A symbol gains rank
+when other highly ranked symbols reference it. Query focus can bias the teleport
+vector toward selected symbols or files.
 
-The implementation deliberately uses plain Python power iteration instead
-of pulling in a networkx/scipy dependency (keeps the engine lightweight
-and easy to bundle into the daemon; power iteration at this scale is fast
-enough even with tens of thousands of symbols).
-
-Single responsibility: take a symbol list + a reference-edge list, emit
-symbols sorted high to low by rank score. Does not touch SQLite, does not
-touch jedi. All state is local to the functions, which makes them reentrant and
-free of global pollution.
+The implementation uses plain Python power iteration to avoid graph-library and
+scientific-computing dependencies. It accepts symbols and reference edges and returns
+ranked symbols without accessing SQLite or language resolvers.
 """
 from __future__ import annotations
 
@@ -52,12 +42,11 @@ def _well_named(name: str) -> bool:
 
 
 def _symbol_quality_mult(name: str, defines_count: int) -> float:
-    """queue 5 (edge-weight symbol-quality factor, an aider-inspired heuristic): surfaces
-    architecturally significant public APIs and downweights low-signal/generic symbols.
+    """Weight public API names above private or widely repeated generic names.
 
     Well-named public symbols (len>=threshold) get ×WELLNAMED; private, underscore-prefixed
     symbols get ×PRIVATE; symbols redefined in >N files (overly generic names like
-    utils/handle/run) get ×COMMON. All configurable (L0 hard rule #6).
+    utils/handle/run) get ×COMMON. Environment variables configure each factor.
     """
     mult = 1.0
     if name.startswith("_"):
@@ -71,15 +60,11 @@ def _symbol_quality_mult(name: str, defines_count: int) -> float:
 
 def _build_personalization(symbols: list[dict], focus_symbols=None,
                            focus_files=None) -> dict | None:
-    """queue 4 (query-aware PageRank): turns a caller-supplied focus set into a
-    personalization vector.
+    """Build a PageRank personalization vector from explicit caller-provided focus.
 
-    ⛔ The boost NEVER comes from listening to a conversation or calling an LLM. It only
-    comes from the caller explicitly saying "I'm working on X" (focus_symbols/focus_files).
-    This holds the zero-cloud / no-LLM hard rule: aider listens to chat because it is a chat
-    frontend, CodeSextant is a tool that gets called, not one that eavesdrops.
-    Symbols matching focus get their teleport weight boosted by `boost`x. No focus returns
-    None (falls back to uniform teleport = the original static behavior).
+    Matching symbols and files receive the configured teleport boost. No focus returns
+    ``None``, which selects uniform teleport weights. The function uses only its
+    arguments and does not inspect conversations or call a model.
     """
     fs = set(focus_symbols or [])
     ff = {_norm(f) for f in (focus_files or [])}
@@ -122,11 +107,10 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
     When src can't be mapped to a symbol node (e.g. a module-level top-level call), it is
     counted as "external inflow" distributed evenly.
 
-    queue 5: edge weight is further multiplied by the referenced symbol's quality factor
+    Edge weight is further multiplied by the referenced symbol's quality factor
     (well-named public ×10 / private ×0.1 / overly generic ×0.1).
-    queue 4: personalization ({symbol_id: preference weight}) feeds the teleport vector for
-    query-aware ranking; None falls back to uniform teleport (the original static behavior,
-    backward compatible).
+    Personalization ({symbol_id: preference weight}) supplies the teleport vector for
+    query-aware ranking. ``None`` selects uniform teleport weights.
 
     Returns [] for empty symbols. Uses list index as the internal node id; the public
     compute_pagerank only converts to string ids at the very end, while rank_symbols
@@ -182,8 +166,8 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
     }
 
     # Build the position tables only for the target/source of actual reference edges. The
-    # old version built by_pos/by_body for all 570K symbols, paying the full-graph dict/list
-    # cost even when the graph only had a few thousand edges.
+    # Limiting these tables to edge endpoints avoids full-graph allocation when the
+    # reference graph is sparse.
     by_pos: dict[tuple, int] = {}
     target_name_of: dict[int, str] = {}
     file_rep: dict[str, int] = {}
@@ -209,7 +193,7 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
     body_starts = {path: [row[0] for row in rows] for path, rows in by_body.items()}
     src_node_cache: dict[tuple[str, int], int | None] = {}
 
-    # queue 5: only compute, for names that actually become edge targets, how many distinct
+    # Only compute, for names that actually become edge targets, how many distinct
     # files define them; the other 570K nodes never use the quality factor, so there's no
     # need to build a full name->file set.
     target_names = set(target_name_of.values())
@@ -265,7 +249,7 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
         if j is None:
             continue
         w = _CONFIDENCE_WEIGHT.get(confidence, 0.25) * multiplicity
-        # queue 5: multiply in the referenced symbol's quality factor (well-named public
+        # Multiply in the referenced symbol's quality factor (well-named public
         # ×10 / private ×0.1 / overly generic ×0.1)
         tname = target_name_of.get(j, "")
         quality_key = (tname, defines.get(tname, 1))
@@ -286,8 +270,7 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
         edges[j] = edges.get(j, 0.0) + w
 
     n_refs = max(1, sum(collapsed_refs.values()))
-    # queue 4: personalization teleport vector P (focus preference); otherwise uniform 1/n
-    # (original static behavior, backward compatible)
+    # Use the focus preference for teleport weights, or uniform weights without focus.
     if personalization:
         raw_p = [personalization.get(_symbol_id(s), 1.0) for s in symbols]
         tot_p = sum(raw_p) or 1.0
@@ -370,10 +353,8 @@ def rank_symbols(symbols: list[dict], refs: list[dict], *, top_n: int | None = N
 
     Each returned dict = the original symbol fields + "rank" (a float score). If top_n is
     given, only the top N are returned.
-    focus_symbols/focus_files (queue 4, query-aware): the caller explicitly passes "the
-    symbols/files being edited or asked about" to bias ranking toward relevant areas
-    (converted into a personalization vector); omitted = the original static
-    structural-centrality ranking.
+    ``focus_symbols`` and ``focus_files`` bias ranking toward caller-selected areas.
+    Omitting them uses structural centrality alone.
     """
     personalization = _build_personalization(symbols, focus_symbols, focus_files)
     scores = _compute_pagerank_scores(

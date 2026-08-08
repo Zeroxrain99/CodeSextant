@@ -1,19 +1,18 @@
-// CodeSextant C5b / rounds 4+5: ts-morph reference-finding bridge (Node subprocess).
+// Resolve TypeScript and JavaScript references through a Node subprocess.
 //
 // The Python side, codesextant/references.py, calls this over stdin JSON and reads stdout JSON.
 // It gives TS/JS high-confidence import resolution (findReferences rules out same-name noise,
 // which is what jedi does for Python).
 //
-// Two modes (one bridge; batch is the round-5 speedup: load the whole project once with
-// new Project, then loop over symbols, instead of spawning node per symbol and reloading the
-// project every time, an N-fold waste):
+// Two modes are available. Batch mode loads the project once and resolves each symbol
+// without starting a separate Node process:
 //   single  stdin {projectRoot, defFile, symbol}
 //           stdout {symbol, definition, high_confidence:[...], engine, elapsed_ms}
 //   batch   stdin {projectRoot, defFile, symbols:["A","B",...]}
 //           stdout {batch:true, results:{A:{...}, B:{...}}, engine, elapsed_ms}
-//   failure {error, high_confidence:[]}  ← the Python side falls back to C5a name matching
+//   failure {error, high_confidence:[]}  The Python side falls back to name matching.
 //
-// Round 4: every reference carries is_reexport (whether it sits inside `export {X}` /
+// Every reference carries is_reexport (whether it sits inside `export {X}` /
 // `export {X} from './y'`), so the Python side marks a symbol that is only re-exported by a
 // barrel file, with no real consumer, as REEXPORT_ONLY instead of misjudging it LIKELY_UNUSED.
 import { Project, SyntaxKind } from "ts-morph";

@@ -1,23 +1,17 @@
-"""ai-usage scan layer: "which AI/LLM providers does this repo use, and how does it score
-on the dispatch_policy compliance axis".
+"""Scan source files for AI providers and classify their billing channels.
 
-Consumes the file iterator the engine hands over (SUPPORTED_EXTENSIONS only, noise
-directories already skipped), regex-scans file by file, line by line for AI/LLM call
-sites. Per file, first collects imports/base_url as context, then resolves each call's
-provider and channel (cli/direct/local), and finally assembles a bipartite graph
-{file node, provider node, edge} for ai_usage_html to render as a dark HUD relationship
-graph.
+The engine supplies supported source files with ignored directories already removed.
+For each file, this module collects imports and ``base_url`` values, resolves matching
+call sites to providers, and builds the file-to-provider graph used by the AI usage
+view.
 
-Three channels (aligned with dispatch_policy's existing-code-audit + the user's
-2026-07-16 directive):
-  cli   = compliant (Claude Code CLI / <x>-cli subprocess, the CC subscription channel)
-  direct= violation (calling a remote metered API directly: Anthropic / OpenAI / Google, etc.)
-  local = neutral (a local model on ollama localhost, unmetered)
+Channels:
+  cli    = compliant, subscription-backed CLI subprocess
+  direct = violation, remote metered API
+  local  = neutral, local unmetered model
 
-⛔ The top level does not import engine (engine lazy-imports this module in reverse, to
-avoid a cycle).
-⚠ Name-level regex = a line-level clue, not proof of execution (read_code_advisory honestly
-lays out the blind spot).
+This module does not import ``engine`` because the engine imports this module lazily.
+Name-level regex matches are clues and cannot prove which endpoint runs at runtime.
 """
 from __future__ import annotations
 
@@ -171,7 +165,7 @@ def _scan_one_file(abs_path: str, rel: str) -> list[dict]:
                 # .generate_content colliding with a test name)
             provider, channel = _resolve(kind, m, imports, base_provider, base_local)
             if not provider:
-                continue  # not enough context to resolve a provider -> skip honestly
+                continue  # Skip calls whose provider cannot be resolved from file context.
             key = (lineno, provider, channel)
             if key in seen:
                 break

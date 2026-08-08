@@ -1,43 +1,26 @@
-"""codesextant C2: singleton long-running daemon (one local HTTP service, fixed port,
-idempotent startup via liveness probe, shared by all agents).
+"""Local HTTP daemon shared by CodeSextant clients.
 
-Wraps the C1 pure engine (engine.py's 5 APIs) into HTTP endpoints, so every agent on the
-machine shares one code map through a single HTTP interface instead of each building its own.
+The daemon exposes the engine through a ``ThreadingHTTPServer`` on a fixed local
+port. Startup probes ``/health`` and verifies the service identity before
+starting another process. Each repository has a separate SQLite database keyed
+by its absolute path.
 
-Design decisions:
-  - HTTP bridge: a ThreadingHTTPServer on a fixed port, reachable by any HTTP client.
-  - Idempotent startup: probe /health first. If the brand matches, a daemon is already running,
-    so exit without starting a second one. Checking the brand rather than the open port matters,
-    because an unrelated process can hold the port.
-  - Per-project isolation: storage.project_key = sha1(repo absolute path), so two repositories
-    never share state.
+Main endpoints:
+    GET  /health
+    GET  /get_symbols?project=<repo>&file=<file>
+    POST /find_references  {project, symbol, ...}
+    GET  /get_map?project=<repo>&budget=<n>
+    POST /reindex          {project, force?}
+    GET  /status?project=<repo>
 
-Endpoints (one function per endpoint, all take project= repo absolute path):
-    GET  /health                                   → daemon health + a ready field
-    GET  /get_symbols?project=<repo>&file=<file>    → engine.get_symbols
-    POST /find_references  {project, symbol, ...}   → engine.find_references
-    GET  /get_map?project=<repo>&budget=<n>          → engine.get_map
-    POST /reindex          {project, force?}         → engine.index_project
-    GET  /status?project=<repo>                      → engine.status
-
-Observable logging (aligned with the user's "new features must ship with observable
-logging" preference):
-    Startup / every endpoint hit / errors all land in daemon.log (default ~/.codesextant/daemon.log).
-
-Service identity brand: service == "codesextant" (used for liveness-probe matching, to
-guard against another process occupying the same port).
-
-Usage:
-    python -m codesextant.daemon serve     # run the server in the foreground (for testing)
-    python -m codesextant.daemon ensure    # idempotent startup: spawns detached in the background only if not already running
-    python -m codesextant.daemon ping      # strict liveness probe (matches /health brand)
-    python -m codesextant.daemon stop      # stop the local daemon (for cleaning up residue during verification)
+Startup, endpoint access, and errors are written to ``daemon.log`` under
+``~/.codesextant`` by default.
 """
 from __future__ import annotations
 
 import sys
 
-# Windows console / subprocess stdout must not crash when printing non-ASCII/emoji output (memory: this bit us twice before)
+# Preserve non-ASCII paths and symbols in Windows console output.
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -85,7 +68,7 @@ panel = _LazyModule(f"{_PACKAGE}.panel")
 watcher = _LazyModule(f"{_PACKAGE}.watcher")
 _HEAVY_COORDINATOR = work_coordinator.SHARED_SHARDED
 
-# queue 3: file-watcher singleton manager (built lazily; owned by the daemon, shared across all projects)
+# File-watcher manager, built lazily and shared across projects.
 _WATCH_MGR = None
 
 
@@ -119,7 +102,7 @@ class _InterprocessFileLock:
 
     def acquire(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # ⛔ Do not use `with` here: the file handle *is* the lock itself, and must
+        # Do not use `with` here. The file handle is the lock itself and must
         # stay open until release() closes it. Wrapping it in a context manager would
         # close the file the moment this function returns, releasing the lock
         # immediately, and multiple daemons could then race to grab the same port.
@@ -259,7 +242,7 @@ class _ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
 
 
 def _port() -> int:
-    """Fixed port 8790, overridable via the CODESEXTANT_PORT environment variable (aligned with PoC t5 and design doc §3①)."""
+    """Return the configured daemon port, defaulting to 8790."""
     try:
         return int(os.environ.get("CODESEXTANT_PORT", str(DEFAULT_PORT)))
     except ValueError:
@@ -363,10 +346,7 @@ def get_logger(*, file_output: bool = False) -> logging.Logger:
 
 # ── liveness probe (strict: checks whether the /health brand matches, not merely whether the port is open) ──
 def _health_brand_ok(data: dict) -> bool:
-    """Brand match: only counts as "our daemon" if service is codesextant or the product name
-    codesextant. (Some other process happening to occupy the same port and returning different
-    JSON never counts, aligned with PoC t5 + memory: brain_watchdog only checked a half-dead
-    TCP connection; you have to check the /health HTTP response.)"""
+    """Accept only a health response that identifies the CodeSextant service."""
     return isinstance(data, dict) and data.get("service") in (SERVICE_NAME, "codesextant")
 
 
@@ -424,7 +404,7 @@ def _require_project(project: str | None):
     """Every data endpoint requires project (= repo absolute path). Missing → 400."""
     if not project:
         raise _HttpError(400, "missing required parameter project (= repo absolute path)")
-    # queue 3: any project that gets queried automatically gets a file-watcher attached
+    # Attach a watcher when a project is queried.
     # (idempotent; silently a no-op if watchdog is missing).
     # When the switch is off, this is a pure config check that never imports watcher or builds a
     # WatchManager (zero cold-start cost).
@@ -535,7 +515,7 @@ def _ep_get_map(parsed, body):
         budget = int(budget_raw)
     except (TypeError, ValueError):
         raise _HttpError(400, f"budget must be an integer, got '{budget_raw}'") from None
-    # queue 4: query-aware focus (comma-separated; callers explicitly pass the symbols/files they're editing or asking about)
+    # Query focus is supplied as comma-separated symbol and file lists.
     fsy = _q(parsed, "focus_symbols")
     ffi = _q(parsed, "focus_files")
     fs = [x for x in fsy.split(",") if x] if fsy else None
@@ -552,7 +532,7 @@ def _ep_reindex(parsed, body):
 
 def _ep_status(parsed, body):
     project = _require_project(_q(parsed, "project"))
-    # pitfall 7-1: git freshness spawns a git subprocess; skip it by default (avoids an
+    # Git freshness spawns a subprocess, so skip it by default to avoid an
     # unguarded GET being triggered into a spawn storm by a malicious no-cors web page).
     # Panel/client callers pass ?fresh=1 explicitly when they need freshness.
     fresh = str(_q(parsed, "fresh", "") or "").lower() in ("1", "true", "yes", "on")
@@ -565,7 +545,7 @@ def _ep_projects(parsed, body):
 
 
 def _ep_deadcode(parsed, body):
-    # step 3: the dead-code clue layer. Runs orphan analysis (real per-symbol resolution) only
+    # Run orphan analysis with per-symbol resolution only
     # if file= is given; lang= overrides language inference.
     project = _require_project(_q(parsed, "project"))
     scope_file = _q(parsed, "file")
@@ -581,7 +561,7 @@ def _ep_ai_usage(parsed, body):
 
 
 def _ep_call_hierarchy(parsed, body):
-    # competitor-parity queue 1: transitive call chain. POST (more parameters): direction up/down/both, max_hops.
+    # Transitive call chain with direction and depth parameters.
     body = body or {}
     project = _require_project(body.get("project"))
     symbol = body.get("symbol")
@@ -598,7 +578,7 @@ def _ep_call_hierarchy(parsed, body):
 
 
 def _ep_impact(parsed, body):
-    # competitor-parity queue 2: change impact / blast radius (built on top of call_hierarchy(up)).
+    # Change impact built on the upward call hierarchy.
     body = body or {}
     project = _require_project(body.get("project"))
     symbol = body.get("symbol")
@@ -613,8 +593,7 @@ def _ep_impact(parsed, body):
 
 
 def _ep_find_unwired(parsed, body):
-    # feature A: unwired check (namegraph name-level whole-graph coarse filter for top-level
-    # symbols with zero external references).
+    # Find top-level symbols with no name-level external references.
     project = _require_project(_q(parsed, "project"))
     mf = _q(parsed, "max_fanout")
     max_fanout = None
@@ -627,19 +606,19 @@ def _ep_find_unwired(parsed, body):
 
 
 def _ep_get_health(parsed, body):
-    # code health: per-symbol code health score (D1 bloat / D3 complexity / D5 duplication -> health, D6 dead code -> dead; a clue, not a decision).
+    # Return per-symbol health and unwired evidence.
     project = _require_project(_q(parsed, "project"))
     return 200, engine.get_health(project)
 
 
 def _ep_comment_overview(parsed, body):
-    # feature B: repo comment summary (docstring coverage + TODO/FIXME counts + density).
+    # Summarize docstring coverage, tags, and comment density.
     project = _require_project(_q(parsed, "project"))
     return 200, engine.get_comment_overview(project, scope_file=_q(parsed, "file"))
 
 
 def _ep_comment_tags(parsed, body):
-    # feature B: TODO/FIXME index (scans line by line for markers, returns real line numbers). tags is comma-separated.
+    # Return TODO and FIXME markers with source lines. ``tags`` is comma-separated.
     project = _require_project(_q(parsed, "project"))
     raw = _q(parsed, "tags")
     tags = [t for t in raw.split(",") if t] if raw else None
@@ -647,7 +626,7 @@ def _ep_comment_tags(parsed, body):
 
 
 def _ep_get_comments(parsed, body):
-    # feature B: precisely filtered comment retrieval (see only what you asked for).
+    # Return comments matching the requested filters.
     project = _require_project(_q(parsed, "project"))
     doc_only = str(_q(parsed, "doc_only", "") or "").lower() in ("1", "true", "yes", "on")
     return 200, engine.get_comments(project, file=_q(parsed, "file"),
@@ -656,7 +635,7 @@ def _ep_get_comments(parsed, body):
 
 
 def _ep_find_duplicates(parsed, body):
-    # feature B: duplicate/similarity detection. near_global=opt-in global near-match, calls=enable
+    # Duplicate and similarity detection. near_global enables global near matches; calls enables
     # call_pattern, min_similarity overrides the threshold.
     project = _require_project(_q(parsed, "project"))
     near = str(_q(parsed, "near_global", "") or "").lower() in ("1", "true", "yes", "on")
@@ -674,11 +653,9 @@ def _ep_find_duplicates(parsed, body):
 
 
 def _ep_graph_data(parsed, body):
-    # P0 main path (code-workbench upgrade): pick any repo and generate the graph live (nodes carry
-    # full source + layout coordinates + health + community).
+    # Generate graph data for a selected repository.
     # Lazy-imports graph_api (scipy/networkx are heavy dependencies, so the core engine stays light).
-    # ⚠ Synchronous graph generation is slow on large repos (full force index + spectral/louvain
-    # layout); P1 will add a git-sha cache.
+    # Synchronous spectral and Louvain layout can be slow on large repositories.
     import os
     import re
     import sys
@@ -699,12 +676,8 @@ def _ep_graph_data(parsed, body):
 
 
 def _ep_links(parsed, body):
-    # Phase 1 (LLM WIKI red/blue best-solution decision, 2026-07-09, component B): markdown link
-    # hygiene source (wiki linkgraph).
-    # Subprocess isolation: if the linter crashes, the daemon does not, and it degrades to
-    # available:false (⛔ never throws a 500, never crashes the whole page).
-    # Excludes the full backlinks table by default (P7 breadth gate: the panel only needs the
-    # dangling/orphan summary); pass ?full=1 for the full set.
+    # Run the optional Markdown link scanner in a subprocess so scanner failures
+    # do not bring down the daemon. Backlinks are omitted unless full=1.
     import json as _json
     import os
     import subprocess
@@ -728,16 +701,10 @@ def _ep_links(parsed, body):
     data["exit_code"] = r.returncode  # 0 clean / 1 dangling / 2 orphan only
     if _q(parsed, "full") != "1":
         data.pop("backlinks", None)
-    # External discipline-audit log tail (optional source; decision K: only shown if data exists,
-    # labeled "no contract" instead of left blank when empty).
-    # ⛔ Does not assume any external tool's directory exists: CodeSextant is a standalone product;
-    # anyone who wants this points to their own path (env CODESEXTANT_DISCIPLINE_LOG, accepts any
-    # line-delimited JSON audit log).
-    # Unset = this section simply isn't shown; that is not an error.
+    # Optional line-delimited JSON audit log supplied by the host environment.
+    # The section is omitted when CODESEXTANT_DISCIPLINE_LOG is unset.
     dj = os.environ.get("CODESEXTANT_DISCIPLINE_LOG", "")
-    # Also return the actual source path: when the panel shows "where did this data come from" it
-    # has to tell the truth; hardcoding a guessed path would mislead the reader into looking for
-    # a file that doesn't exist.
+    # Return the configured path so the panel can identify the data source.
     data["discipline_source"] = dj or None
     try:
         if dj and os.path.exists(dj) and os.path.getsize(dj) > 0:
@@ -872,10 +839,10 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
     def _serve_starmap_asset(self, path):
-        # code-workbench P0: serves the star-map frontend (/starmap=v3-stunning.html,
+        # Serve the star-map frontend (/starmap=v3-stunning.html,
         # /graph-common.js=shared JS, /graph_*.json=already-generated static graphs). Same origin
         # (8790) as /graph_data, avoiding cross-port CORS.
-        # three.js is loaded from a CDN (vendoring it offline is a carry-forward item).
+        # The prototype loads three.js from a CDN.
         import re
         poc = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "_poc_graph_c")
         if path == "/starmap":
@@ -953,19 +920,20 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if (parsed.path in ("/starmap", "/graph-common.js")
                 or (parsed.path.startswith("/graph_") and parsed.path.endswith(".json"))):
-            # code-workbench P0: the daemon serves the star-map frontend + already-generated static
+            # The daemon serves the star-map frontend and generated static
             # graph JSON from one place (same origin 8790 as /graph_data, avoiding CORS).
             self._serve_starmap_asset(parsed.path)
             return
         self._dispatch(_ROUTES_GET, None)
 
     def _csrf_check(self) -> bool:
-        """Pitfall 7: CSRF protection for POST endpoints. A malicious local web page could send a
+        """Check the Origin header on POST endpoints.
+
+        A malicious page could send a
         cross-site POST to /reindex (burns CPU + probes whether a directory exists) or
         /find_references (runs jedi): allow local/Tauri/VSCode webview/no-Origin requests, block
-        external cross-site http(s) origins. A reasonable hardening for a "zero-credential local
-        code map" (does not affect legitimate frontends).
-        Switch (L0 hard rule #6): env CODESEXTANT_CSRF_GUARD=0 disables it (enabled by default).
+        external cross-site HTTP origins. Set CODESEXTANT_CSRF_GUARD=0 to disable
+        the check. It is enabled by default.
         """
         if os.environ.get("CODESEXTANT_CSRF_GUARD", "1").lower() in ("0", "false", "no", "off"):
             return True
@@ -975,7 +943,7 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         if origin == "null":  # a local panel loaded via file:// (Origin is the literal string "null")
             return True
-        # ⚠ Must use urlparse for an exact host match, not a bare startswith prefix; otherwise a
+        # Use urlparse for an exact host match rather than a string prefix. Otherwise a
         # malicious domain like http://127.0.0.1.evil.com / http://localhost.attacker.test could
         # bypass this via prefix matching.
         try:
@@ -1074,8 +1042,7 @@ def serve(port: int | None = None):
                 HOST, port, SERVICE_NAME, _log_path())
         print(f"[codesextant daemon] listening http://{HOST}:{port} "
               f"(pid={os.getpid()}, service={SERVICE_NAME})")
-        # queue 3: attach a file-watcher to every already-indexed project whose path still exists
-        # (proactive incremental updates, the map stays fresh)
+        # Attach watchers to indexed projects that still exist.
         if _watch_enabled_config():
             try:
                 mgr = _get_watch_mgr()
@@ -1121,7 +1088,7 @@ def serve(port: int | None = None):
         instance_lock.release()
 
 
-# ── idempotent startup (solves the user pain point "spawning a pile of duplicates") ──
+# ── Idempotent startup ──
 def _spawn_daemon(port: int):
     """Spawn one detached daemon process; startup serialization lives above."""
     DETACHED_PROCESS = 0x00000008
@@ -1147,10 +1114,10 @@ def _spawn_daemon(port: int):
 
 
 def ensure_running(port: int | None = None, *, wait_sec: float = 6.0) -> dict:
-    """Make sure the daemon is running. This is the shared entry point for every agent.
+    """Make sure the shared daemon is running.
 
     1) First, a strict liveness probe (/health brand match). Already running -> return
-       immediately, ⛔ do not restart it (the core of idempotency).
+       immediately without restarting it.
     2) Not running -> spawn it detached in the background via DETACHED_PROCESS (the daemon
        outlives its caller, shared by other agents).
     3) Poll until it's listening, then return the startup result (with pid, as proof of the singleton).
@@ -1251,10 +1218,10 @@ def ensure_running(port: int | None = None, *, wait_sec: float = 6.0) -> dict:
 
 
 def stop_running(port: int | None = None) -> dict:
-    """Stop the local daemon (for cleaning up residue during verification / for restarts).
+    """Stop the local daemon during verification or a controlled restart.
 
     Precise kill: uses only the "pid of our own daemon" obtained from /health, plus a Name=python
-    check, ⛔ does not match on CommandLine + script name (memory: that once killed its own shell with exit255).
+    check. It does not match on a command line or script name.
     """
     port = port or _port()
     lg = get_logger()

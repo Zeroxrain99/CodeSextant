@@ -1,22 +1,16 @@
-"""Engine facade: coordinates the symbols / references / storage / ranking modules.
+"""Public engine API for indexing, references, storage, and ranking.
 
-This is C1's public "pure engine API", and the layer the C2 daemon wraps as HTTP.
-Design rules (which keep C2 simple):
-  - Every public function's arguments and return values use simple serializable types
-    (str/int/dict/list), so they pass straight through json.dumps and the HTTP daemon
-    needs almost no conversion.
-  - One HTTP endpoint per function:
-        /reindex  ← index_project(path)
-        /get_symbols ← get_symbols(path, file)
-        /find_references ← find_references(path, symbol, ...)
-        /get_map ← get_map(path, token_budget)
-        /status ← status(path)
-  - Fail loudly: a missing path or an unindexed project raises, rather than silently
-    returning None or an empty result.
+Public functions accept and return JSON-serializable values so the HTTP daemon can
+expose them with little conversion. Each endpoint maps to one engine function:
+  - /reindex: index_project(path)
+  - /get_symbols: get_symbols(path, file)
+  - /find_references: find_references(path, symbol, ...)
+  - /get_map: get_map(path, token_budget)
+  - /status: status(path)
 
-Hybrid architecture (proved out by the PoC):
-  - index_project: tree-sitter extracts every symbol (fast) and does not run jedi.
-  - find_references: runs jedi's two-stage resolution only on demand.
+Missing paths and unindexed projects raise errors instead of returning ambiguous empty
+results. Indexing uses tree-sitter to extract symbols. Jedi resolves Python references
+only when requested.
 """
 from __future__ import annotations
 
@@ -67,7 +61,7 @@ def _schedule_symbol_snapshot(db_file, revision: tuple, symbols: list[dict]) -> 
             time.sleep(1.0)  # let the HTTP handler finish sending the small map result first, so the JSON writer does not fight it for the GIL
             storage.write_symbol_snapshot(db_file, revision, symbols)
         except Exception as exc:
-            print(f"  ⚠ failed to write symbols snapshot: {type(exc).__name__}: {exc}",
+            print(f"  Warning: failed to write symbols snapshot: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
         finally:
             with _MAP_CACHE_LOCK:
@@ -75,11 +69,9 @@ def _schedule_symbol_snapshot(db_file, revision: tuple, symbols: list[dict]) -> 
 
     Thread(target=worker, name="codesextant-symbol-snapshot", daemon=True).start()
 
-# The kinds of definition treated as referenceable when finding references. variable is
-# included because TS/JS exported consts, arrow functions and const objects are all
-# first-class reference targets (C5b found in practice that excluding variable leaves a TS
-# const with no candidate definition → def_path=None → it wrongly takes the jedi dead end
-# and reports high=0, which is the common case behind review issue 4).
+# Definitions that can be reference targets. The variable kind covers exported TS/JS
+# constants, arrow functions, and object literals. Without it, those definitions have no
+# candidate path and can be misrouted through the Python resolver.
 _REFERENCEABLE_KINDS = {"function", "class", "method", "interface", "type",
                         "enum", "struct", "trait", "variable",
                         # Symbol kinds added with the 2026-06-22 batch of mainstream languages:
@@ -90,8 +82,7 @@ _REFERENCEABLE_KINDS = {"function", "class", "method", "interface", "type",
 
 
 def _iter_source_files(root: str):
-    """Scan every source file in a supported language under root (C5: multi-language;
-    noise directories are skipped)."""
+    """Scan supported source files under root, excluding generated and cache directories."""
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
         for fn in filenames:
@@ -105,19 +96,21 @@ def _env_on(name: str) -> bool:
 
 
 def _infer_project_language(root: str, *, sample_cap: int | None = None) -> str | None:
-    """Pitfall 9: when finding references turns up no candidate definition for a symbol
+    """Infer a fallback language when reference lookup finds no candidate definition.
+
+    When finding references turns up no candidate definition for a symbol
     (def_path=None) and jedi cannot locate the definition either, sample the project's
-    dominant language as a **fallback** (not an override; see find_references), so a
+    dominant language as a fallback, not an override, so a
     non-Python symbol does not get stuck on the name-matching dead end.
 
     Returns a language only when its share is at or above the threshold; a tie or a mixed
     project deliberately does not force a choice and returns None, which falls back to the
     conservative jedi path and costs the least when wrong. Undecidable also returns None.
-    Switches (L0 hard rule #6, all tolerant via .lower()):
-      - CODESEXTANT_INFER_LANG_DISABLED=1/true/yes/on → return None (disabled).
-      - CODESEXTANT_INFER_LANG_SAMPLE_CAP=<int> → sampling cap (default 1000; <=0 means
+    Environment switches, parsed case-insensitively:
+      - CODESEXTANT_INFER_LANG_DISABLED=1/true/yes/on: return None.
+      - CODESEXTANT_INFER_LANG_SAMPLE_CAP=<int>: sampling cap (default 1000; <=0 means
         scan everything without truncating).
-      - CODESEXTANT_INFER_LANG_MIN_RATIO=<float> → dominant-share threshold (default 0.6).
+      - CODESEXTANT_INFER_LANG_MIN_RATIO=<float>: dominant-share threshold (default 0.6).
     """
     if _env_on("CODESEXTANT_INFER_LANG_DISABLED"):
         return None
@@ -143,7 +136,7 @@ def _infer_project_language(root: str, *, sample_cap: int | None = None) -> str 
     if total == 0:
         return None
     top_lang, top_n = counts.most_common(1)[0]
-    # Dominant share below the threshold (mixed or tied) → return None and take the
+    # A mixed or tied sample returns None and takes the
     # conservative jedi path: deterministic, and the cheapest outcome when wrong.
     if top_n / total < min_ratio:
         return None
@@ -151,11 +144,13 @@ def _infer_project_language(root: str, *, sample_cap: int | None = None) -> str 
 
 
 def _git_head_sha(repo_path: str) -> str | None:
-    """Pitfall 6: read the repo's git HEAD sha (used for freshness comparison). Not a git
-    repo, git unavailable, or the switch turned off → None. Does not flash a console window
+    """Read the repository's Git HEAD SHA for freshness checks.
+
+    A non-Git repository, unavailable Git executable, or disabled check returns None.
+    The subprocess does not flash a console window
     under a detached Windows daemon (CREATE_NO_WINDOW).
-    Switch (L0 hard rule #6, tolerant via .lower()):
-    CODESEXTANT_GIT_FRESHNESS_DISABLED=1/true/yes/on → None.
+    CODESEXTANT_GIT_FRESHNESS_DISABLED=1/true/yes/on disables the check. The value is
+    parsed case-insensitively.
     """
     if _env_on("CODESEXTANT_GIT_FRESHNESS_DISABLED"):
         return None
@@ -202,7 +197,7 @@ def _index_source_file(store: storage.ProjectStore, fp: str, *, force: bool = Fa
                 )
             except Exception as exc:
                 print(
-                    f"  ⚠ comment extraction failed ({fp}): {type(exc).__name__}: {exc}",
+                    f"  Warning: comment extraction failed ({fp}): {type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
         if lang and clones.dedup_enabled():
@@ -218,7 +213,7 @@ def _index_source_file(store: storage.ProjectStore, fp: str, *, force: bool = Fa
                 store.store_file_fingerprints(fp, fingerprints, winnow_index)
             except Exception as exc:
                 print(
-                    f"  ⚠ fingerprint/complexity extraction failed ({fp}): "
+                    f"  Warning: fingerprint/complexity extraction failed ({fp}): "
                     f"{type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
@@ -348,7 +343,7 @@ def index_project(path: str, *, force: bool = False) -> dict:
 
     tree-sitter extracts every symbol, and a content hash drives the incremental pass:
     only files whose hash changed are recomputed.
-    ⛔ This step does not run jedi (running it over everything is far too slow); reference
+    This step does not run jedi because resolving every file would be too slow. Reference
     resolution is left to find_references, on demand.
 
     Parameters
@@ -359,7 +354,7 @@ def index_project(path: str, *, force: bool = False) -> dict:
     Returns a dict (JSON-serializable):
       {indexed, skipped, removed, errors, total_files, elapsed_sec,
        project_key, db_file, symbols_total}
-    A path that is not a directory → NotADirectoryError (fail loudly).
+    A path that is not a directory raises NotADirectoryError.
     """
     if not os.path.isdir(path):
         raise NotADirectoryError(f"index_project: '{path}' is not a valid directory")
@@ -390,7 +385,7 @@ def index_project(path: str, *, force: bool = False) -> dict:
                 store.remove_file(old_path)
                 removed += 1
 
-        # Pitfall 6: record the repo's git HEAD sha at index time (not a git repo → None, nothing recorded).
+        # Record Git HEAD at index time. Non-Git repositories record nothing.
         sha = _git_head_sha(abs_path)
         if sha:
             store.record_git_sha(sha)
@@ -445,7 +440,7 @@ def _refs_non_python(root: str, symbol: str, def_path: str | None, lang: str,
                      include_low_confidence: bool) -> dict:
     """Reference dispatch for non-Python languages: TS/JS try ts-morph for high confidence
     first and fall back to name matching when it is unavailable (never raising); every
-    other language degrades to name matching (all low confidence, honestly labelled)."""
+    other language degrades to name matching, with every result labelled low confidence."""
     if lang in ("typescript", "tsx", "javascript"):
         result = references.ts_morph_references(root, symbol, def_path=def_path)
         if result is None:
@@ -461,12 +456,11 @@ def _refs_non_python(root: str, symbol: str, def_path: str | None, lang: str,
 
 
 def _refs_reliability(result: dict) -> dict:
-    """Step 6: self-assess the reliability of a find_references result and say when you
-    should go back and read the source.
+    """Describe reference-result reliability and when source inspection is still needed.
 
     level: high = trust it directly / medium = partly trustworthy but it has blind spots,
     read a bit more / low = read the code, do not treat this as a verdict.
-    ⛔ No level **replaces reading the code to judge whether the logic is right**. This
+    No level replaces reading the code to judge whether the logic is right. This
     tool sees reference relationships, not semantics or business intent. Static resolution
     never sees dynamic, reflective or string-concatenated calls, which is exactly where
     reading the code matters most.
@@ -540,7 +534,7 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
     if def_path is None and candidate_defs:
         def_path = candidate_defs[0]["path"]
 
-    # C5 dispatches on the definition file's language: Python (or an undeterminable
+    # Dispatch on the definition file's language. Python, or an undetermined
     # extension) takes jedi's real import resolution; every other language goes through
     # _refs_non_python (ts-morph, degrading to name matching).
     lang = symbols.language_for_file(def_path) if def_path else None
@@ -549,9 +543,9 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
             root, symbol, def_path=def_path,
             include_low_confidence=include_low_confidence,
         )
-        # Pitfall 9 (fixed in adversarial review: fallback, not override): only retry with
+        # Use the sampled language only as a fallback after Jedi finds no definition.
         # the sampled language when def_path is None *and* jedi found no definition.
-        # ⚠ This must run *after* jedi fails, because jedi does not depend on the index or
+        # This must run after jedi fails because jedi does not depend on the index or
         # def_path, it scans the disk directly, so in a mixed repo it still finds a Python
         # symbol even with def_path=None. Overriding first would take that ability away
         # (regression pit9-1: a repo with more TS than Python returned empty for Python queries).
@@ -567,12 +561,12 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
     result["language"] = lang or "python"
     result["candidate_definitions"] = candidate_defs
     result["src_root"] = root
-    # Step 1 safety net: all three sources (references.find_references / name_match /
+    # All three current reference sources set the engine field, but a future path may not.
     # ts_morph) already set engine, but a fallback swapping the result, or a future new
     # path, could miss it, so default conservatively (lowest confidence, never claiming
     # real resolution that did not happen).
     result.setdefault("engine", "name-match")
-    # Step 2 (Gap3-A, lowering confidence): state the capability boundary honestly.
+    # State the capability boundary without raising the reported confidence.
     # reference lookup and unused detection are not the same as passing compilation, type
     # checking or lint, and all-green refs do not mean it builds. After clearing dead code
     # or changing a signature, run build/CI yourself.
@@ -581,9 +575,8 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
         "compilation, type checking or lint; after clearing dead code or changing a "
         "signature, always run build/CI to verify."
     )
-    # Step 6: awareness of its own boundaries. Self-assess the reliability of this result
-    # and volunteer when you should go back and read the source.
-    # ⛔ The tool is a navigation map, not the code itself: on name-match results, zero
+    # Report the result's reliability and when the source still needs inspection.
+    # The tool maps references but does not interpret program semantics. On name-match results, zero
     # references, or far more low-confidence hits, it says so, so nobody assumes coverage
     # it does not have.
     result["reliability"] = _refs_reliability(result)
@@ -627,22 +620,21 @@ def call_hierarchy(path: str, symbol: str, *, direction: str = "both",
     Underneath it uses storage.traverse_call_graph (a WITH RECURSIVE CTE over the refs
     table); max_hops stops cycles from recursing forever.
 
-    ⚠ The call chain is built from **persisted reference edges** (the refs table, which only
+    The call chain is built from persisted reference edges. The refs table only
     accumulates once find_references has run against a symbol). With build_edges=True, the
     target gets one find_references(persist=True) pass first to build its direct caller
     edges, which makes the direct level of the up direction accurate immediately; the
     transitive levels and the down direction still depend on whatever edges the refs table
-    already holds. The note says so honestly, in keeping with the "honest UNKNOWN"
-    philosophy: if the edges are incomplete, say so rather than pretending otherwise.
+    already holds. The result notes when those edges may be incomplete.
     Static derivation cannot see dynamic or reflective calls.
 
     Parameters
     ----------
     max_hops : when None, taken from env CODESEXTANT_CALL_HIERARCHY_MAX_HOPS (default 5,
-               adjustable per L0 hard rule #6).
+               configurable through the environment).
     Returns a dict: {symbol, direction, definition, callers?, callees?, max_hops,
              edges_in_graph, candidate_definitions, note, verification_reminder}.
-    An unindexed project → RuntimeError.
+    An unindexed project raises RuntimeError.
     """
     if direction not in ("up", "down", "both"):
         raise ValueError(f"direction must be up/down/both, got {direction!r}")
@@ -720,7 +712,7 @@ def _mark_high_importance(path: str, callers: list[dict]) -> list[dict]:
     """Flag the affected callers that PageRank considers highly important (by intersecting
     with get_map's top symbol names).
 
-    Red team L2-MEDIUM fix: with_name_edges=False takes the lightweight path. impact and
+    With with_name_edges=False, impact and
     blast-radius are hot paths that only need the structurally central top symbol names to
     filter callers, which do not need name-level ordering precision. The old version
     triggered a whole-repo name-level scan on every impact call (measured at 5.5x slower,
@@ -740,14 +732,13 @@ def impact(path: str, symbol: str, *, max_hops: int | None = None,
 
     Built on call_hierarchy(direction=up): direct and transitive callers, callers split into
     test/prod/entrypoint, and PageRank used to flag the highly important affected symbols.
-    The honesty layer is mandatory: low-confidence transitive dependencies from name matching
-    are listed separately as "may also be affected (unconfirmed)" and ⛔ are never mixed into
-    the confirmed set, where they would mislead. Static derivation cannot see dynamic or
+    Low-confidence transitive dependencies from name matching are listed separately as
+    "may also be affected (unconfirmed)" and never mixed into the confirmed set. Static derivation cannot see dynamic or
     reflective calls.
 
     Returns a dict: {symbol, definition, direct_callers, transitive_callers, affected_files,
              by_kind:{test/prod/entrypoint}, high_importance_affected, uncertain_maybe_affected,
-             summary, note, verification_reminder}. An unindexed project → RuntimeError.
+             summary, note, verification_reminder}. An unindexed project raises RuntimeError.
     """
     from . import deadcode
 
@@ -759,7 +750,7 @@ def impact(path: str, symbol: str, *, max_hops: int | None = None,
 
     by_kind: dict[str, list] = {"test": [], "prod": [], "entrypoint": []}
     for c in confirmed:
-        # ⚠ test takes priority over entrypoint: deadcode.is_entrypoint treats test_*.py as
+        # Test classification takes priority over entrypoint. deadcode.is_entrypoint treats test_*.py as
         # an entrypoint, which is right for dead-code exemptions. But blast radius is
         # classifying "does changing this only affect tests, or does it affect external
         # behaviour", so test files go to test first, and only non-test entries (routes,
@@ -782,8 +773,7 @@ def impact(path: str, symbol: str, *, max_hops: int | None = None,
         "affected_files": sorted({c["path"] for c in confirmed}),
         "by_kind": by_kind,
         "high_importance_affected": high_importance,
-        # ⛔ Low-confidence transitive dependencies are listed separately, never mixed into
-        # the confirmed set (the honesty layer).
+        # Keep low-confidence transitive dependencies separate from the confirmed set.
         "uncertain_maybe_affected": uncertain,
         "max_hops": ch.get("max_hops"),
         "edges_in_graph": ch.get("edges_in_graph"),
@@ -827,7 +817,7 @@ def _get_map_uncached(path: str, token_budget: int = 2000, *, damping: float = 0
                       path with no disk scan and no name-level edges, for hot paths like
                       impact and blast-radius that only need the top structural symbol
                       names, so the name-level whole-graph scan does not slow them down
-                      (red team L2-MEDIUM).
+                      without slowing down structural queries.
 
     Returns {project_key, token_budget, approx_tokens, count, symbols:[...with rank...],
     edge_sources, note}.
@@ -874,8 +864,7 @@ def _get_map_uncached(path: str, token_budget: int = 2000, *, damping: float = 0
         name_unique_count = len(name_edges)
         ranked = rank_symbols(symbols, refs, top_n=top_n, damping=damping,
                               focus_symbols=focus_symbols, focus_files=focus_files)
-        # Red team L4-MEDIUM: when the scan was truncated, the note must not claim it
-        # covered the whole project (the honesty layer).
+        # When the scan is truncated, report sampled coverage instead of project-wide coverage.
         truncated = bool((ng_meta or {}).get("truncated"))
         coverage = (f"stratified sample of {(ng_meta or {}).get('scanned_files')} of "
                     f"{(ng_meta or {}).get('total_files')} files (truncated, reason="
@@ -996,7 +985,7 @@ def get_map(path: str, token_budget: int = 2000, *, damping: float = 0.85,
     try:
         storage.write_map_snapshot(db_file, key_digest, result)
     except (OSError, TypeError, ValueError) as exc:
-        print(f"  ⚠ failed to write map snapshot: {type(exc).__name__}: {exc}",
+        print(f"  Warning: failed to write map snapshot: {type(exc).__name__}: {exc}",
               file=sys.stderr)
     return result
 
@@ -1023,7 +1012,7 @@ def status(path: str, *, check_freshness: bool = False) -> dict:
         st = store.stats()
         st["indexed"] = True
         if check_freshness:
-            # Pitfall 6: git freshness. The sha recorded at index time vs the current HEAD sha.
+            # Compare the SHA recorded at index time with the current Git HEAD.
             indexed_sha = st.get("indexed_git_sha")
             current_sha = _git_head_sha(abs_path)
             st["current_git_sha"] = current_sha
@@ -1031,12 +1020,11 @@ def status(path: str, *, check_freshness: bool = False) -> dict:
                 st["git_stale"] = (indexed_sha != current_sha)
             elif indexed_sha and not current_sha:
                 # A sha was recorded before, but git is now unavailable (.git deleted, moved,
-                # or dubious-ownership) → undecidable. ⛔ Do not silently return False and
-                # claim it is fresh (pit6-1).
+                # or dubious ownership), freshness is unknown. Do not report it as fresh.
                 st["git_stale"] = None
                 st["git_note"] = "git is currently unavailable, so freshness cannot be determined (the sha recorded at index time is still here)"
             else:
-                # Not a git repo, or no sha recorded at index time → freshness does not apply.
+                # Freshness does not apply outside Git or before a SHA has been recorded.
                 st["git_stale"] = False
                 if not indexed_sha and current_sha:
                     st["git_note"] = "this database recorded no git sha at index time; reindex to enable freshness checking"
@@ -1061,19 +1049,19 @@ def list_projects() -> dict:
     }
 
 
-# ── C5c: dead-code clue layer (step 3): reuses find_references' real resolution and assembles it with the deadcode helpers ──
+# ── Dead-code clues: combine resolved references with dead-code helpers ──
 def _orphans_for_file(root: str, scope_file: str, lang: str | None) -> list[dict]:
     """Judge orphan status for each top-level exportable symbol in scope_file, reusing
     find_references' real resolution.
 
-    ⛔ UNKNOWN gate (fix 1's safety gate): check resolver_available **before** running
+    Check resolver availability before running
     find_references. If the engine is unavailable the whole symbol returns
-    UNKNOWN_NO_RESOLVER and **the high=0 decision is skipped** (red team B2: otherwise an
-    unavailable ts-morph marks every export in a TS project deletable, which is a disaster).
+    UNKNOWN_NO_RESOLVER and skip the high=0 decision. Otherwise, unavailable ts-morph
+    could mark every export in a TypeScript project as unused.
     Only top-level symbols are considered (methods and nested definitions are not orphan
     candidates).
     """
-    from . import deadcode  # deferred: engine → deadcode is one-way, avoiding a cycle
+    from . import deadcode  # Deferred to keep the engine-to-deadcode dependency acyclic.
 
     scope_abs = os.path.abspath(scope_file)
     file_lang = lang or symbols.language_for_file(scope_abs)
@@ -1097,7 +1085,7 @@ def _orphans_for_file(root: str, scope_file: str, lang: str | None) -> list[dict
         if entry:
             out.append({**s, **deadcode.classify_orphan(None, is_entry=True, entry_reason=er)})
             continue
-        if not ok:  # ⛔ Safety gate: engine unavailable → skip the high=0 decision and return an honest UNKNOWN
+        if not ok:  # An unavailable resolver cannot support a high=0 decision.
             out.append({**s, "verdict": "UNKNOWN_NO_RESOLVER",
                         "icon": deadcode.verdict_icon("UNKNOWN_NO_RESOLVER"),
                         "reason": reason})
@@ -1105,7 +1093,7 @@ def _orphans_for_file(root: str, scope_file: str, lang: str | None) -> list[dict
         pending.append((name, s))
 
     if pending and file_lang in ("typescript", "tsx", "javascript"):
-        # Step 5: for TS/JS, query every pending symbol in one batch (one new Project loads
+        # For TS/JS, query every pending symbol in one batch. One Project loads
         # the project, then loops over the symbols), replacing the N-fold waste of spawning
         # node and reloading the project once per symbol (measured: 9 symbols took 32s, one
         # batch replaces it).
@@ -1127,11 +1115,11 @@ def find_deadcode(path: str, *, scope_file: str | None = None,
     """Dead-code clue layer: unused imports (wrapping ruff/eslint) + orphan grading
     (reusing real resolution) + entrypoint exemptions.
 
-    ⚠ This is a clue layer, not a decision maker: it produces clues carrying a safety grade
-    (LIKELY_UNUSED 🟡 / UNKNOWN ❔ / PUBLIC_API ⚪ / KEEP ✅). Review them yourself and run
-    build/CI before deleting anything. All-green refs are not the same as compiling. The
-    core discipline: when an engine or linter is unavailable, always return UNKNOWN_*
-    (honest), and never degrade into a confident false positive.
+    This function returns graded clues, not deletion decisions: LIKELY_UNUSED, UNKNOWN,
+    PUBLIC_API, or KEEP. Review them and run
+    build/CI before deleting anything. Reference results are not a substitute for compiling.
+    When an engine or linter is unavailable, it returns UNKNOWN_* instead of a confident
+    false positive.
 
     Parameters
     ----------
@@ -1139,13 +1127,13 @@ def find_deadcode(path: str, *, scope_file: str | None = None,
                  resolution root for orphans).
     scope_file : orphan analysis only runs when this is given (resolving each top-level
                  symbol in that file for real; doing it symbol by symbol across a whole
-                 project is far too heavy, so step 3 requires a specific file).
+                 project is too expensive, so this check requires a specific file).
     lang       : override language inference (by default it is inferred from scope_file's
                  extension, or from the project).
 
     Returns a dict (JSON-serializable): {root, scope_file, unused_imports, orphans, summary,
     verification_reminder}.
-    A path that is not a directory → NotADirectoryError (fail loudly).
+    A path that is not a directory raises NotADirectoryError.
     """
     from collections import Counter
 
@@ -1182,7 +1170,7 @@ def find_deadcode(path: str, *, scope_file: str | None = None,
             "before deletion; UNKNOWN_* means the tool cannot decide, not that it is "
             "deletable. Reference lookup and unused detection are not the same as compiling."
         ),
-        # Step 6: spell out this result's blind spots, where the tool could not help and a
+        # Spell out blind spots where the source still needs inspection.
         # human has to read the code (tool silence does not mean deletable).
         "read_code_advisory": deadcode.read_code_advisory(unused, orphans),
     }
@@ -1200,9 +1188,9 @@ def find_ai_usage(path: str, *, scope_file: str | None = None) -> dict:
     verification_reminder}; nodes and edges are what ai_usage_html renders as the HUD
     relationship graph.
 
-    ⚠ Name-level clues are not proof of execution; before judging something direct (a
+    Name-level clues do not prove execution. Before treating a call as direct,
     violation), read the code and confirm it really hits a metered endpoint.
-    A path that is not a directory → NotADirectoryError (fail loudly).
+    A path that is not a directory raises NotADirectoryError.
     """
     from . import ai_usage
     if not os.path.isdir(path):
@@ -1213,8 +1201,7 @@ def find_ai_usage(path: str, *, scope_file: str | None = None) -> dict:
         scope_file=os.path.abspath(scope_file) if scope_file else None)
 
 
-# ── Feature A: unwired check (working closely with namegraph): a coarse sweep for the
-# root cause of code rot: things written but never wired in ──
+# ── Unwired-symbol check using the name graph ──
 def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
     """Unwired check: uses the name-level whole graph to quickly frame defined top-level
     symbols that have zero external references.
@@ -1226,8 +1213,7 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
     recursive self-calls are excluded, while calls from elsewhere in the same file are kept,
     so a same-file helper is not misreported).
 
-    ⚠ A clue layer, not a decision maker (the same philosophy as deadcode, honestly
-    low-confidence throughout):
+    This is a low-confidence clue layer, not a deletion decision:
       - The ceiling of name-level analysis: same-name interference causes **under-reports**
         (another definition of the same name being used elsewhere credits the genuinely
         unused one with references); dynamic, reflective and string-concatenated calls are
@@ -1237,9 +1223,9 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
         this especially dangerous).
       - Exemptions: filename conventions, decorator entrypoints, Python __all__, dunders,
         and pyproject console_scripts entrypoints (reusing deadcode.is_entrypoint and
-        entry_point_func_names). ⚠ __all__ is Python-only; a TS/JS export public API has no
+        entry_point_func_names). __all__ is Python-only; a TS/JS export public API has no
         equivalent exemption and will be misreported.
-      - Flooded names with too many same-named definitions (> the fan-out cap) →
+      - Flooded names with too many same-named definitions (> the fan-out cap) become
         UNKNOWN_FANOUT (no edges were built, so it cannot be judged, and it may in fact be
         heavily referenced).
       - variable/constant downgrade marker: name-level judgement is even less reliable for
@@ -1255,7 +1241,7 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
 
     Returns a dict (JSON-serializable): {root, candidates, namegraph_meta, summary,
                           verification_reminder, read_code_advisory}.
-    An unindexed project → RuntimeError.
+    An unindexed project raises RuntimeError.
     """
     from . import deadcode
 
@@ -1273,7 +1259,7 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
 
     usage, over_fanout, ng_meta = namegraph.compute_external_usage(
         syms, indexed_files=indexed, max_fanout=max_fanout)
-    # Red team L3-HIGH: exempt pyproject console_scripts entrypoints (called reflectively by
+    # Exempt pyproject console_scripts entrypoints, which wrappers call reflectively and
     # the installed wrapper, and never mentioned in the source).
     entry_funcs = deadcode.entry_point_func_names(abs_path)
 
@@ -1298,12 +1284,11 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
         scanned += 1
         name = s["name"]
         dp = namegraph._normp(s["path"])   # aligned (normcase) with compute_external_usage's usage key
-        # Dunders (__all__/__version__/__main__…) go through special mechanisms that
-        # name-level analysis cannot see → exempt.
+        # Dunder names use mechanisms that name-level analysis cannot see, so exempt them.
         if name.startswith("__") and name.endswith("__"):
             exempt += 1
             continue
-        # pyproject console_scripts entrypoint exemption (red team L3-HIGH).
+        # Exempt pyproject console_scripts entrypoints.
         if name in entry_funcs:
             exempt += 1
             continue
@@ -1321,7 +1306,7 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
                                           "real resolution")})
             continue
         if usage.get((dp, s["line"], name)) == 0:
-            # Red team L3-MEDIUM: name-level confidence is even lower for variables and
+            # Name-level confidence is lower for variables and
             # constants (deadcode's real resolution marks module-level variables
             # UNKNOWN_UNRESOLVED and does not call them deletable), so mark them as a
             # downgrade rather than giving them the same weight as function candidates.
@@ -1366,10 +1351,10 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
         advisory.append(
             f"{unknown} flooded same-name symbol(s) the tool cannot decide on (no edges were "
             "built). These are usually common names that are heavily referenced, and the tool's "
-            "silence ⛔ does not mean they are unwired.")
+            "silence does not mean they are unwired.")
     if ng_meta.get("truncated"):
         advisory.append(
-            f"⚠ Truncated: only {ng_meta.get('scanned_files')} of {ng_meta.get('total_files')} "
+            f"Truncated: only {ng_meta.get('scanned_files')} of {ng_meta.get('total_files')} "
             "files were scanned (adjustable via env CODESEXTANT_NAMEGRAPH_MAX_FILES), so usage "
             "counts for later symbols are incomplete. Do not judge them unwired on this basis.")
     return {
@@ -1400,7 +1385,7 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
     }
 
 
-# ── Feature B: comment management (the engine's query layer, design §3.B.2) ──
+# ── Comment queries ──
 def _comment_coverage_kinds() -> set[str]:
     raw = os.environ.get("CODESEXTANT_COMMENT_COVERAGE_KINDS", "function,class,method,interface")
     return {k.strip() for k in raw.split(",") if k.strip()}
@@ -1417,7 +1402,7 @@ def _comment_density_enabled() -> bool:
 
 
 def get_comment_overview(path: str, *, scope_file: str | None = None) -> dict:
-    """Repo comment summary (feature B, "see it all at once"): docstring coverage by kind +
+    """Summarize repository comments: docstring coverage by kind,
     TODO/FIXME counts + density.
 
     Coverage is how many COVERAGE_KINDS symbols have a docstring. Symbols are matched to
@@ -1469,7 +1454,7 @@ def get_comment_overview(path: str, *, scope_file: str | None = None) -> dict:
         tot_all = sum(b["total"] for b in by_kind.values())
         overall_pct = round(100.0 * tot_doc / tot_all, 1) if tot_all else 0.0
 
-        # Red team L3-MEDIUM: tag_counts now scans the text line by line instead of doing a
+        # Scan text line by line instead of grouping on the stored tag column.
         # GROUP BY on the comments.tag column. That column stores only the first marker per
         # comment, so a block with several markers undercounts and swallows the rest, which
         # contradicted find_comment_tags' numbers.
@@ -1521,10 +1506,12 @@ def get_comment_overview(path: str, *, scope_file: str | None = None) -> dict:
 
 def find_comment_tags(path: str, *, tags: list[str] | None = None,
                       scope_file: str | None = None) -> dict:
-    """TODO/FIXME index (feature B, "know which line"): scans for markers line by line and
+    """Index TODO and FIXME markers with their source lines.
+
+    Scans markers line by line and
     returns the **real source line**, including multi-line block and doc comments.
 
-    FIX-3b: for block and doc comments, a marker's line number is computed exactly by
+    For block and doc comments, a marker's line number is computed exactly by
     scan_tags_in_text (base_line + offset), not taken from the comment's opening line.
     Passing tags returns only those markers.
     Returns {findings:[{tag,path,line,scope,text}], count_by_tag}.
@@ -1564,8 +1551,10 @@ def find_comment_tags(path: str, *, tags: list[str] | None = None,
 
 def get_comments(path: str, file: str | None = None, *, scope: str | None = None,
                  doc_only: bool = False, tag: str | None = None) -> dict:
-    """Retrieve comments with precise filtering (feature B, "only what is worth reading",
-    mirroring get_symbols). Unindexed → count=0 plus a note, rather than pretending."""
+    """Retrieve comments with precise filters, mirroring get_symbols.
+
+    An unindexed project returns count=0 with an explanatory note.
+    """
     abs_path = os.path.abspath(path)
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
@@ -1593,7 +1582,7 @@ def get_comments(path: str, file: str | None = None, *, scope: str | None = None
                 "count": len(rows), "comments": rows}
 
 
-# ── Feature B: duplicate / near-duplicate detection (the engine's assembly layer, design §3.A) ──
+# ── Duplicate and near-duplicate detection ──
 _DUP_VERDICT_ICON = {
     "EXACT_DUP": "🟥", "RENAMED_DUP": "🟧", "STRUCTURAL_NEAR": "🟨",
     "CALL_PATTERN_SIM": "🟦", "BOILERPLATE_SUPPRESSED": "⚪", "UNKNOWN_TOO_SMALL": "❔",
@@ -1601,8 +1590,7 @@ _DUP_VERDICT_ICON = {
 
 
 def _make_dup_group(verdict: str, members: list[dict], similarity, reason: str) -> dict:
-    """Assemble one duplicate group (jscpd compact format: location + name + confidence).
-    ⛔ It never includes the source itself, upholding the read-only navigation map."""
+    """Assemble a compact duplicate group without embedding source text."""
     return {
         "verdict": verdict, "icon": _DUP_VERDICT_ICON[verdict], "similarity": similarity,
         "members": [{"path": m["path"], "line": m["line"], "end_line": m.get("end_line"),
@@ -1614,22 +1602,19 @@ def _make_dup_group(verdict: str, members: list[dict], similarity, reason: str) 
 
 
 def get_health(path: str) -> dict:
-    """Per-symbol code health (the numeric layer: D1 bloat + D3 cognitive complexity + D5
-    duplication → health; D6 dead code → dead).
+    """Return per-symbol code health and unwired evidence.
 
-    It composes clean-code discipline into a per-symbol health in [0,1] (low means worth
-    reviewing) plus dead (unwired).
-    ⛔ A read-only clue, not a decision maker: low health does not mean "should be deleted",
-    it means "worth reading yourself and checking with build/CI".
-    ⛔ It contains no visual mapping (saturation or opacity formulas). That belongs to the
-    presentation layer; this API returns numbers only.
+    Health combines bloat, cognitive complexity, and duplication into a value in
+    [0, 1]. Low health is an inspection clue, not a deletion decision. The ``dead``
+    field records separate unwired evidence. Visual mapping belongs to the presentation
+    layer; this API returns numbers only.
     UNKNOWN / N-A dimensions (classes and variables have no fingerprint; cognitive complexity
     is unavailable outside high-confidence languages) are excluded and the remaining weights
     renormalized, so nothing is inflated to a perfect score.
 
     Returns a dict (JSON-serializable): {root, symbols:[{path,name,line,kind,health,dead}],
-                          summary:{n_nodes,n_covered,coverage,n_dead,clone_pairs}}。
-    An unindexed project → RuntimeError (same as get_map).
+                          summary:{n_nodes,n_covered,coverage,n_dead,clone_pairs}}.
+    An unindexed project raises RuntimeError, as get_map does.
     """
     from collections import Counter
 
@@ -1648,12 +1633,12 @@ def get_health(path: str) -> dict:
     shape_cnt = Counter(r["shape_hash"] for r in fps)
     fp_by = {(os.path.normcase(r["path"]), int(r["line"])):
              (int(r["node_count"] or 0), r["shape_hash"], r["cognitive"]) for r in fps}
-    try:   # D6 unwired (→ the dead flag); a failure here must not break health (fail soft)
+    try:   # Unwired analysis is optional and must not break health scoring.
         uw = find_unwired(abs_path)
         dead_keys = {(os.path.normcase(os.path.abspath(c["path"])), int(c["line"]))
                      for c in uw.get("candidates", []) if c.get("verdict") == "UNWIRED_CANDIDATE"}
     except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠ get_health: find_unwired failed (D6 skipped): {exc}", file=sys.stderr)
+        print(f"  Warning: get_health could not compute unwired symbols: {exc}", file=sys.stderr)
         dead_keys = set()
 
     nodes = [{"path": s["path"], "name": s["name"], "line": s["line"], "kind": s.get("kind", "")}
@@ -1672,16 +1657,15 @@ def _merge_summary(summary: dict, delta: dict) -> None:
 
 
 def _dup_stage1_one_shape(members: list, *, min_node: int, in_scope) -> tuple[list, dict, set]:
-    """One shape_hash group → (output groups, summary deltas, keys of members already grouped).
+    """Build duplicate groups and summary deltas for one shape hash.
 
     Within the group, a second clustering pass on raw_token splits it further: verbatim
     matches each become an EXACT_DUP, and representatives across clusters form a RENAMED_DUP
-    (red team L1-MEDIUM: both coexist and neither swallows the other; f1/f2 match verbatim
-    and get EXACT, f1/f3 differ only by renaming and get RENAMED).
+    so exact and renamed matches can coexist.
     """
     if len(members) < 2:
         return [], {}, set()
-    # Red team L1-HIGH: structural significance = has_control_flow + node_count. ⛔ Do not
+    # Structural significance requires control flow and a minimum node count. Do not
     # add an nstmts threshold: Go's body=block>statement_list adds a level, and a single
     # large switch/if dispatch has top-level nstmts=1 and would be killed off wrongly.
     # node_count is the better complexity indicator and matches the winnow gate.
@@ -1727,7 +1711,7 @@ def _dup_stage1_one_shape(members: list, *, min_node: int, in_scope) -> tuple[li
 def _dup_stage1(rows: list, *, min_node: int, in_scope) -> tuple[list, dict, set]:
     """Stage 1: group by shape_hash → EXACT_DUP (verbatim) / RENAMED_DUP (same shape, renamed).
 
-    ⚠ Red team L5-HIGH: always run against the whole repo's fingerprints and never apply a
+    Always run against the whole repository's fingerprints without a
     scope filter. Otherwise scope_file mode degrades into comparing within a single file,
     every cross-file verbatim duplicate is missed, and the confidence ordering inverts. Scope
     only decides **which groups are output**; detection always spans the whole repo.
@@ -1751,7 +1735,7 @@ def _dup_stage1(rows: list, *, min_node: int, in_scope) -> tuple[list, dict, set
 def _dup_flood_fingerprints(conn, df_cap: int) -> set:
     """Gate 1: drop flooded fingerprints that appear everywhere.
 
-    ⚠ Red team L4-HIGH: count the **true document frequency** with
+    Count the true document frequency with
     DISTINCT(path,line,fp_value), meaning how many different functions it appears in, not
     fingerprint_index's total row count. Otherwise a fingerprint repeating inside a single
     function blows past df_cap on its own and the genuine fingerprints get dropped.
@@ -1764,7 +1748,7 @@ def _dup_flood_fingerprints(conn, df_cap: int) -> set:
 def _dup_load_fingerprint_rows(conn, target: str | None, flood: set) -> list:
     """Load the fingerprint rows to compare.
 
-    ⚠ Red team L2-MEDIUM: in scope_file mode, load only the units whose fingerprints intersect
+    In scope_file mode, load only units whose fingerprints intersect
     the target file's rather than the whole table, which decouples the cost of checking one
     file from the size of the entire repo. Only near_global loads everything.
     """
@@ -1802,7 +1786,7 @@ def _dup_stage2_pair(ka, kb, shared, *, body_fps, meta, member_key, seen_pairs,
     ma, mb = meta.get(pair[0]), meta.get(pair[1])
     if not ma or not mb:
         return None
-    # Red team L2-LOW: identical shapes belong to stage 1's EXACT/RENAMED, so stage 2 reports
+    # Identical shapes belong to the exact or renamed groups, so this stage reports
     # only non-identical near matches. Otherwise you get the self-contradictory result of a
     # STRUCTURAL_NEAR group with similarity 1.0.
     if ma["shape_hash"] == mb["shape_hash"]:
@@ -1881,8 +1865,7 @@ def _dup_stage_call_pattern(rows: list, *, min_node: int, in_scope) -> tuple[lis
 
 
 def _dup_advisory(summary: dict, target: str | None) -> list[str]:
-    """Turn the numbers into "what you should go and check next". ⛔ It never emits a
-    "should be deleted / should be merged" decision."""
+    """Turn duplicate counts into inspection advice without making merge decisions."""
     advisory: list[str] = []
     if summary["exact"]:
         advisory.append(f"{summary['exact']} group(s) match verbatim (high-confidence Type-1), but they "
@@ -1904,18 +1887,17 @@ def _dup_advisory(summary: dict, target: str | None) -> list[str]:
                         "intersect this file's. total_units_scanned is the whole-repo count.")
     if not advisory:
         advisory.append("No structurally identical groups were found at the name and structure "
-                        "level; this tool honestly cannot detect Type-4 semantic clones.")
+                        "level; this analysis cannot detect Type-4 semantic clones.")
     return advisory
 
 
 def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bool = False,
                     min_similarity: float | None = None,
                     include_call_pattern: bool = False) -> dict:
-    """Duplicate / near-duplicate detection (shared core): grouping by structural
-    fingerprint, strictly non-semantic (design §3.A).
+    """Find duplicate and near-duplicate units by structural fingerprint.
 
-    Three stages (red team FIX-1: without a scope, only stage 1 runs by default, which is
-    genuinely O(n); global near-duplicate stages 2/3 must be opted into):
+    Without a scope, only the O(n) first stage runs by default. Global near-duplicate
+    stages 2 and 3 must be enabled explicitly:
       Stage 1: GROUP BY shape_hash → EXACT_DUP (raw_token matches too, so verbatim) /
                RENAMED_DUP (same shape, renamed). A structural-significance hard gate
                (control flow required, plus sufficient node_count/nstmts) stops the flood of
@@ -1925,8 +1907,8 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
       call_pattern (only with include_call_pattern, lowest confidence 🟦): matching call_hash
                with a different structure.
 
-    ⛔ It never emits a "should be deleted / should be merged" decision (upholding hard rule 3,
-    the read-only navigation map); identical structure is not identical semantics, so read the
+    It never emits a "should be deleted / should be merged" decision. Identical structure
+    is not identical semantics, so read the
     code and run CI before merging.
 
     Parameters
@@ -1939,7 +1921,7 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
                   by default).
 
     Returns a dict: {root, scope_file, groups, summary, verification_reminder,
-    read_code_advisory}. An unindexed project → RuntimeError.
+    read_code_advisory}. An unindexed project raises RuntimeError.
     """
     if not os.path.isdir(path):
         raise NotADirectoryError(f"find_duplicates: '{path}' is not a valid directory")
@@ -1952,7 +1934,7 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
     min_node = clones._env_int("CODESEXTANT_DEDUP_MIN_NODE_COUNT", 15)
     sim_thresh = (min_similarity if min_similarity is not None
                   else clones._env_float("CODESEXTANT_DEDUP_SIMILARITY_THRESHOLD", 0.8))
-    sim_thresh = max(0.0, min(1.0, sim_thresh))   # red team L4-LOW: clamp so an out-of-range value cannot break the threshold's meaning
+    sim_thresh = max(0.0, min(1.0, sim_thresh))   # Clamp to preserve threshold semantics.
     df_cap = clones._env_int("CODESEXTANT_DEDUP_FP_DF_CAP", 50)
     min_shared = clones._env_int("CODESEXTANT_DEDUP_MIN_SHARED_FP", 3)
     near_global = near_global or clones._env_on("CODESEXTANT_DEDUP_NEAR_GLOBAL")
@@ -1967,8 +1949,8 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
 
     with storage.ProjectStore.open(abs_path) as store:
         conn = store.conn
-        # ⚠ Red team L5-HIGH: stage 1 (EXACT/RENAMED) **always runs against the whole repo's
-        # fingerprints** with no WHERE path filter. Otherwise scope_file mode turns stage 1
+        # Exact and renamed grouping always runs against the whole repository's
+        # fingerprints with no WHERE path filter. Otherwise scope_file mode turns stage 1
         # into intra-file-only, cross-file verbatim duplicates are missed and the confidence
         # ordering inverts. scope_file is used solely to filter which groups are output:
         # detection still spans files, but only groups containing a member from that file are
@@ -2013,7 +1995,7 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
             "Duplicate detection is a structural and lexical clue, not a semantic one: identical "
             "structure is not identical semantics, Type-4 semantic clones are invisible, and "
             "duplication produced dynamically, reflectively or by code generation is invisible "
-            "too. ⛔ The tool never says something should be deleted or merged; read the code "
+            "too. The tool never says something should be deleted or merged; read the code "
             "yourself and pass build/CI before merging."),
         "read_code_advisory": advisory,
     }

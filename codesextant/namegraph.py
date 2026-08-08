@@ -1,24 +1,22 @@
-"""Name-level whole-graph reference edges: fixes the out-of-the-box degradation of
-map (PageRank collapsing to a uniform distribution) and underpins unwired detection.
+"""Build name-level reference edges for map ranking and unwired detection.
 
-Root cause of the degradation (confirmed by reading engine/ranking/storage directly):
+Without name-level edges:
   - index_project only extracts symbols and **builds no reference edges at all**. The
     refs table only gains high-confidence jedi/ts-morph edges once
     find_references(persist=True) has run against a symbol.
   - get_map → compute_pagerank consumes store.all_refs(). Out of the box refs=[], so
     everything rests on the uniform teleport P=[1/n] and every symbol ends up with an
-    identical rank (166 symbols, 1 distinct rank, worthless for ordering).
+    identical rank.
 
-The fix takes the essence of aider's repomap (build edges from name intersections,
-then run PageRank) and ports it to this project's symbol-level graph:
+The implementation follows the repomap approach of building edges from name
+intersections before running PageRank:
   - aider connects referencer→definer for any identifier that is both defined and
     referenced, then runs PageRank. CodeSextant's symbols table already holds every
     definition (the nodes); what is missing is "which defined names does each file
     use". Regex tokenization supplies those name-level edges, **body-aware**, so a
     definition's own self-tokens are excluded.
 
-⛔ Hard rules (the core handover constraints, upheld by red/blue review; breaking any
-of them destroys an existing capability or walks into one of the four traps):
+Safety constraints:
   1. **In-memory only**: name-level edges **must never be persisted to the refs
      table**. callgraph/impact/find_references all read that table, and persisting
      name-level edges would pollute their resolver-backed results with low-confidence
@@ -33,7 +31,7 @@ of them destroys an existing capability or walks into one of the four traps):
      LSP backend, no changes to symbols, no graph library. Just regex, a body-aware
      scan, and the existing pure-Python power iteration.
 
-Body-aware design (the core of the red team L1-HIGH fix):
+Body-aware matching:
   - For each identifier occurrence, **exclude self-tokens falling inside that
     definition's own [line, end_line] range** (the definition line and recursive
     self-calls), but **keep** occurrences inside other symbols in the same file and in
@@ -41,12 +39,10 @@ Body-aware design (the core of the red team L1-HIGH fix):
   - The old approach, excluding a file's own defined names across the whole file,
     over-excluded: it erased genuine same-file mutual calls, so projects built around
     a single module or same-file calls ended up with zero name edges and fell straight
-    back to a uniform distribution (the red team measured a single-file dispatch called
-    by 4 same-file handlers still coming out uniform).
+    back to a uniform distribution.
   - One cross-reference occurrence produces one edge, **with no deduplication**, so
     compute_pagerank accumulates naturally and "called more often means more
-    important" shows through (the red team measured the old version having "once,
-    cross-file" always beat "five times, same file", which inverts PageRank's intent).
+    important" affects the rank.
 
 Constraints imposed by compute_pagerank (confirmed by reading ranking.py):
   - It only accepts edges that have both def_path and def_line, and whose
@@ -58,12 +54,12 @@ Constraints imposed by compute_pagerank (confirmed by reading ranking.py):
     storage.project_key), which removes a latent false negative where Windows
     case differences broke body exclusion. src_path is mapped through file_rep to that
     file's representative symbol; compute_pagerank skips self-loops (i==j) itself.
-  ⚠ Known limitation of the file-rep collapse: in single-file or same-file structures
+  Known limitation of the file-rep collapse: in single-file or same-file structures
     every edge source collapses onto that file's first symbol, so caller granularity
     ("who calls") is blurred, but "who is called" (the referenced symbol) still stands
     out and escapes the uniform distribution.
 
-Switches (L0 hard rule #6, all tolerant via .lower()):
+Switches accept case-insensitive values:
   - CODESEXTANT_NAMEGRAPH_DISABLED=1/true/yes/on → get_map builds no name-level edges
     (reverting to the degraded behaviour).
   - CODESEXTANT_NAMEGRAPH_MAX_FANOUT=<int>  fan-out cap for same-name definitions
@@ -139,7 +135,7 @@ def _read_text(path: str) -> str | None:
 def _normp(path: str) -> str:
     """Path normalization, normcase(abspath), matching ranking._norm and storage.project_key.
 
-    Red team L4-LOW fix: this used to be abspath without normcase, so on Windows
+    Using normcase matters on Windows because
     'E:\\..\\M.py' and 'e:\\..\\m.py' name the same file yet compare unequal → body
     exclusion silently failed → self-tokens on the definition line were not excluded →
     real dead code went unreported. The whole module now uses normcase.
@@ -223,8 +219,7 @@ def _scan_cross_refs(symbols, indexed_files, read_text, max_fanout, max_files,
     counted as a reference to it (this excludes self-tokens on the definition line and
     recursion); occurrences inside other symbols in the same file and in other files all
     count, which preserves genuine same-file mutual calls. over_fanout names are skipped
-    entirely. max_files truncation protects against very large repos (red team L4-HIGH:
-    compute_external_usage lacked this guard and hung on 18k files).
+    entirely. ``max_files`` bounds work on very large repositories.
     """
     defs = _defs_by_name(symbols)
     over_fanout = {n for n, lst in defs.items() if len(lst) > max_fanout}
@@ -326,16 +321,14 @@ def compute_external_usage(symbols: list[dict], *, indexed_files: list[str] | No
                            read_text=_read_text, max_fanout: int | None = None,
                            max_files: int | None = None
                            ) -> tuple[dict[tuple, int], set[str], dict]:
-    """How many times each defined symbol's name is mentioned **outside its own body**
-    (the computation layer behind feature A's unwired decision).
+    """Count mentions of each defined symbol outside its own body.
 
     Body-aware: self-tokens on the definition line and recursive self-calls are
     excluded; mentions inside other symbols in the same file and in other files are kept.
     Zero external usage means nothing outside the symbol's own body mentions this name,
     which makes it an unwired candidate.
 
-    ⚠ Ceiling of the name-level approach (stated honestly; it cannot be removed at this
-    layer):
+    Limits of name-level matching:
       - Multiple definitions of one name: names alone cannot tell which definition a call
         refers to, so the genuinely unused one is credited with usage because somewhere
         else uses a different definition of the same name (an under-report).
@@ -343,16 +336,15 @@ def compute_external_usage(symbols: list[dict], *, indexed_files: list[str] | No
         appearing in any string or comment counts as external usage, so a genuinely
         unwired symbol can be under-reported because something mentions it in a string or
         comment. This errs toward caution and never toward wrongly deleting something.
-    Feature A is therefore always a low-confidence clue layer and must be cross-checked
-    against dead-code real resolution (jedi/ts-morph).
+    The result is low-confidence evidence and should be cross-checked with resolver-backed
+    dead-code analysis.
 
     Returns (usage, over_fanout, meta):
       usage = {(norm_def_path, def_line, name): external_usage_count} (zeros included;
               only names whose fan-out is within the cap are counted).
-      over_fanout = names whose same-name definition count exceeds the fan-out cap (these
-              are not counted, and feature A marks them UNKNOWN_FANOUT).
-      meta = scan statistics (including truncated, which feature A passes through to its
-              honesty layer so an 18k-file truncation is not mistaken for a full scan).
+      over_fanout = names whose same-name definition count exceeds the fan-out cap. These
+              are not counted and are reported as UNKNOWN_FANOUT.
+      meta = scan statistics, including whether file or edge limits truncated the scan.
     """
     if max_fanout is None:
         max_fanout = _env_int("CODESEXTANT_NAMEGRAPH_MAX_FANOUT", 20)

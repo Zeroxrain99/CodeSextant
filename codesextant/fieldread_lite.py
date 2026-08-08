@@ -1,33 +1,14 @@
-"""FieldRead-lite: CodeSextant's output compression layer (MIT, self-contained,
-zero dependencies).
+"""Dependency-free output compression based on semantic partitions.
 
-Why it exists: CodeSextant's long outputs (callgraph transitive chains, impact
-with a pile of callers, map with a pile of symbols) eat tokens. The compression
-idea comes from **FieldRead**: split the budget proportionally across semantic
-namespaces, elide whatever exceeds the budget behind a breadcrumb (a one-line
-path summary), and expand it on demand.
+Long call graphs, impact results, and repository maps can exceed an agent's context
+budget. This module allocates a display budget across semantic partitions, replaces
+overflow with a short breadcrumb, and supports full output on demand.
 
-Why this is a local reimplementation rather than a dependency on the existing
-FieldRead package (decided 2026-06-19):
-  - Licences are contagious. That package is **AGPL-3.0** (a strong copyleft
-    licence). Depending on it would pull CodeSextant from MIT to AGPL and kill
-    the "anyone, and any agent, can use this" position outright. AGPL blocks
-    commercial and closed-source integration.
-  - The dependency tree balloons. It transitively requires two LLM SDKs and a
-    full web framework. A code-map tool should not carry that just to make its
-    output shorter.
-  - The algorithm itself is simple (plain string and item handling), so carrying
-    our own copy costs far less than either of the above.
-
-⛔ The general lesson here: borrowing an *idea* does not spread a licence,
-   borrowing *code* does. For a tool that wants to stay usable by anyone, the
-   dependency list is a statement of position.
-
-⛔ Do not copy aider's TreeContext (it only compresses code display). Use
-FieldRead's semantic-partition idea, but partition by **code semantics**
-(high confidence / low / test / prod / entrypoint / UNKNOWN). This is display-layer
-compression only. The engine still returns the complete dict, --json/--full still
-return everything, and only the human-readable summary is compressed.
+The partitioning idea comes from FieldRead, but this implementation is original and
+self-contained. It does not copy FieldRead or aider code, and it avoids FieldRead's
+AGPL-3.0 package and transitive application dependencies. Compression affects only the
+human-readable summary. The engine dictionary and ``--json`` or ``--full`` output remain
+complete.
 """
 from __future__ import annotations
 

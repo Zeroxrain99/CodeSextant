@@ -1,27 +1,9 @@
-"""Symbol extraction module - a fast, full-coverage, multi-language tree-sitter symbol table (C1 Python + C5 cross-language).
+"""Extract symbols from supported source files with tree-sitter.
 
-Design provenance (confirmed by a PoC - follow it, do not re-learn the hard way):
-  - tree-sitter parse API pitfall: always use `get_language(<grammar>)` +
-    `tree_sitter.Parser(lang).parse(bytes)`.
-    Do not use tree_sitter_language_pack's `get_parser()` - the native Parser
-    it returns is not compatible with the local tree_sitter 0.25 wrapper
-    (raises an error on bytes input).
-  - Full symbol-table extraction goes through tree-sitter (measured ~5 ms/file),
-    not jedi (jedi handles references, a different concern).
-  - C5 multi-language: tree-sitter-language-pack bundles multi-language grammars;
-    each language's "definition" node types differ (confirmed on 2026-06-18 by
-    `_probe.py`, which empirically verified every language's node types and name
-    fields). Described via a per-language table - adding a language is one new
-    entry, adding a symbol kind is one table edit (aligned with the code skill's
-    Open/Closed Principle).
-
-Responsibility (single): given a file path or a chunk of source, emit that
-file's symbol-definition list (function / class / method / type / module-level
-variable + line number + enclosing scope). Does not touch SQLite, does not
-touch jedi, does not touch sorting - those are other modules' concerns.
-
-The return value is always a "directly JSON-serializable" dict/list, so the C2
-daemon can wrap it as HTTP.
+``LANGUAGE_SPECS`` maps file extensions and grammar node types to CodeSextant
+symbol kinds. Results include the symbol name, kind, source range, and enclosing
+scope as JSON-serializable dictionaries. This module does not persist, resolve,
+or rank symbols.
 """
 from __future__ import annotations
 
@@ -198,8 +180,8 @@ LANGUAGE_SPECS: dict[str, dict] = {
         "exts": [".swift"],
         # Swift grammar parses enum/struct/class/actor all as class_declaration
         # (cannot be distinguished further) -> all classified as class; this
-        # limitation is honestly documented here (confirmed by _probe:
-        # `enum Color`/`struct Point` are both class_declaration).
+        # limitation is documented here: enum and struct declarations share the
+        # class_declaration node type.
         "always": {
             "class_declaration": "class",
             "protocol_declaration": "protocol",
@@ -238,7 +220,7 @@ LANGUAGE_SPECS: dict[str, dict] = {
         "language": "bash",
         "exts": [".sh", ".bash"],
         "always": {"function_definition": "function"},   # both `explicit_fn()` and `function explicit_fn` are this type
-        "vars": {},                                       # top-level variable name fields are not identifiers, so walk() does not collect them (honestly left empty)
+        "vars": {},                                       # top-level variable names are not identifier nodes
     },
     "lua": {
         "language": "lua",
@@ -276,10 +258,8 @@ def language_for_file(file_path: str) -> str | None:
 def parse_source(source: bytes, lang_key: str):
     """Parse a chunk of source into a tree-sitter tree.
 
-    Per adversarial review L4-MEDIUM: index_project parses each file once and
-    shares that same tree across symbols/comments/fingerprints (by passing
-    tree= into each module's *_from_source), avoiding the redundancy of
-    re-parsing the same file three times. Unsupported lang_key -> ValueError.
+    ``index_project`` parses each file once and shares the tree across symbol,
+    comment, and fingerprint extraction. An unsupported language raises ValueError.
     """
     spec = LANGUAGE_SPECS.get(lang_key)
     if spec is None:
@@ -375,10 +355,9 @@ def extract_symbols_from_source(source: bytes, lang_key: str = "python", *,
     Parameters
     ----------
     source : bytes
-        The file's raw bytes (always pass bytes, not str - matches the PoC's
-        parse(bytes) path).
+        The file's raw bytes. Passing text raises ``TypeError``.
     lang_key : str
-        Language key (a key of LANGUAGE_SPECS; defaults to "python" to keep C1 compatibility).
+        A key in ``LANGUAGE_SPECS``. Defaults to ``"python"``.
     file_path : str
         Used only for error messages and the return marker; the file is not read.
 
@@ -408,7 +387,7 @@ def extract_symbols_from_source(source: bytes, lang_key: str = "python", *,
             f" (file_path={file_path}). Available: {sorted(LANGUAGE_SPECS)}"
         )
 
-    if tree is None:    # per adversarial review L4-MEDIUM: index_project may pass in an already-parsed tree, shared across the three modules to skip redundant re-parsing
+    if tree is None:    # index_project may pass a tree shared by all extractors
         parser = tree_sitter.Parser(_ts_language(spec["language"]))
         tree = parser.parse(bytes(source))
     root = tree.root_node

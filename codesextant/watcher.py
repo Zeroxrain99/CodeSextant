@@ -1,5 +1,4 @@
-"""File-watch proactive incremental indexing (competitor-feature-absorption queue 3,
-inspired by CodeGraph/aider).
+"""Event-driven incremental indexing for watched repositories.
 
 The singleton daemon attaches a native OS file watcher (ReadDirectoryChangesW on
 Windows, inotify on Linux, and FSEvents on macOS). Normal changes are passed to the
@@ -12,7 +11,7 @@ Design principles:
     a reindex storm).
   - Watchdog is a required package dependency. If a broken environment still lacks it,
     watcher attachment fails closed and an explicit reconciliation remains available.
-  - Switches + parameters are all configurable (L0 hard rule #6).
+  - Environment variables configure watcher behavior and debounce timing.
 
 Switches (all tolerant of .lower()):
   - CODESEXTANT_WATCH_ENABLED = 0/false/no/off to disable (default on).
@@ -253,7 +252,7 @@ class WatchManager:
     def recover(self, repo_path: str) -> dict:
         """Reconcile once after daemon startup to cover changes made while it was down.
 
-        This is deliberately lifecycle-triggered, never periodic. The watcher must be
+        This runs during daemon startup rather than on a timer. The watcher must be
         attached before this runs so an edit during recovery is still queued afterward.
         """
         rp = os.path.abspath(repo_path)

@@ -1,25 +1,17 @@
-"""Discipline-to-beauty backend: per-node code health values (D1 bloat + D3 cognitive
-complexity + D5 duplication -> health[0,1]; D6 dead code -> dead). Pure numbers, zero
-randomness, serializable.
+"""Compute deterministic per-symbol code health values.
 
-⛔ Contains no visual mapping (saturation/opacity/dark-arc formulas). That's the
-presentation layer's job (starmap frontend/PoC); the engine only supplies numbers.
-Hard rules: ① a read-only navigation map, where health is a clue, not a verdict, and never
-emits a "should delete/should change" decision ② UNKNOWN/N-A dimensions (fingerprint-less
-class/variable symbols, cognitive complexity for non-high-confidence languages) are
-excluded and the remaining weights are renormalized (never washed up to a perfect score
-= guards against vapor) ③ a deterministic pure function. The "balanced" preset weights,
-tunable via env (L0 hard rule #6).
+Health combines bloat, cognitive complexity, and duplication into a value from 0 to 1.
+Dead-code evidence is stored separately. Missing dimensions are excluded and the
+remaining weights are renormalized, so an unknown value does not become a perfect score.
 
-The engine (engine.get_health) and the PoC (_poc_graph_c/code_health.py) share this
-module's annotate = the single numeric source of truth (no duplicate implementation, no
-drift between the two).
+These values are navigation clues, not recommendations to delete or change code. Visual
+properties such as color and opacity belong to the presentation layer. Both the engine
+and prototype use ``annotate`` as their numeric implementation.
 """
 import os
 from collections import defaultdict
 
-# SSOT §2.3 "balanced" preset weights (D1/D3/D5 in effect; D10 long-parameter-list is
-# UNKNOWN in this version). Tunable via env (L0 hard rule #6).
+# Balanced default weights. Environment variables can override them.
 W = {"dup": float(os.environ.get("CODESEXTANT_W_DUP", 0.30)),
      "cog": float(os.environ.get("CODESEXTANT_W_COG", 0.30)),
      "bloat": float(os.environ.get("CODESEXTANT_W_BLOAT", 0.25))}
@@ -42,7 +34,7 @@ def annotate(nodes, fp_by, shape_cnt, dead_keys, key_of):
     fp_by    : {(normcase_path, line): (node_count, shape_hash, cognitive)}; cognitive
                None=UNKNOWN
     shape_cnt: Counter[shape_hash] (determines duplication: >1 means EXACT/RENAMED twins)
-    dead_keys: set[(normcase_path, line)] (D6 unwired -> opacity, does not feed the health
+    dead_keys: set[(normcase_path, line)] (unwired evidence, excluded from the health
                value)
     key_of   : node -> (normcase_path, line) (caller decides how to derive the key from a
                node)
@@ -59,11 +51,11 @@ def annotate(nodes, fp_by, shape_cnt, dead_keys, key_of):
             node_count, shape, cog = fp
             pen["bloat"] = _smoothstep(BLOAT_LO, BLOAT_HI, node_count)
             pen["dup"] = 1.0 if shape_cnt[shape] > 1 else 0.0
-            if cog is not None:   # D3: only weighted for high-confidence languages; None=UNKNOWN is excluded and renormalized (never washed to a perfect score)
+            if cog is not None:   # Unsupported complexity values are excluded.
                 pen["cog"] = _smoothstep(COG_LO, COG_HI, cog)
             if shape_cnt[shape] > 1:
                 shape_to_idx[shape].append(idx)
-        if pen:   # has a valid dimension -> renormalize (UNKNOWN is never washed to a perfect score = C2 vapor guard)
+        if pen:   # Renormalize across the available dimensions.
             sw = sum(W[k] for k in pen)
             penalty = min(max(sum(pen[k] * W[k] for k in pen) / sw, 0.0), 1.0)
             n["health"] = round(1.0 - penalty, 4)

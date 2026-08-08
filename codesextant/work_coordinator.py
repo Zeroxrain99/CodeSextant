@@ -7,7 +7,7 @@ for expensive work plus single-flight coalescing for identical overlapping
 requests.  It is dependency-light so ``/health`` can inspect queue state
 without importing the parser/index engine.
 
-Residual risks (documented deliberately, honesty over cover-up):
+Known limits:
 
 * Deadline stacking: the client's heavy deadline (default 900s via
   ``CODESEXTANT_HEAVY_TIMEOUT_SEC``; ``CODESEXTANT_MAP_TIMEOUT_SEC`` /
@@ -43,7 +43,7 @@ from typing import Any
 # identical whether it computed for 40s or waited 40s behind someone else.
 # These lines are what an operator reads when asked "why was my query slow".
 #
-# ⚠ Must be a *child* of "codesextant.daemon".  A sibling logger has no handler
+# This must be a child of "codesextant.daemon". A sibling logger has no handler
 # of its own, so every line would be silently discarded: observability that
 # exists in the source and nowhere in the log file.  Children propagate up to
 # the daemon logger's RotatingFileHandler; the daemon's own ``propagate=False``
@@ -232,13 +232,13 @@ class ShardedHeavyWork:
     global slot count preserves the contention protection the single lane was
     introduced for.
 
-    Switches (per L0 rule 6):
-      CODESEXTANT_HEAVY_SHARDING=0     → every request shares one lane (old behaviour)
-      CODESEXTANT_HEAVY_GLOBAL_CAP     → concurrent heavy jobs machine-wide (default 2)
-      CODESEXTANT_HEAVY_QUEUE_CAP      → queued jobs *per shard* (default 8)
-      CODESEXTANT_HEAVY_FOLLOWER_CAP   → coalesced followers per job (default 8)
+    Environment switches:
+      CODESEXTANT_HEAVY_SHARDING=0: every request shares one lane
+      CODESEXTANT_HEAVY_GLOBAL_CAP: concurrent heavy jobs machine-wide (default 2)
+      CODESEXTANT_HEAVY_QUEUE_CAP: queued jobs per shard (default 8)
+      CODESEXTANT_HEAVY_FOLLOWER_CAP: coalesced followers per job (default 8)
 
-    Known limit (documented, not hidden): a job that itself calls back into a
+    Known limit: a job that itself calls back into a
     *different* shard would hold one global slot while waiting for another.  No
     current endpoint handler does that; same-shard reentrancy still fails fast
     through the underlying coordinator's owner-thread guard.

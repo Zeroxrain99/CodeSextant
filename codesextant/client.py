@@ -1,13 +1,9 @@
-"""codesextant C3 reserved interface: a thin client that lets "any Skill / other agent
-that wires it in" query CodeSextant in one line.
+"""HTTP client for the local CodeSextant daemon.
 
-Implements the C3 requirement from design §2④/§8.1: "a keyword triggers the Skill ->
-automatically ensure the daemon is running (idempotent) + automatically attach the
-current project's key -> three query interfaces". This module packages those three
-steps into functions; a Skill or any other agent just imports it and uses it directly,
-without reimplementing the HTTP and ensure logic itself.
+The client binds requests to a project path, starts the daemon when requested, and
+exposes the daemon's query endpoints without duplicating transport code.
 
-Typical usage (inside a C3 Skill):
+Typical usage:
     from codesextant.client import CodesextantClient
     c = CodesextantClient(project=os.getcwd())   # auto-ensures the daemon + binds the current repo
     c.ensure()                                # idempotent: only spawns in the background if not already running
@@ -15,9 +11,8 @@ Typical usage (inside a C3 Skill):
     print(c.get_map(budget=1500))
     print(c.find_references("check"))
 
-Shared across all agents: every client talks to the same daemon on a fixed port (a
-singleton, idempotently guaranteed to be one-per-machine). No third-party dependency
-(stdlib urllib only), so it's easy to drop into any Skill / agent environment.
+Every client on a machine uses the same local daemon and project-specific storage. The
+implementation uses only the Python standard library.
 """
 from __future__ import annotations
 
@@ -31,13 +26,12 @@ from . import daemon
 
 
 class CodesextantClient:
-    """A thin HTTP client with automatic idempotent ensure + automatic project binding.
+    """HTTP client with daemon startup and project binding helpers.
 
     Parameters
     ----------
-    project : the current repo's absolute path (this is what a C3 Skill auto-attaches as
-              the current project). The daemon side shards storage by
-              project_key=sha1(abs path), so projects never cross-contaminate.
+    project : the current repository's absolute path. The daemon shards storage by
+              project_key=sha1(abs path), so projects remain isolated.
     port    : the daemon's port (defaults to reading CODESEXTANT_PORT, or 8790).
     """
 
@@ -48,7 +42,7 @@ class CodesextantClient:
         self.timeout = timeout
         self.base = f"http://{daemon.HOST}:{self.port}"
 
-    # ── idempotent ensure (the first step a C3 Skill triggers) ──
+    # ── daemon lifecycle ──
     def ensure(self) -> dict:
         """Ensure the daemon is running (does nothing if it's already up). Returns the
         result of ensure_running."""
@@ -61,8 +55,8 @@ class CodesextantClient:
     def _open_json(self, request, *, timeout: float | None = None) -> dict:
         """Open once, self-heal a dead daemon, then retry exactly once.
 
-        HTTPError means the daemon did answer with an application error and is
-        deliberately not retried.  Only transport failures trigger ensure.
+        An HTTPError is an application response and is not retried. Only transport
+        failures trigger daemon startup.
         """
         request_timeout = self.timeout if timeout is None else timeout
         for attempt in range(2):
@@ -137,13 +131,13 @@ class CodesextantClient:
             raise ValueError("CodesextantClient: no project specified (repo absolute path)")
         return os.path.abspath(p)
 
-    # ── three query interfaces + maintenance interface (aligned with daemon endpoints) ──
+    # ── query and maintenance endpoints ──
     def health(self) -> dict:
         return self._get("/health", {})
 
     def status(self, project: str | None = None, *, fresh: bool = False) -> dict:
         # fresh=True -> passes ?fresh=1 so the daemon compares against the git HEAD sha for
-        # freshness (pitfall 6; defaults to lazy, not checking, so an unguarded GET can't
+        # Freshness checks are opt-in so an unguarded GET does not
         # trigger a git spawn). The response includes git_stale / indexed_git_sha /
         # current_git_sha.
         return self._get("/status", {"project": self._proj(project),
@@ -155,8 +149,7 @@ class CodesextantClient:
 
     def get_map(self, budget: int = 2000, project: str | None = None,
                 focus_symbols=None, focus_files=None) -> dict:
-        # queue 4: focus_symbols/focus_files (list) -> comma-joined for the daemon's
-        # query-aware ranking
+        # The daemon accepts focus lists as comma-separated query parameters.
         map_timeout = self._heavy_timeout("CODESEXTANT_MAP_TIMEOUT_SEC")
         return self._get("/get_map", {
             "project": self._proj(project), "budget": budget,
@@ -181,8 +174,7 @@ class CodesextantClient:
 
     def find_deadcode(self, scope_file: str | None = None, lang: str | None = None,
                       project: str | None = None) -> dict:
-        # sequence 3: the dead-code clue layer. orphan only runs (real per-symbol
-        # resolution against that file) when scope_file is given.
+        # Per-symbol orphan resolution runs only when scope_file is provided.
         return self._get("/deadcode", {"project": self._proj(project),
                                        "file": scope_file, "lang": lang},
                          timeout=self._heavy_timeout())
@@ -196,19 +188,17 @@ class CodesextantClient:
 
     def find_unwired(self, max_fanout: int | None = None,
                      project: str | None = None) -> dict:
-        # Feature A: unwired check (a coarse namegraph name-level, whole-graph filter for
-        # top-level symbols with zero external references; a low-confidence clue layer).
+        # Unwired detection uses low-confidence name-level graph evidence.
         return self._get("/find_unwired", {"project": self._proj(project),
                                            "max_fanout": max_fanout},
                          timeout=self._heavy_timeout())
 
     def get_health(self, project: str | None = None) -> dict:
-        # Discipline-to-beauty: per-symbol code health (low = a spot worth reading and
-        # double-checking; a clue, not a verdict, and ⛔ never emits a "should delete").
+        # Health scores point to code worth reviewing and do not recommend deletion.
         return self._get("/get_health", {"project": self._proj(project)},
                          timeout=self._heavy_timeout())
 
-    # ── Feature B: comment management + duplicate detection ──
+    # ── comments and duplicate detection ──
     def get_comment_overview(self, file: str | None = None, project: str | None = None) -> dict:
         return self._get("/comment_overview", {"project": self._proj(project), "file": file},
                          timeout=self._heavy_timeout())
@@ -241,8 +231,7 @@ class CodesextantClient:
     def call_hierarchy(self, symbol: str, *, direction: str = "both",
                        max_hops: int | None = None, def_path: str | None = None,
                        src_root: str | None = None, project: str | None = None) -> dict:
-        # Competitor-feature-absorption queue 1: transitive call chain. direction
-        # up=callers/down=callees/both.
+        # direction: up=callers, down=callees, both=both directions.
         return self._post("/call_hierarchy", {
             "project": self._proj(project), "symbol": symbol,
             "direction": direction, "max_hops": max_hops,
@@ -252,8 +241,7 @@ class CodesextantClient:
     def impact(self, symbol: str, *, max_hops: int | None = None,
                def_path: str | None = None, src_root: str | None = None,
                project: str | None = None) -> dict:
-        # Competitor-feature-absorption queue 2: change impact / blast radius (who gets
-        # dragged in if X changes).
+        # Find symbols affected transitively when the selected symbol changes.
         return self._post("/impact", {
             "project": self._proj(project), "symbol": symbol,
             "max_hops": max_hops, "def_path": def_path, "src_root": src_root},

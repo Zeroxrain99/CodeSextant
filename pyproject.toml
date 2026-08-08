@@ -3,13 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# The name comes from the sextant, an instrument for fixing your position when
-# there is no landmark in sight. Earlier candidates were dropped for collisions:
-# "codemap" was taken on PyPI and clashed with a VSCode extension and a USPTO
-# trademark; "tracemap" was taken by a traceroute visualiser.
 name = "codesextant"
 version = "0.16.0"
-description = "Local code map service for AI agents: tree-sitter symbols across 15 languages, import-resolved references for Python and TS/JS, incremental SQLite index, weighted PageRank ranking, single shared daemon."
+description = "Local code map for developers and AI agents, with tree-sitter symbols across 15 languages, import-resolved Python and TS/JS references, and one incremental index shared across local tools."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
@@ -34,8 +30,6 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-# Without these, the PyPI page has no route back to the source. Anyone
-# evaluating the package sees a description and nothing to verify it against.
 [project.urls]
 Homepage = "https://github.com/Zeroxrain99/CodeSextant"
 Repository = "https://github.com/Zeroxrain99/CodeSextant"
@@ -53,16 +47,11 @@ codesextant = "codesextant.__main__:main"
 [tool.setuptools]
 packages = ["codesextant"]
 
-# This project sets its own line length rather than inheriting the tool default
-# of 88. Under the default, a single run reports 359 findings here, almost none
-# of which are real defects. Once a report is mostly noise, nobody reads the
-# findings that matter.
+# Match the existing source style and keep lint focused on correctness.
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# _poc_graph_c holds one-off prototype scripts, not product code. Judging them
-# by product standards produces 76 findings nobody will ever fix, which buries
-# the 15 real ones in the product code.
+# Prototype scripts are excluded from product linting.
 exclude = ["build", "dist", ".venv", "_poc_graph_c"]
 
 [tool.ruff.lint]

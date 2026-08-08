@@ -1,15 +1,10 @@
-"""Comment management: tree-sitter extracts comment nodes + line numbers + owning symbol (Feature B, second half).
+"""Extract comments, tags, docstrings, line numbers, and owning symbols with tree-sitter.
 
-Positioning (design doc §3.B): "see everything at once vs. see only what matters + know which
-line": docstring coverage / where each TODO·FIXME sits / comment density, feeding both a repo
-summary and precise navigation. **Lightweight, avoids the four pitfalls, gives a clue, not a verdict.**
+The results support repository summaries and source navigation. This module shares the
+grammar cache and definition tables from ``symbols`` but remains separate from symbol
+extraction.
 
-Single responsibility: takes a file path or a chunk of source, emits that file's comment list.
-Not folded into extract_symbols (keeps symbols.py's single responsibility), but shares symbols'
-`_ts_language()` grammar cache and the LANGUAGE_SPECS definition-node table (used to tag scope
-and to find the body field for a Python docstring).
-
-Honest boundaries (design doc §6):
+Limitations:
   - docstring detection is limited to "the first named child of a block/module is a string node"
     (Python): a string wrapped in a conditional, assigned to a variable, or not in first position
     will be missed.
@@ -19,7 +14,7 @@ Honest boundaries (design doc §6):
   - Coverage/density are structural statistical clues, not a judgment on whether a comment is
     correct, stale, or in sync with the code (that's semantics, which this can't see).
 
-Switches (L0 hard rule #6, all tolerant of .lower() case):
+Switches, with case-insensitive values:
   - CODESEXTANT_COMMENTS_DISABLED        opt out of the whole feature
   - CODESEXTANT_COMMENT_MARKERS          marker set (default TODO,FIXME,HACK,XXX,BUG,NOTE)
 """
@@ -137,7 +132,7 @@ def extract_comments_from_source(source: bytes, lang_key: str = "python", *,
     is_python = lang_key == "python"
     marker_re = _marker_re()
 
-    if tree is None:    # Red team L4-MEDIUM: index shares the tree to avoid re-parsing
+    if tree is None:    # The index can provide its tree to avoid parsing twice.
         parser = tree_sitter.Parser(symbols._ts_language(spec["language"]))
         tree = parser.parse(bytes(source))
     root = tree.root_node
@@ -175,7 +170,7 @@ def extract_comments_from_source(source: bytes, lang_key: str = "python", *,
                 "owner_line": None,
             }
             out.append(rec)
-            # Red team L3-MEDIUM: Rust `//!`/`/*!` is an "inner doc comment"; it documents the
+            # Rust `//!` and `/*!` are inner doc comments that document the
             # enclosing item (module/crate), and must not be backfilled onto the sibling symbol
             # below it (otherwise a `//!` at the top of a file would get misattributed as the
             # docstring for the fn below it, systematically inflating coverage). Only an outer
@@ -274,7 +269,7 @@ def scan_tags_in_text(text: str, base_line: int, marker_re=None) -> list[dict]:
     if marker_re is None:
         return []
     found: list[dict] = []
-    # Red team L3-LOW: uses split("\n") rather than splitlines(), because the latter also splits on
+    # Use split("\n") rather than splitlines(), because the latter also splits on
     # Unicode line separators like U+2028/\v/\f/\x85, which disagrees with tree-sitter's line
     # numbering model (which only recognizes \n) -> markers would map to the wrong source line
     # (jumping to the wrong place).

@@ -1,15 +1,8 @@
-"""Command-line entrypoint: python -m codesextant <cmd> ... for running checks.
+"""Command-line interface for CodeSextant.
 
-Subcommands (one per engine API, which makes manual verification easy and gives the
-C2 daemon something to compare against):
-  index        <path> [--force]
-  symbols      <path> [--file F]
-  references   <path> <symbol> [--src-root R] [--def-path D] [--no-low]
-  map          <path> [--budget N]
-  status       <path>
-
-Output is human-readable by default; --json prints the raw JSON for programs and for
-comparing against the daemon.
+Commands cover indexing, symbol and reference lookup, code maps, change impact,
+and repository checks. Output is human-readable by default; ``--json`` prints
+JSON for scripts and integrations.
 """
 from __future__ import annotations
 
@@ -18,7 +11,7 @@ import json
 import os
 import sys
 
-sys.stdout.reconfigure(encoding="utf-8")  # so the Windows console does not choke on emoji
+sys.stdout.reconfigure(encoding="utf-8")  # Preserve paths and symbols on Windows.
 
 from . import engine  # noqa: E402
 from . import fieldread_lite as fl  # noqa: E402
@@ -83,7 +76,7 @@ def cmd_references(args) -> int:
     else:
         print(f"References to '{r['symbol']}'")
         if r.get("error"):
-            print(f"  ⚠ {r['error']}")
+            print(f"  Warning: {r['error']}")
         d = r.get("definition")
         if d:
             print(f"  Definition: {d['path']}:{d['line']}")
@@ -96,15 +89,14 @@ def cmd_references(args) -> int:
               f"confirmed by jedi")
         cands = r.get("candidate_definitions", [])
         if len(cands) > 1:
-            print(f"  ⚠ {len(cands)} definitions share this name (name matching cannot tell them "
+            print(f"  Warning: {len(cands)} definitions share this name (name matching cannot tell them "
                   f"apart; only jedi can):")
             for c in cands[:10]:
                 print(f"    {c['path']}:{c['line']} (scope={c['scope'] or 'module top level'})")
-        # Step 6: reliability self-assessment (low/medium tells you to read the code).
+        # Report the resolver's confidence and any follow-up advice.
         rel = r.get("reliability") or {}
         if rel.get("level"):
-            mark = "✅" if rel["level"] == "high" else "⚠"
-            print(f"  {mark} Reliability {rel['level']}: {rel.get('advice')}")
+            print(f"  Reliability {rel['level']}: {rel.get('advice')}")
     return 0
 
 
@@ -169,9 +161,8 @@ def cmd_deadcode(args) -> int:
         print(f"Summary: unused={s.get('unused_import_count', 0)} "
               f"likely_unused={s.get('likely_unused', 0)} keep={s.get('keep', 0)} "
               f"unknown={s.get('unknown', 0)}")
-        # Step 6: spell out the tool's blind spots (you have to read the code yourself).
         for a in r.get("read_code_advisory", []) or []:
-            print(f"  🔎 {a}")
+            print(f"  Review: {a}")
     return 0
 
 
@@ -189,17 +180,18 @@ def cmd_ai_usage(args) -> int:
             if n.get("type") == "file" and n.get("violation"):
                 for st in n.get("sites", []):
                     if st.get("channel") == "direct":
-                        print(f"  🔴 direct violation {n['path']}:{st['line']} [{st['provider']}] {st['snippet']}")
+                        print(f"  Policy violation: direct API call {n['path']}:{st['line']} "
+                              f"[{st['provider']}] {st['snippet']}")
         for a in r.get("read_code_advisory", []) or []:
-            print(f"  🔎 {a}")
+            print(f"  Review: {a}")
         if r.get("verification_reminder"):
-            print(f"  ℹ {r['verification_reminder']}")
+            print(f"  Note: {r['verification_reminder']}")
     if getattr(args, "html", None):
         from . import ai_usage_html
         out = os.path.abspath(args.html)
         with open(out, "w", encoding="utf-8") as f:
             f.write(ai_usage_html.render_ai_usage(r))
-        print(f"[codesextant] AI Usage HUD written to: {out}", file=sys.stderr)
+        print(f"[codesextant] AI usage report written to: {out}", file=sys.stderr)
     return 0
 
 
@@ -209,7 +201,7 @@ def cmd_unwired(args) -> int:
         _emit(r, True)
     else:
         s = r.get("summary", {}) or {}
-        print(f"Unwired check (feature A, name-level whole-graph sweep): scanned "
+        print(f"Unwired check (name-level graph): scanned "
               f"{s.get('top_level_referenceable_scanned', 0)} top-level symbol(s) → "
               f"{s.get('unwired_candidates', 0)} unwired candidate(s) / "
               f"{s.get('unknown_fanout', 0)} undecidable (flooded name) / "
@@ -224,11 +216,11 @@ def cmd_unwired(args) -> int:
                   f"{c['path'].split(chr(92))[-1]}:{c['line']}")
         if cs.elided:
             print(f"  … ({cs.elided} more elided; use --full to see all)")
-        # Honesty layer: the ceiling of name-level analysis, and the reminder to
+        # Explain the limits of name-level analysis and the need to
         # cross-check with real resolution.
         for a in r.get("read_code_advisory", []) or []:
-            print(f"  🔎 {a}")
-        print(f"  ⚠ {r.get('verification_reminder', '')}")
+            print(f"  Review: {a}")
+        print(f"  Note: {r.get('verification_reminder', '')}")
     return 0
 
 
@@ -238,20 +230,20 @@ def cmd_health(args) -> int:
         _emit(r, True)
         return 0
     s = r.get("summary", {}) or {}
-    print(f"Code health (numeric layer: D1 bloat / D3 complexity / D5 duplication → health, "
-          f"D6 dead code → dead): {s.get('n_covered', 0)}/{s.get('n_nodes', 0)} scored "
+    print(f"Code health (bloat, complexity, and duplication; unwired evidence is separate): "
+          f"{s.get('n_covered', 0)}/{s.get('n_nodes', 0)} scored "
           f"({s.get('coverage', 0) * 100:.0f}% coverage) · {s.get('n_dead', 0)} unwired · "
           f"{len(s.get('clone_pairs', []))} duplicate arc(s)")
     graded = sorted((n for n in r.get("symbols", []) if n.get("health") is not None),
                     key=lambda n: n["health"])
     topn = len(graded) if args.full else min(_out_budget(args), len(graded))
     for n in graded[:topn]:
-        tag = "  💀 unwired" if n.get("dead") else ""
+        tag = "  unwired" if n.get("dead") else ""
         print(f"  health={n['health']:.3f}  [{n.get('kind', ''):8}] {n['name']:26} "
               f"{n['path'].split(chr(92))[-1]}:{n['line']}{tag}")
     if not args.full and len(graded) > topn:
         print(f"  … ({len(graded) - topn} healthier symbol(s) elided; use --full to see all)")
-    print("  🔎 Low health marks a place worth reading yourself and checking with build/CI. It is "
+    print("  Review: Low health marks a place worth inspecting and checking with build/CI. It is "
           "not a 'should be deleted' verdict. UNKNOWN (no fingerprint, or a low-confidence "
           "language) is left unscored.")
     return 0
@@ -276,7 +268,7 @@ def cmd_comment_overview(args) -> int:
             print(f"Density: {dd['comment_lines']} comment line(s) / {dd['code_lines']} code line(s) = {dd['ratio']}")
         for u in r["top_undocumented"][:10]:
             print(f"  ✗ {u['kind']} {u['name']} @ {u['path'].split(chr(92))[-1]}:{u['line']}")
-        print(f"  🔎 {r['caveat']}")
+        print(f"  Note: {r['caveat']}")
     return 0
 
 
@@ -332,8 +324,8 @@ def cmd_duplicates(args) -> int:
         if cs.elided:
             print(f"  … ({cs.elided} more group(s) elided; use --full)")
         for a in r["read_code_advisory"]:
-            print(f"  🔎 {a}")
-        print(f"  ⚠ {r['verification_reminder']}")
+            print(f"  Review: {a}")
+        print(f"  Note: {r['verification_reminder']}")
     return 0
 
 
@@ -346,7 +338,7 @@ def cmd_callgraph(args) -> int:
     else:
         print(f"Call chain for '{r['symbol']}' direction={r['direction']} max_hops={r['max_hops']}")
         if r.get("error"):
-            print(f"  ⚠ {r['error']}")
+            print(f"  Warning: {r['error']}")
         budget = _out_budget(args)
         for key, title in (("callers", "Callers (who transitively calls this symbol)"),
                            ("callees", "Callees (who this symbol transitively calls)")):
@@ -363,7 +355,7 @@ def cmd_callgraph(args) -> int:
                     head += f" (showing {len(cs.shown)}, {cs.elided} elided; use --full to see all)"
                 print(head)
                 for c in cs.shown:
-                    conf = "" if c.get("confidence") == "high" else " ⚠ low"
+                    conf = "" if c.get("confidence") == "high" else " [low confidence]"
                     fn = c["path"].split(chr(92))[-1]
                     print(f"    [L{c['depth']}] {c['name']} @ {fn}:{c['line']}{conf}")
         if r.get("note"):
@@ -389,18 +381,21 @@ def cmd_impact(args) -> int:
         cs = fl.compress([fl.Section("hi", "High importance", list(hi), priority=10, min_keep=len(hi))],
                          budget=_out_budget(args), full=args.full)[0]
         for c in cs.shown:
-            print(f"  ⭐ {c['name']} @ {c['path'].split(chr(92))[-1]}:{c['line']}")
+            print(f"  High importance: {c['name']} @ {c['path'].split(chr(92))[-1]}:{c['line']}")
         if cs.elided:
             print(f"  … ({cs.elided} more elided; use --full)")
         if r.get("error"):
-            print(f"  ⚠ {r['error']}")
+            print(f"  Warning: {r['error']}")
     return 0
 
 
 # Subcommand → (handler, argument-adding function), table-driven: adding a subcommand
 # means adding one entry.
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="codesextant", description="Pure code-map engine (C1)")
+    p = argparse.ArgumentParser(
+        prog="codesextant",
+        description="Local code navigation and change-impact analysis",
+    )
     p.add_argument("--json", action="store_true", help="print raw JSON")
     p.add_argument("--full", action="store_true",
                    help="(map/callgraph/impact) turn off output compression and print the full list")
@@ -419,7 +414,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--file", default=None, help="restrict to one file")
     ps.set_defaults(func=cmd_symbols)
 
-    pr = sub.add_parser("references", help="find who uses a symbol (two-stage jedi)")
+    pr = sub.add_parser("references", help="find references to a symbol")
     pr.add_argument("path")
     pr.add_argument("symbol")
     pr.add_argument("--src-root", default=None, help="jedi.Project root (defaults to path)")
@@ -443,19 +438,25 @@ def _build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--lang", default=None, help="override language inference")
     pd.set_defaults(func=cmd_deadcode)
 
-    pa = sub.add_parser("ai-usage", help="scan which AI/LLM services the repo uses + dispatch_policy cli/direct/local channels")
+    pa = sub.add_parser("ai-usage", help="scan AI/LLM provider calls and access channels")
     pa.add_argument("path")
     pa.add_argument("--file", default=None, help="scan one file only (for debugging)")
-    pa.add_argument("--html", default=None, help="write the dark HUD relationship graph HTML to this path")
+    pa.add_argument("--html", default=None, help="write the interactive relationship graph HTML to this path")
     pa.set_defaults(func=cmd_ai_usage)
 
-    pu = sub.add_parser("unwired", help="unwired check (feature A: name-level whole-graph sweep for symbols with zero external references)")
+    pu = sub.add_parser(
+        "unwired",
+        help="find top-level symbols with no name-level external references",
+    )
     pu.add_argument("path")
     pu.add_argument("--max-fanout", type=int, default=None,
                     help="fan-out cap for same-name definitions (defaults to env CODESEXTANT_NAMEGRAPH_MAX_FANOUT, or 20)")
     pu.set_defaults(func=cmd_unwired)
 
-    ph = sub.add_parser("health", help="code health (numeric layer: D1 bloat / D3 complexity / D5 duplication → health, D6 dead code)")
+    ph = sub.add_parser(
+        "health",
+        help="score code health from bloat, complexity, and duplication evidence",
+    )
     ph.add_argument("path")
     ph.set_defaults(func=cmd_health)
 
@@ -470,7 +471,10 @@ def _build_parser() -> argparse.ArgumentParser:
     pct.add_argument("--file", default=None, help="restrict to one file")
     pct.set_defaults(func=cmd_comment_tags)
 
-    pcm = sub.add_parser("comments", help="retrieve comments precisely (only the ones worth reading)")
+    pcm = sub.add_parser(
+        "comments",
+        help="retrieve comments with file, scope, docstring, and tag filters",
+    )
     pcm.add_argument("path")
     pcm.add_argument("--file", default=None, help="restrict to one file")
     pcm.add_argument("--scope", default=None, help="restrict to one symbol scope")
@@ -478,7 +482,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pcm.add_argument("--tag", default=None, help="only comments carrying a given tag")
     pcm.set_defaults(func=cmd_comments)
 
-    pdu = sub.add_parser("duplicates", help="duplicate / near-duplicate detection (shared core, structural fingerprints)")
+    pdu = sub.add_parser("duplicates", help="find structural duplicates and near-duplicates")
     pdu.add_argument("path")
     pdu.add_argument("--file", default=None, help="restrict to this file (stage 2/3 run here only by default)")
     pdu.add_argument("--near-global", action="store_true", help="enable global near-duplicate stage 2/3 (can be slow on a large repo)")
@@ -496,7 +500,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--def-path", default=None, help="the file the symbol is defined in (specify it when names collide)")
     pc.set_defaults(func=cmd_callgraph)
 
-    pj = sub.add_parser("impact", help="change blast radius (who is affected by editing X)")
+    pj = sub.add_parser("impact", help="estimate change impact through caller relationships")
     pj.add_argument("path")
     pj.add_argument("symbol")
     pj.add_argument("--max-hops", type=int, default=None, help="maximum recursion depth of the transitive chain")
