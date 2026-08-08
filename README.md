@@ -1,8 +1,10 @@
 # CodeSextant
 
-**A local code map service for AI agents. No cloud, no API keys. Every agent on your machine shares one import-resolved symbol graph, so they can understand a codebase without reading all of it.**
+**AI coding agents can generate code faster than they can understand a repository. They search for names, reread files, miss call sites, and break B while fixing A. The bottleneck is not model intelligence alone. It is the missing index.**
 
-Before an agent writes or changes any real code, it needs three answers: who calls this symbol, what breaks if I change it, and does something like this already exist. CodeSextant answers those from a resolved graph rather than a text search. It does not replace reading the code. It tells you *which few places* are worth reading.
+CodeSextant is a local, shared code index for coding agents. It builds an import-aware symbol graph and answers the questions an agent needs before editing: who calls this symbol, what depends on it, and which few files are actually worth reading?
+
+Python and TypeScript/JavaScript get resolved references. Other supported languages are clearly labelled when results come from low-confidence name matching. Index once, then every agent on the machine reuses the same map. No cloud, no API keys, and no source code leaves your machine.
 
 The name is from the **sextant**: an instrument for fixing your position when there is no landmark in sight.
 
@@ -103,7 +105,7 @@ A few lower-level language-inference knobs (`CODESEXTANT_INFER_LANG_*`) are docu
 python -m pytest tests/ -q
 ```
 
-430 tests, about a minute on a developer laptop. They cover the daemon lifecycle, incremental indexing, map scalability, snapshot invalidation, and reference resolution across the supported languages.
+435 tests, about a minute on a developer laptop. They cover the daemon lifecycle, incremental indexing, map scalability, snapshot invalidation, and reference resolution across the supported languages.
 
 ## Known limitations
 
