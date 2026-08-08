@@ -46,5 +46,6 @@ docs/*
 !docs/assets/
 docs/assets/*
 !docs/assets/visual-map-prototype.png
+!docs/assets/visual-map-symbol-inspector.png
 .wiredo-audit.json
 .codesextant-baseline.json

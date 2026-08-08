@@ -10,14 +10,33 @@ The name is from the **sextant**: an instrument for fixing your position when th
 
 ---
 
-## Visual map prototype
+## A codebase you can see and open
+
+Both views below use **CodeSextant mapping CodeSextant itself**. There is no sample repository
+and no synthetic source code behind the demo.
 
 ![CodeSextant visual map prototype](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/docs/assets/visual-map-prototype.png)
 
-This working prototype renders 598 real symbols from CodeSextant itself. Its shape is not
-decorative: reference edges determine structural communities, cohesive communities form
-tighter and more separated clusters, and tangled coupling produces overlap and visual noise.
-The interaction supports rotation, semantic zoom, and flying from an overview into a symbol.
+The overview turns real symbols and reference edges into structural communities. Cohesive
+communities form tighter, separated constellations. Tangled coupling creates overlap and visual
+noise. The shape is a consequence of the code, not decorative particle placement.
+
+![A selected CodeSextant symbol with its source and resolved callers](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/docs/assets/visual-map-symbol-inspector.png)
+
+Every star represents an actual symbol and carries its file, line, and source snippet. Click one
+to open its code. Its direct relationships stay bright and named while unrelated symbols fade,
+so the local blast radius remains visible without losing the surrounding architecture. Production
+callers and tests use different edge treatments, and the inspector exposes references and impact
+without leaving the map.
+
+The selected star above is the real `index_paths()` function at `codesextant/engine.py:257`.
+CodeSextant's own Python resolver found its production and test callers at high confidence, then
+grouped the affected files for the impact summary. In other words, the product is demonstrating
+its value by inspecting itself.
+
+The working WebGPU prototype already supports single-click source inspection, rotation, semantic
+zoom, and flying from the overview into a symbol. The focused relationship treatment in the
+second capture defines the next renderer integration step.
 
 The visual renderer is not wired into the published Python package yet. Layout normalization,
 cross-machine reproducibility, and module-level aggregation for very large repositories remain
