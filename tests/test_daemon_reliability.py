@@ -1036,9 +1036,9 @@ def test_watcher_reindex_uses_same_heavy_coordinator(monkeypatch, tmp_path):
     monkeypatch.setattr(
         watcher_module.work_coordinator, "SHARED_SHARDED", CoordinatorProbe())
     monkeypatch.setattr(
-        watcher_module.engine, "index_project",
-        lambda project: {"indexed": 1, "skipped": 0, "removed": 0,
-                         "project": project})
+        watcher_module.engine, "index_paths",
+        lambda project, paths: {"indexed": len(paths), "skipped": 0, "removed": 0,
+                                "project": project})
     logger = SimpleNamespace(info=lambda *_args, **_kwargs: None,
                              warning=lambda *_args, **_kwargs: None)
     project_watch = watcher_module._ProjectWatch(str(tmp_path), logger)
@@ -1064,9 +1064,9 @@ def test_watcher_reindex_uses_generation_key_not_http_singleflight_key(
     monkeypatch.setattr(
         watcher_module.work_coordinator, "SHARED_SHARDED", CoordinatorProbe())
     monkeypatch.setattr(
-        watcher_module.engine, "index_project",
-        lambda project: {"indexed": 1, "skipped": 0, "removed": 0,
-                         "project": project})
+        watcher_module.engine, "index_paths",
+        lambda project, paths: {"indexed": len(paths), "skipped": 0, "removed": 0,
+                                "project": project})
     logger = SimpleNamespace(info=lambda *_args, **_kwargs: None,
                              warning=lambda *_args, **_kwargs: None)
     project_watch = watcher_module._ProjectWatch(str(tmp_path), logger)
@@ -1100,14 +1100,14 @@ def test_watcher_batch_during_inflight_reindex_is_not_swallowed_by_join(
     release_first = threading.Event()
     index_calls = []
 
-    def slow_index(project):
-        index_calls.append(project)
+    def slow_index(project, paths):
+        index_calls.append((project, tuple(paths)))
         if len(index_calls) == 1:
             first_started.set()
             assert release_first.wait(timeout=10)
         return {"indexed": 1, "skipped": 0, "removed": 0}
 
-    monkeypatch.setattr(watcher_module.engine, "index_project", slow_index)
+    monkeypatch.setattr(watcher_module.engine, "index_paths", slow_index)
     logger = SimpleNamespace(info=lambda *_args, **_kwargs: None,
                              warning=lambda *_args, **_kwargs: None)
     project_watch = watcher_module._ProjectWatch(str(tmp_path), logger)

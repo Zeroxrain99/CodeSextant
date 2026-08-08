@@ -40,5 +40,11 @@ tools/*
 # users to run. It is product tooling, not a development probe.
 !tools/register_windows_startup.ps1
 docs/
+# Publish only the verified README demo while keeping internal docs private.
+!docs/
+docs/*
+!docs/assets/
+docs/assets/*
+!docs/assets/visual-map-prototype.png
 .wiredo-audit.json
 .codesextant-baseline.json

@@ -10,6 +10,19 @@ The name is from the **sextant**: an instrument for fixing your position when th
 
 ---
 
+## Visual map prototype
+
+![CodeSextant visual map prototype](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/docs/assets/visual-map-prototype.png)
+
+This working prototype renders 598 real symbols from CodeSextant itself. Its shape is not
+decorative: reference edges determine structural communities, cohesive communities form
+tighter and more separated clusters, and tangled coupling produces overlap and visual noise.
+The interaction supports rotation, semantic zoom, and flying from an overview into a symbol.
+
+The visual renderer is not wired into the published Python package yet. Layout normalization,
+cross-machine reproducibility, and module-level aggregation for very large repositories remain
+open work. The current `map` command returns a ranked text map, not this renderer.
+
 ## The problem
 
 The hidden cost of agentic coding is token budget. An agent that starts editing without a global picture rewrites things that already exist, misses call sites, and creates conflicts.
@@ -35,6 +48,30 @@ Requires Python 3.10 or newer.
 ```bash
 pip install codesextant
 ```
+
+`watchdog` is installed with CodeSextant. The first index scans the repository once. After that,
+the daemon listens for native OS file events and sends only created, edited, moved, or deleted
+paths to the indexer after a short debounce. A normal save does not walk the repository. A full
+reconciliation is reserved for initial indexing, daemon restart recovery, lost watcher state, or
+an explicit forced rebuild.
+
+### Give CodeSextant to your agent
+
+Download the single [CodeSextant SKILL.md](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/skills/codesextant/SKILL.md) after installation and
+place it in your agent's skill directory. For example:
+
+```text
+.agents/skills/codesextant/SKILL.md    # Codex and compatible agents
+.claude/skills/codesextant/SKILL.md   # Claude Code
+```
+
+Keep the entry filename as `SKILL.md`. The containing `codesextant` directory is the skill
+name under the Agent Skills specification.
+
+If an agent does not support skill directories, attach that one Markdown file and ask the agent
+to follow it before editing. The skill starts the shared daemon, binds the current repository,
+uses the map to narrow what should be read, checks references and impact before changes, and
+preserves confidence labels instead of treating name matches as confirmed callers.
 
 High-confidence TS/JS resolution needs two more things: Node on your PATH, and a one-time `npm install` inside `ts_bridge/`. That directory ships in the git repository, not in the pip package. So a `pip install` gives you resolved references for Python and name-matched ones for TS/JS; clone the repository instead if you need TS/JS resolved. Either way the result carries its confidence label, and a missing bridge degrades the answer rather than breaking the tool.
 
@@ -92,6 +129,7 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 | `CODESEXTANT_NAMEGRAPH_MAX_FILES` | adaptive | override the file-scan cap; adapts 12 to 5000 by symbol count when unset |
 | `CODESEXTANT_NAMEGRAPH_MAX_UNIQUE_EDGES` | `250000` | hard cap so generated code cannot exhaust memory |
 | `CODESEXTANT_WATCH_ENABLED` | on | filesystem watcher for proactive incremental indexing |
+| `CODESEXTANT_WATCH_DEBOUNCE_MS` | `2000` | delay that combines a burst of file events into one dirty-path update |
 | `CODESEXTANT_TS_MORPH_DISABLED` | off | force TS/JS to name matching |
 | `CODESEXTANT_TS_MORPH_TIMEOUT` | `30` | ts-morph subprocess timeout, seconds |
 | `CODESEXTANT_GIT_FRESHNESS_DISABLED` | off | stop comparing the index against git HEAD |
@@ -105,7 +143,7 @@ A few lower-level language-inference knobs (`CODESEXTANT_INFER_LANG_*`) are docu
 python -m pytest tests/ -q
 ```
 
-435 tests, about a minute on a developer laptop. They cover the daemon lifecycle, incremental indexing, map scalability, snapshot invalidation, and reference resolution across the supported languages.
+443 tests, about a minute on a developer laptop. They cover the daemon lifecycle, incremental indexing, map scalability, snapshot invalidation, and reference resolution across the supported languages.
 
 ## Known limitations
 

@@ -172,6 +172,177 @@ def _git_head_sha(repo_path: str) -> str | None:
     return None
 
 
+def _index_source_file(store: storage.ProjectStore, fp: str, *, force: bool = False):
+    """Index one supported source file without discovering any other paths."""
+    try:
+        with open(fp, "rb") as source_file:
+            source = source_file.read()
+    except OSError as exc:
+        return "error", {"path": fp, "error": f"failed to read file: {exc}"}
+
+    content_hash = hashlib.sha256(source).hexdigest()
+    if not force and not store.needs_reindex(fp, content_hash):
+        return "skipped", None
+
+    try:
+        lang = symbols.language_for_file(fp)
+        tree = symbols.parse_source(source, lang) if lang else None
+        extracted = (
+            symbols.extract_symbols_from_source(source, lang, file_path=fp, tree=tree)
+            if lang else []
+        )
+        store.store_file_symbols(fp, content_hash, extracted, indexed_at=time.time())
+        if lang and comments.comments_enabled():
+            try:
+                store.store_file_comments(
+                    fp,
+                    comments.extract_comments_from_source(
+                        source, lang, file_path=fp, tree=tree
+                    ),
+                )
+            except Exception as exc:
+                print(
+                    f"  ⚠ comment extraction failed ({fp}): {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+        if lang and clones.dedup_enabled():
+            try:
+                fingerprints = clones.extract_fingerprints_from_source(
+                    source, lang, file_path=fp, tree=tree
+                )
+                winnow_index = [
+                    {"line": fingerprint["line"], "fp_value": value}
+                    for fingerprint in fingerprints
+                    for value in fingerprint.get("winnow", [])
+                ]
+                store.store_file_fingerprints(fp, fingerprints, winnow_index)
+            except Exception as exc:
+                print(
+                    f"  ⚠ fingerprint/complexity extraction failed ({fp}): "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+        return "indexed", None
+    except Exception as exc:
+        return "error", {"path": fp, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _target_path(root: str, raw_path: str) -> str | None:
+    candidate = raw_path if os.path.isabs(raw_path) else os.path.join(root, raw_path)
+    candidate = os.path.abspath(candidate)
+    try:
+        if os.path.commonpath((root, candidate)) != root:
+            return None
+    except ValueError:
+        return None
+    if os.path.exists(candidate):
+        real_root = os.path.realpath(root)
+        real_candidate = os.path.realpath(candidate)
+        try:
+            if os.path.commonpath((real_root, real_candidate)) != real_root:
+                return None
+        except ValueError:
+            return None
+    return candidate
+
+
+def _path_is_skipped(root: str, path: str) -> bool:
+    relative = os.path.relpath(path, root)
+    parts = relative.split(os.sep)
+    if not os.path.isdir(path):
+        parts = parts[:-1]
+    return any(part in _SKIP_DIRS for part in parts)
+
+
+def index_paths(path: str, changed_paths) -> dict:
+    """Apply a file-event batch without traversing the repository.
+
+    Existing files are hashed and parsed individually. Missing paths remove exact indexed
+    files, while a missing directory path removes indexed descendants. An existing directory
+    is scanned only inside that event-targeted subtree.
+    """
+    if not os.path.isdir(path):
+        raise NotADirectoryError(f"index_paths: '{path}' is not a valid directory")
+
+    abs_path = os.path.abspath(path)
+    targets = sorted({
+        target
+        for raw_path in changed_paths
+        if (target := _target_path(abs_path, os.fspath(raw_path))) is not None
+    })
+    started = time.perf_counter()
+    indexed = skipped = removed = errors = 0
+    error_files: list[dict] = []
+
+    with storage.ProjectStore.open(abs_path) as store:
+        indexed_files = None
+        candidates: set[str] = set()
+        removed_paths: set[str] = set()
+        for target in targets:
+            if os.path.isdir(target):
+                if _path_is_skipped(abs_path, target):
+                    continue
+                candidates.update(_iter_source_files(target))
+                continue
+            if os.path.isfile(target):
+                if (_path_is_skipped(abs_path, target)
+                        or os.path.splitext(target)[1].lower() not in SUPPORTED_EXTENSIONS):
+                    continue
+                candidates.add(target)
+                continue
+
+            if store.has_indexed_file(target):
+                store.remove_file(target)
+                removed += 1
+                removed_paths.add(target)
+                continue
+
+            prefix = target.rstrip(os.sep) + os.sep
+            if indexed_files is None:
+                indexed_files = store.all_indexed_files()
+            descendants = [
+                old for old in indexed_files
+                if old.startswith(prefix) and old not in removed_paths
+            ]
+            for old in descendants:
+                store.remove_file(old)
+                removed += 1
+                removed_paths.add(old)
+
+        for source_path in sorted(candidates):
+            outcome, error = _index_source_file(store, source_path)
+            if outcome == "indexed":
+                indexed += 1
+            elif outcome == "skipped":
+                skipped += 1
+            else:
+                if not os.path.exists(source_path) and store.has_indexed_file(source_path):
+                    store.remove_file(source_path)
+                    removed += 1
+                    removed_paths.add(source_path)
+                else:
+                    errors += 1
+                    error_files.append(error)
+
+        sha = _git_head_sha(abs_path)
+        if sha:
+            store.record_git_sha(sha)
+        stats = store.stats()
+
+    return {
+        "indexed": indexed,
+        "skipped": skipped,
+        "removed": removed,
+        "errors": errors,
+        "error_files": error_files,
+        "total_paths": len(targets),
+        "elapsed_sec": round(time.perf_counter() - started, 3),
+        "project_key": stats["project_key"],
+        "db_file": stats["db_file"],
+        "symbols_total": stats["symbols"],
+    }
+
+
 def index_project(path: str, *, force: bool = False) -> dict:
     """Build (or incrementally update) a project's index.
 
@@ -202,55 +373,14 @@ def index_project(path: str, *, force: bool = False) -> dict:
         seen_files: set[str] = set()
         for fp in _iter_source_files(abs_path):
             seen_files.add(fp)
-            # Red team L4-MEDIUM: read each file's bytes once (content_hash is computed
-            # from those bytes too), which removes the previous 4 disk reads per file.
-            try:
-                with open(fp, "rb") as _f:
-                    source = _f.read()
-            except OSError as exc:
-                errors += 1
-                error_files.append({"path": fp, "error": f"failed to read file: {exc}"})
-                continue
-            h = hashlib.sha256(source).hexdigest()
-
-            if not force and not store.needs_reindex(fp, h):
-                skipped += 1
-                continue
-
-            try:
-                # Red team L4-MEDIUM: parse each file once and share the tree across
-                # symbols/comments/fingerprints, avoiding repeated parses.
-                lang = symbols.language_for_file(fp)
-                tree = symbols.parse_source(source, lang) if lang else None
-                syms = (symbols.extract_symbols_from_source(source, lang, file_path=fp, tree=tree)
-                        if lang else [])
-                store.store_file_symbols(fp, h, syms, indexed_at=time.time())
+            outcome, error = _index_source_file(store, fp, force=force)
+            if outcome == "indexed":
                 indexed += 1
-                # Feature B: extract and persist comments (sharing the tree). A comment
-                # failure must not break indexing. The symbols are already persisted and
-                # the next reindex will fill the gap.
-                if lang and comments.comments_enabled():
-                    try:
-                        store.store_file_comments(fp, comments.extract_comments_from_source(
-                            source, lang, file_path=fp, tree=tree))
-                    except Exception as exc:  # do not break indexing, but log to stderr rather than swallowing it (observability)
-                        print(f"  ⚠ comment extraction failed ({fp}): {type(exc).__name__}: {exc}",
-                              file=sys.stderr)
-                # Feature B: extract structural fingerprints + the winnowing inverted index
-                # and persist them (sharing the tree; a failure must not break indexing).
-                if lang and clones.dedup_enabled():
-                    try:
-                        fps = clones.extract_fingerprints_from_source(
-                            source, lang, file_path=fp, tree=tree)
-                        winnow_idx = [{"line": f["line"], "fp_value": v}
-                                      for f in fps for v in f.get("winnow", [])]
-                        store.store_file_fingerprints(fp, fps, winnow_idx)
-                    except Exception as exc:  # do not break indexing, but log to stderr rather than swallowing it (adversarial review CRITICAL #2③)
-                        print(f"  ⚠ fingerprint/complexity extraction failed ({fp}): {type(exc).__name__}: {exc}",
-                              file=sys.stderr)
-            except Exception as exc:  # one file failing to parse must not break the whole index, but it must be recorded, not swallowed
+            elif outcome == "skipped":
+                skipped += 1
+            else:
                 errors += 1
-                error_files.append({"path": fp, "error": f"{type(exc).__name__}: {exc}"})
+                error_files.append(error)
 
         # Handle files that have disappeared from disk (remove them from the index, so it
         # stays the single source of truth).

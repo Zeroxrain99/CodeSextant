@@ -3,13 +3,15 @@
 A debounced flush really does run an incremental index. These tests enqueue by hand
 rather than waiting on real OS events, because the timing of those makes tests flaky.
 Also covered: ensure_watch is idempotent, the off switch makes it a no-op, and a missing
-watchdog package degrades quietly with the content-hash path as the fallback.
+watchdog is a required dependency, while a broken environment still fails closed.
 """
 import logging
 import os
 import sys
 import textwrap
 import time
+import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -35,6 +37,13 @@ def _write(root, rel, content):
 
 
 class TestWatchSwitch:
+    def test_watchdog_is_a_required_install_dependency(self):
+        pyproject = tomllib.loads(
+            (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        dependencies = pyproject["project"]["dependencies"]
+        assert any(dependency.startswith("watchdog") for dependency in dependencies)
+
     def test_enabled_default(self, monkeypatch):
         monkeypatch.delenv("CODESEXTANT_WATCH_ENABLED", raising=False)
         assert watcher.watch_enabled() is True
@@ -72,8 +81,67 @@ class TestWatchManager:
         mgr = watcher.WatchManager(_LOG)
         assert mgr.ensure_watch("E:/__no_such_dir_watch__") is False
 
+    def test_recovery_is_an_explicit_full_reconciliation(self, tmp_path, db_home, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            engine,
+            "index_project",
+            lambda project: calls.append(project)
+            or {"indexed": 0, "skipped": 1, "removed": 0},
+        )
+        manager = watcher.WatchManager(_LOG)
+
+        result = manager.recover(str(tmp_path))
+
+        assert calls == [str(tmp_path.resolve())]
+        assert result["skipped"] == 1
+
+    def test_real_file_event_indexes_new_source_without_manual_flush(self, tmp_path, db_home):
+        engine.index_project(str(tmp_path))
+        manager = watcher.WatchManager(_LOG)
+        assert manager.ensure_watch(str(tmp_path)) is True
+        try:
+            created = _write(tmp_path, "created.py", "def arrived_by_event(): return 1\n")
+            deadline = time.time() + 8
+            names = set()
+            while time.time() < deadline:
+                names = {
+                    symbol["name"]
+                    for symbol in engine.get_symbols(str(tmp_path), file=created)["symbols"]
+                }
+                if "arrived_by_event" in names:
+                    break
+                time.sleep(0.1)
+            assert "arrived_by_event" in names
+        finally:
+            manager.stop_all()
+
 
 class TestDebounceFlush:
+    def test_flush_passes_dirty_paths_without_calling_full_index(
+            self, tmp_path, db_home, monkeypatch):
+        changed = str(tmp_path / "changed.py")
+        calls = []
+
+        def targeted(project, paths):
+            calls.append((project, set(paths)))
+            return {"indexed": 1, "skipped": 0, "removed": 0}
+
+        monkeypatch.setattr(engine, "index_paths", targeted, raising=False)
+        monkeypatch.setattr(
+            engine,
+            "index_project",
+            lambda _project: (_ for _ in ()).throw(
+                AssertionError("normal watcher event triggered full scan")
+            ),
+        )
+        watch = watcher._ProjectWatch(str(tmp_path), _LOG)
+        watch._pending.add(changed)
+
+        watch._flush()
+
+        assert calls == [(str(tmp_path.resolve()), {changed})]
+
     def test_flush_triggers_incremental_reindex(self, tmp_path, db_home):
         # Edit a file, enqueue it, wait for the debounce timer to fire, and the new
         # symbol should be in the index.

@@ -19,7 +19,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import codesextant  # noqa: E402
-from codesextant import references, storage  # noqa: E402
+from codesextant import engine, references, storage  # noqa: E402
 from codesextant.ranking import rank_symbols  # noqa: E402
 from codesextant.symbols import extract_symbols_from_source  # noqa: E402
 
@@ -101,6 +101,87 @@ def test_index_remove_deleted_file(project):
     assert r["removed"] == 1
     syms = codesextant.get_symbols(str(project))
     assert all("a.py" not in s["path"] for s in syms["symbols"])
+
+
+def test_index_paths_updates_only_dirty_files_without_repo_scan(project, monkeypatch):
+    pa = _write(project, "a.py", "def original(): return 1\n")
+    _write(project, "b.py", "def untouched(): return 2\n")
+    codesextant.index_project(str(project))
+
+    _write(project, "a.py", "def replacement(): return 3\n")
+    monkeypatch.setattr(
+        engine,
+        "_iter_source_files",
+        lambda _root: (_ for _ in ()).throw(AssertionError("targeted update scanned repo")),
+    )
+
+    result = engine.index_paths(str(project), [pa])
+
+    assert result["indexed"] == 1
+    assert result["skipped"] == 0
+    symbols = codesextant.get_symbols(str(project))["symbols"]
+    names = {symbol["name"] for symbol in symbols}
+    assert "replacement" in names
+    assert "original" not in names
+    assert "untouched" in names
+
+
+def test_index_paths_removes_deleted_file_without_repo_scan(project, monkeypatch):
+    pa = _write(project, "a.py", "def removed_symbol(): return 1\n")
+    _write(project, "b.py", "def stays(): return 2\n")
+    codesextant.index_project(str(project))
+    os.remove(pa)
+    monkeypatch.setattr(
+        engine,
+        "_iter_source_files",
+        lambda _root: (_ for _ in ()).throw(AssertionError("targeted delete scanned repo")),
+    )
+
+    result = engine.index_paths(str(project), [pa])
+
+    assert result["removed"] == 1
+    names = {symbol["name"] for symbol in codesextant.get_symbols(str(project))["symbols"]}
+    assert names == {"stays"}
+
+
+def test_index_paths_invalidates_reference_edges_touching_changed_file(project):
+    definition = _write(project, "definition.py", "def target(): return 1\n")
+    caller = _write(project, "caller.py", "from definition import target\ntarget()\n")
+    codesextant.index_project(str(project))
+    with storage.ProjectStore.open(str(project)) as store:
+        store.replace_refs_for(caller, [{
+            "src_path": caller,
+            "src_line": 2,
+            "symbol_name": "target",
+            "def_path": definition,
+            "def_line": 1,
+            "confidence": "high",
+        }])
+        assert store.stats()["refs"] == 1
+
+    _write(project, "definition.py", "def replacement(): return 2\n")
+    engine.index_paths(str(project), [definition])
+
+    with storage.ProjectStore.open(str(project)) as store:
+        assert store.stats()["refs"] == 0
+
+
+def test_index_paths_directory_delete_counts_each_file_once(project, monkeypatch):
+    first = _write(project, "package/a.py", "def first(): return 1\n")
+    _write(project, "package/b.py", "def second(): return 2\n")
+    codesextant.index_project(str(project))
+    import shutil
+    shutil.rmtree(project / "package")
+    monkeypatch.setattr(
+        engine,
+        "_iter_source_files",
+        lambda _root: (_ for _ in ()).throw(AssertionError("targeted delete scanned repo")),
+    )
+
+    result = engine.index_paths(str(project), [project / "package", first])
+
+    assert result["removed"] == 2
+    assert codesextant.get_symbols(str(project))["symbols"] == []
 
 
 def test_project_isolation(tmp_path, monkeypatch):

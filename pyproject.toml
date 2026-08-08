@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 # "codemap" was taken on PyPI and clashed with a VSCode extension and a USPTO
 # trademark; "tracemap" was taken by a traceroute visualiser.
 name = "codesextant"
-version = "0.15.0"
+version = "0.16.0"
 description = "Local code map service for AI agents: tree-sitter symbols across 15 languages, import-resolved references for Python and TS/JS, incremental SQLite index, weighted PageRank ranking, single shared daemon."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -19,6 +19,7 @@ dependencies = [
     "tree-sitter>=0.25",
     "tree-sitter-language-pack",
     "jedi>=0.19",
+    "watchdog>=4.0",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

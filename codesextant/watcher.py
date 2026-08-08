@@ -1,23 +1,17 @@
 """File-watch proactive incremental indexing (competitor-feature-absorption queue 3,
 inspired by CodeGraph/aider).
 
-CodeSextant was originally passive-incremental: it only diffed content-hash when a
-query came in. The querying side had to wait, and uncommitted changes (content changed
-but the git sha didn't) never triggered an automatic reindex from the wrapper (a known
-blind spot). This module lets the singleton daemon attach a native OS file-watcher
-(watchdog: ReadDirectoryChangesW on Windows / inotify on Linux / FSEvents on macOS) so
-that as soon as a file changes, it **proactively reindexes incrementally after
-debouncing**. The map stays fresh, queries never wait, and nothing depends on git sha.
+The singleton daemon attaches a native OS file watcher (ReadDirectoryChangesW on
+Windows, inotify on Linux, and FSEvents on macOS). Normal changes are passed to the
+engine as exact dirty paths after debouncing, so saving one file never traverses the
+whole repository.
 
 Design principles:
-  - ⛔ This does NOT replace content-hash incrementalism (index_project still only
-    recomputes files whose content-hash changed). The watcher is only the trigger that
-    proactively calls index_project; when the watcher misses something, the querying
-    side's hash comparison is still the fallback.
+  - Content hashes remain a per-file safety check, not a repository discovery mechanism.
   - A debounce window is mandatory (so a git checkout / mass file change doesn't trigger
     a reindex storm).
-  - If watchdog isn't installed -> silently degrade (don't start the watcher, the
-    content-hash fallback keeps working as normal), no error, no blocking.
+  - Watchdog is a required package dependency. If a broken environment still lacks it,
+    watcher attachment fails closed and an explicit reconciliation remains available.
   - Switches + parameters are all configurable (L0 hard rule #6).
 
 Switches (all tolerant of .lower()):
@@ -75,14 +69,31 @@ class _ProjectWatch:
         mgr = self
 
         class _Handler(FileSystemEventHandler):
-            def on_any_event(self, event):
-                if event.is_directory:
-                    return
-                p = getattr(event, "dest_path", "") or event.src_path
-                # Only care about source-file changes for supported languages (skip
-                # .pyc/.db/noise)
-                if os.path.splitext(p)[1].lower() in symbols.SUPPORTED_EXTENSIONS:
-                    mgr._enqueue(p)
+            def _add(self, event, *, include_destination=False):
+                paths = [event.src_path]
+                if include_destination:
+                    destination = getattr(event, "dest_path", "")
+                    if destination:
+                        paths.append(destination)
+                for event_path in paths:
+                    if event.is_directory or (
+                        os.path.splitext(event_path)[1].lower()
+                        in symbols.SUPPORTED_EXTENSIONS
+                    ):
+                        mgr._enqueue(event_path)
+
+            def on_created(self, event):
+                self._add(event)
+
+            def on_modified(self, event):
+                if not event.is_directory:
+                    self._add(event)
+
+            def on_deleted(self, event):
+                self._add(event)
+
+            def on_moved(self, event):
+                self._add(event, include_destination=True)
 
         obs = Observer()
         obs.schedule(_Handler(), self.repo_path, recursive=True)
@@ -127,8 +138,8 @@ class _ProjectWatch:
         if not pending:
             return
         try:
-            # Incremental (content-hash only recomputes files that actually changed); the
-            # watcher's only job is "proactively triggering"
+            # The event batch is the discovery source. Normal saves must never turn into
+            # a repository traversal.
             key = work_coordinator.make_work_key(
                 "/reindex", self.repo_path, {
                     "force": False,
@@ -142,12 +153,12 @@ class _ProjectWatch:
             # each other.
             r = work_coordinator.SHARED_SHARDED.run(
                 key,
-                lambda: engine.index_project(self.repo_path),
+                lambda: engine.index_paths(self.repo_path, sorted(pending)),
                 label="watcher/reindex",
                 shard=key[1],
             )
             self.logger.info(
-                "watcher incremental reindex %s (triggered by %d changed files) -> "
+                "watcher targeted reindex %s (triggered by %d changed paths) -> "
                 "indexed=%s skipped=%s removed=%s",
                 self.repo_path, n, r.get("indexed"), r.get("skipped"), r.get("removed"))
         except Exception as exc:  # an indexing failure must not crash the watcher thread
@@ -238,6 +249,31 @@ class WatchManager:
     def watched_snapshot(self) -> tuple[str, ...]:
         """Lock-free immutable snapshot for the health control plane."""
         return self._watched_snapshot
+
+    def recover(self, repo_path: str) -> dict:
+        """Reconcile once after daemon startup to cover changes made while it was down.
+
+        This is deliberately lifecycle-triggered, never periodic. The watcher must be
+        attached before this runs so an edit during recovery is still queued afterward.
+        """
+        rp = os.path.abspath(repo_path)
+        key = work_coordinator.make_work_key(
+            "/reindex", rp, {"force": False, "source": "watcher-recovery"}
+        )
+        result = work_coordinator.SHARED_SHARDED.run(
+            key,
+            lambda: engine.index_project(rp),
+            label="watcher/recovery",
+            shard=key[1],
+        )
+        self.logger.info(
+            "watcher startup recovery %s -> indexed=%s skipped=%s removed=%s",
+            rp,
+            result.get("indexed"),
+            result.get("skipped"),
+            result.get("removed"),
+        )
+        return result
 
     def stop_all(self) -> None:
         with self._lock:

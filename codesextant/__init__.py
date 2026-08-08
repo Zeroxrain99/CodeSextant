@@ -24,7 +24,7 @@ import importlib
 # The public API stays fully compatible with `from codesextant import get_map`
 # via PEP 562 lazy attributes. The module loads on first attribute access.
 _ENGINE_EXPORTS = {
-    "index_project", "get_symbols", "find_references", "find_deadcode",
+    "index_project", "index_paths", "get_symbols", "find_references", "find_deadcode",
     "find_unwired", "find_duplicates", "get_comment_overview",
     "find_comment_tags", "get_comments", "call_hierarchy", "impact",
     "get_health", "get_map", "status", "list_projects", "find_ai_usage",
@@ -62,6 +62,7 @@ def __dir__():
 __all__ = [
     # C1 pure engine
     "index_project",
+    "index_paths",
     "get_symbols",
     "find_references",
     "find_deadcode",  # C5c step 3: dead-code clue layer (unused imports + orphan grading + entrypoint exemptions)

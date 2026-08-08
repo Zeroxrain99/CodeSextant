@@ -1079,9 +1079,29 @@ def serve(port: int | None = None):
         if _watch_enabled_config():
             try:
                 mgr = _get_watch_mgr()
+                recovery_targets = []
                 for p in storage.list_indexed_projects():
                     if p.get("path_exists") and p.get("repo_path"):
-                        mgr.ensure_watch(p["repo_path"])
+                        repo_path = p["repo_path"]
+                        if mgr.ensure_watch(repo_path):
+                            recovery_targets.append(repo_path)
+                if recovery_targets:
+                    def recover_after_restart():
+                        for target in recovery_targets:
+                            try:
+                                mgr.recover(target)
+                            except Exception as exc:
+                                lg.warning(
+                                    "watcher startup recovery failed %s: %s",
+                                    target,
+                                    exc,
+                                )
+
+                    threading.Thread(
+                        target=recover_after_restart,
+                        name="codesextant-watch-recovery",
+                        daemon=True,
+                    ).start()
             except Exception as exc:
                 lg.warning("skipped initial watcher attachment: %s", exc)
         try:

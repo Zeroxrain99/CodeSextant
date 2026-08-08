@@ -401,10 +401,21 @@ class ProjectStore:
         ).fetchone()
         return (row is None) or (row["content_hash"] != current_hash)
 
+    def has_indexed_file(self, path: str) -> bool:
+        """Return whether one exact file path is present in the index."""
+        row = self.conn.execute(
+            "SELECT 1 FROM files WHERE path=? LIMIT 1", (path,)
+        ).fetchone()
+        return row is not None
+
     def store_file_symbols(self, path: str, content_hash: str, symbols: list[dict],
                            indexed_at: float) -> None:
         """Persist after a recompute: clear the file's old symbols, write the new ones, update the hash. The whole batch is one transaction."""
         cur = self.conn
+        # A changed file invalidates edges it emitted and edges that pointed at definitions
+        # inside it. Reference resolution is on demand, so keeping stale edges would be worse
+        # than temporarily having fewer edges until the affected symbol is queried again.
+        cur.execute("DELETE FROM refs WHERE src_path=? OR def_path=?", (path, path))
         cur.execute("DELETE FROM symbols WHERE path=?", (path,))
         cur.executemany(
             "INSERT INTO symbols(path,kind,name,line,end_line,scope) "
