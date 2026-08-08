@@ -22,7 +22,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from threading import RLock, Thread
 
-from . import clones, comments, namegraph, references, storage, symbols
+from . import clones, comments, namegraph, project_state, references, storage, symbols
 from .ranking import rank_symbols
 from .symbols import SUPPORTED_EXTENSIONS
 
@@ -152,19 +152,7 @@ def _git_head_sha(repo_path: str) -> str | None:
     CODESEXTANT_GIT_FRESHNESS_DISABLED=1/true/yes/on disables the check. The value is
     parsed case-insensitively.
     """
-    if _env_on("CODESEXTANT_GIT_FRESHNESS_DISABLED"):
-        return None
-    try:
-        import subprocess
-        kwargs = {"capture_output": True, "text": True, "timeout": 5}
-        if os.name == "nt":
-            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW (no console flash when detached)
-        out = subprocess.run(["git", "-C", repo_path, "rev-parse", "HEAD"], **kwargs)
-        if out.returncode == 0:
-            return out.stdout.strip() or None
-    except Exception:
-        pass
-    return None
+    return project_state.git_head_sha(repo_path)
 
 
 def _index_source_file(store: storage.ProjectStore, fp: str, *, force: bool = False):
@@ -999,36 +987,9 @@ def status(path: str, *, check_freshness: bool = False) -> dict:
     default is False, so an unauthenticated GET /status cannot be turned into a git spawn
     storm by a malicious local web page using no-cors (pit7-1).
     """
-    abs_path = os.path.abspath(path)
-    db_file = storage.db_path_for(abs_path)
-    if not db_file.exists():
-        return {
-            "indexed": False,
-            "project_key": storage.project_key(abs_path),
-            "repo_path": abs_path,
-            "db_file": str(db_file),
-        }
-    with storage.ProjectStore.open(abs_path) as store:
-        st = store.stats()
-        st["indexed"] = True
-        if check_freshness:
-            # Compare the SHA recorded at index time with the current Git HEAD.
-            indexed_sha = st.get("indexed_git_sha")
-            current_sha = _git_head_sha(abs_path)
-            st["current_git_sha"] = current_sha
-            if indexed_sha and current_sha:
-                st["git_stale"] = (indexed_sha != current_sha)
-            elif indexed_sha and not current_sha:
-                # A sha was recorded before, but git is now unavailable (.git deleted, moved,
-                # or dubious ownership), freshness is unknown. Do not report it as fresh.
-                st["git_stale"] = None
-                st["git_note"] = "git is currently unavailable, so freshness cannot be determined (the sha recorded at index time is still here)"
-            else:
-                # Freshness does not apply outside Git or before a SHA has been recorded.
-                st["git_stale"] = False
-                if not indexed_sha and current_sha:
-                    st["git_note"] = "this database recorded no git sha at index time; reindex to enable freshness checking"
-        return st
+    return project_state.status(
+        path, check_freshness=check_freshness, git_head_reader=_git_head_sha
+    )
 
 
 def list_projects() -> dict:
@@ -1041,12 +1002,7 @@ def list_projects() -> dict:
     Returns {db_dir, count, projects:[...]}; count only counts databases that were read
     successfully, though broken ones are still listed with an error.
     """
-    projects = storage.list_indexed_projects()
-    return {
-        "db_dir": str(storage.default_db_dir()),
-        "count": sum(1 for p in projects if "error" not in p),
-        "projects": projects,
-    }
+    return project_state.list_projects()
 
 
 # ── Dead-code clues: combine resolved references with dead-code helpers ──

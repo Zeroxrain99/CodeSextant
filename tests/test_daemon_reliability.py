@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from logging.handlers import RotatingFileHandler
 from types import SimpleNamespace
@@ -480,6 +481,39 @@ def test_client_timeout_does_not_duplicate_a_live_long_query(monkeypatch, tmp_pa
     with pytest.raises(TimeoutError, match="still up"):
         c.status()
     assert calls == {"open": 1, "ensure": 0, "health": 1}
+
+
+def test_status_route_does_not_import_the_parser_engine(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "db"))
+    monkeypatch.setenv("CODESEXTANT_WATCH_ENABLED", "0")
+
+    class ExplodingEngine:
+        def __getattr__(self, _name):
+            raise AssertionError("status must not load the parser engine")
+
+    monkeypatch.setattr(daemon, "engine", ExplodingEngine())
+    parsed = urllib.parse.urlparse(f"/status?project={urllib.parse.quote(str(tmp_path))}")
+
+    code, result = daemon._ep_status(parsed, None)
+
+    assert code == 200
+    assert result["indexed"] is False
+
+
+def test_projects_route_does_not_import_the_parser_engine(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "db"))
+    monkeypatch.setenv("CODESEXTANT_WATCH_ENABLED", "0")
+
+    class ExplodingEngine:
+        def __getattr__(self, _name):
+            raise AssertionError("projects must not load the parser engine")
+
+    monkeypatch.setattr(daemon, "engine", ExplodingEngine())
+
+    code, result = daemon._ep_projects(urllib.parse.urlparse("/projects"), None)
+
+    assert code == 200
+    assert result == {"db_dir": str(tmp_path / "db"), "count": 0, "projects": []}
 
 
 def test_client_timeout_does_not_retry_when_ensure_confirms_slow_live_daemon(

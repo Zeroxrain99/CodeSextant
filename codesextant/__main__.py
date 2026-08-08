@@ -139,6 +139,18 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_install_skill(args) -> int:
+    from .skill_install import install_skill
+
+    results = install_skill(args.target, force=args.force)
+    if args.json:
+        _emit({"skills": results}, True)
+    else:
+        for result in results:
+            print(f"Agent Skill {result['action']}: {result['path']}")
+    return 0
+
+
 def cmd_deadcode(args) -> int:
     r = engine.find_deadcode(args.path, scope_file=args.file, lang=args.lang)
     if args.json:
@@ -430,6 +442,18 @@ def _build_parser() -> argparse.ArgumentParser:
     pt = sub.add_parser("status", help="check a project's index status")
     pt.add_argument("path")
     pt.set_defaults(func=cmd_status)
+
+    psi = sub.add_parser("install-skill", help="install the bundled Agent Skill")
+    psi.add_argument(
+        "--target",
+        action="append",
+        default=None,
+        help="agent skill root; repeat for multiple agents (auto-detected when omitted)",
+    )
+    psi.add_argument(
+        "--force", action="store_true", help="replace an existing modified CodeSextant skill"
+    )
+    psi.set_defaults(func=cmd_install_skill)
 
     pd = sub.add_parser("deadcode", help="dead-code clues (unused imports + orphan symbol grading)")
     pd.add_argument("path")

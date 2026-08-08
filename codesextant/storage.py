@@ -656,9 +656,14 @@ def list_indexed_projects() -> list[dict]:
             # closing: also covers connect() so an exception from setting row_factory still
             # guarantees close() (on Windows, an unclosed connection locks the .db file handle
             # and blocks a later reindex/delete).
-            with closing(sqlite3.connect(str(db_file))) as conn:
+            # The overview is a read-only operation. Applying the normal writer
+            # PRAGMAs here attempts to switch journal mode and can block behind an
+            # active indexer for minutes even though the COUNT queries are cheap.
+            uri = db_file.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as conn:
                 conn.row_factory = sqlite3.Row
-                apply_connection_pragmas(conn)
+                conn.execute("PRAGMA busy_timeout=1000")
+                conn.execute("PRAGMA query_only=1")
                 row = conn.execute(
                     "SELECT value FROM meta WHERE key='repo_path'"
                 ).fetchone()

@@ -26,6 +26,7 @@ Requires Python 3.10 or newer.
 
 ```bash
 pip install codesextant
+codesextant install-skill
 codesextant index .
 codesextant map . --budget 1500
 ```
@@ -57,8 +58,21 @@ Name matching cannot distinguish same-named symbols in different scopes. In coll
 
 ## Give CodeSextant to your agent
 
-Download the single [CodeSextant SKILL.md](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/skills/codesextant/SKILL.md) after installation and
-place it in your agent's skill directory. For example:
+The PyPI package includes the [CodeSextant SKILL.md](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/skills/codesextant/SKILL.md). Install it after `pip install codesextant`:
+
+```bash
+codesextant install-skill
+```
+
+The command detects Codex, Claude Code, and the open Agent Skills home on the current machine.
+To choose a skill root explicitly, pass it once or repeat it for several agents:
+
+```bash
+codesextant install-skill --target ~/.codex/skills
+codesextant install-skill --target ~/.claude/skills
+```
+
+The installed layout is:
 
 ```text
 .agents/skills/codesextant/SKILL.md    # Codex and compatible agents

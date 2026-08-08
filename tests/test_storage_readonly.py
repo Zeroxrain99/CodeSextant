@@ -85,3 +85,22 @@ def test_readonly_reads_during_open_write_transaction(tmp_path, monkeypatch):
             assert reader.conn.execute(
                 "SELECT value FROM meta WHERE key='mid_write'").fetchone() is None
         writer.conn.rollback()
+
+
+def test_project_listing_does_not_apply_write_pragmas(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "db"))
+    project = tmp_path / "project"
+    project.mkdir()
+    with storage.ProjectStore.open(str(project)):
+        pass
+
+    monkeypatch.setattr(
+        storage,
+        "apply_connection_pragmas",
+        lambda _conn: (_ for _ in ()).throw(AssertionError("listing must stay read-only")),
+    )
+
+    projects = storage.list_indexed_projects()
+
+    assert len(projects) == 1
+    assert "error" not in projects[0]

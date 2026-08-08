@@ -49,6 +49,7 @@ if not __package__:  # pragma: no cover - compatibility fallback for running thi
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 _PACKAGE = __package__ or "codesextant"
 storage = importlib.import_module(f"{_PACKAGE}.storage")
+project_state = importlib.import_module(f"{_PACKAGE}.project_state")
 work_coordinator = importlib.import_module(f"{_PACKAGE}.work_coordinator")
 
 
@@ -536,12 +537,12 @@ def _ep_status(parsed, body):
     # unguarded GET being triggered into a spawn storm by a malicious no-cors web page).
     # Panel/client callers pass ?fresh=1 explicitly when they need freshness.
     fresh = str(_q(parsed, "fresh", "") or "").lower() in ("1", "true", "yes", "on")
-    return 200, engine.status(project, check_freshness=fresh)
+    return 200, project_state.status(project, check_freshness=fresh)
 
 
 def _ep_projects(parsed, body):
     # List every locally indexed project (no project parameter needed), the data source for the panel's "overview".
-    return 200, engine.list_projects()
+    return 200, project_state.list_projects()
 
 
 def _ep_deadcode(parsed, body):
