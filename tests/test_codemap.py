@@ -11,6 +11,7 @@ JSON-serializable return values from the public API.
 """
 import json
 import os
+import subprocess
 import sys
 import textwrap
 
@@ -89,6 +90,38 @@ def test_index_incremental_cache_hit(project):
     r3 = codesextant.index_project(str(project))
     assert r3["indexed"] == 1, f"one edited file should reindex 1, got {r3['indexed']}"
     assert r3["skipped"] == 1
+
+
+def test_index_respects_git_ignore_and_local_excludes(project):
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    _write(project, ".gitignore", "ignored/\n")
+    _write(project, "visible.py", "def visible(): return 1\n")
+    ignored = _write(project, "ignored/hidden.py", "def hidden(): return 2\n")
+    local = _write(project, "local-only/private.py", "def private(): return 3\n")
+    (project / ".git" / "info" / "exclude").write_text(
+        "local-only/\n", encoding="utf-8"
+    )
+
+    result = codesextant.index_project(str(project))
+
+    assert result["total_files"] == 1
+    names = {item["name"] for item in codesextant.get_symbols(str(project))["symbols"]}
+    assert names == {"visible"}
+
+    dirty = engine.index_paths(str(project), [ignored, local])
+    assert dirty["indexed"] == 0
+
+
+def test_reindex_removes_a_file_after_it_becomes_git_ignored(project):
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    _write(project, "generated.py", "def generated(): return 1\n")
+    codesextant.index_project(str(project))
+    _write(project, ".gitignore", "generated.py\n")
+
+    result = codesextant.index_project(str(project))
+
+    assert result["removed"] == 1
+    assert codesextant.get_symbols(str(project))["symbols"] == []
 
 
 def test_index_remove_deleted_file(project):

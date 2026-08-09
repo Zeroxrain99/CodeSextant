@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import sys
 import time
 from collections import OrderedDict
@@ -82,12 +83,61 @@ _REFERENCEABLE_KINDS = {"function", "class", "method", "interface", "type",
 
 
 def _iter_source_files(root: str):
-    """Scan supported source files under root, excluding generated and cache directories."""
+    """Scan supported source files while respecting Git's standard ignore rules."""
+    git_files = _git_visible_files(root)
+    if git_files is not None:
+        yield from git_files
+        return
+
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
         for fn in filenames:
             if os.path.splitext(fn)[1].lower() in SUPPORTED_EXTENSIONS:
                 yield os.path.join(dirpath, fn)
+
+
+def _git_command_kwargs() -> dict:
+    kwargs = {"capture_output": True, "text": False, "timeout": 10}
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+    return kwargs
+
+
+def _git_visible_files(root: str) -> list[str] | None:
+    """Return tracked and untracked non-ignored files, or None outside a Git worktree."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                root,
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+            ],
+            **_git_command_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    files = []
+    for raw_path in result.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        relative = os.fsdecode(raw_path)
+        candidate = os.path.abspath(os.path.join(root, relative))
+        if (
+            os.path.isfile(candidate)
+            and os.path.splitext(candidate)[1].lower() in SUPPORTED_EXTENSIONS
+            and not any(part in _SKIP_DIRS for part in relative.replace("\\", "/").split("/"))
+        ):
+            files.append(candidate)
+    return files
 
 
 def _env_on(name: str) -> bool:
@@ -234,7 +284,16 @@ def _path_is_skipped(root: str, path: str) -> bool:
     parts = relative.split(os.sep)
     if not os.path.isdir(path):
         parts = parts[:-1]
-    return any(part in _SKIP_DIRS for part in parts)
+    if any(part in _SKIP_DIRS for part in parts):
+        return True
+    try:
+        result = subprocess.run(
+            ["git", "-C", root, "check-ignore", "-q", "--", os.path.abspath(path)],
+            **_git_command_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def index_paths(path: str, changed_paths) -> dict:
@@ -365,11 +424,11 @@ def index_project(path: str, *, force: bool = False) -> dict:
                 errors += 1
                 error_files.append(error)
 
-        # Handle files that have disappeared from disk (remove them from the index, so it
-        # stays the single source of truth).
+        # Remove files that disappeared or became ignored so the index remains the source
+        # of truth for the current project view.
         removed = 0
         for old_path in store.all_indexed_files():
-            if old_path not in seen_files and not os.path.exists(old_path):
+            if old_path not in seen_files:
                 store.remove_file(old_path)
                 removed += 1
 

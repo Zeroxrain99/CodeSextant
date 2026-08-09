@@ -1,5 +1,10 @@
 # CodeSextant
 
+[![Tests](https://github.com/Zeroxrain99/CodeSextant/actions/workflows/tests.yml/badge.svg)](https://github.com/Zeroxrain99/CodeSextant/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/codesextant)](https://pypi.org/project/codesextant/)
+[![Python](https://img.shields.io/pypi/pyversions/codesextant)](https://pypi.org/project/codesextant/)
+[![License](https://img.shields.io/github/license/Zeroxrain99/CodeSextant)](LICENSE)
+
 **A practical code navigation and change-impact tool for AI coding agents and human developers.**
 
 CodeSextant builds a local graph of symbols and reference edges so agents and developers can trace callers, locate code, and estimate change impact before editing.
@@ -8,7 +13,7 @@ For AI agents, the index turns repository structure into targeted queries for th
 
 Python and TypeScript/JavaScript references are resolved through imports. Other supported languages return low-confidence name matches. CodeSextant runs locally without an API key and does not send source code off the machine.
 
-[Install](#quick-start) · [Give it to an AI agent](#give-codesextant-to-your-agent) · [Language support](#how-it-works)
+[Install](#quick-start) · [Open the GUI](#open-the-gui) · [Give it to an AI agent](#give-codesextant-to-your-agent) · [Language support](#how-it-works)
 
 ## See the codebase
 
@@ -22,16 +27,44 @@ The selected symbol is `index_paths()` at `codesextant/engine.py:257`. The inspe
 
 ## Quick start
 
-Requires Python 3.10 or newer.
+CodeSextant is tested on CPython 3.10 through 3.13.
 
 ```bash
-pip install codesextant
-codesextant install-skill
-codesextant index .
-codesextant map . --budget 1500
+python -m pip install codesextant
+codesextant gui .
 ```
 
-To connect an AI coding agent, add the [CodeSextant skill](#give-codesextant-to-your-agent) after installation.
+The second command indexes the current project, starts the local daemon, and opens the dashboard in your default browser. To connect an AI coding agent, also install the [CodeSextant skill](#give-codesextant-to-your-agent).
+
+## Platform support
+
+The complete test suite runs on every push across Windows, macOS, and Linux with CPython 3.10, 3.11, 3.12, and 3.13.
+
+| Platform | Tested environment | Notes |
+|---|---|---|
+| Windows | GitHub-hosted Windows x64 runner | Use PowerShell, Command Prompt, or another terminal. Windows ARM64 and 32-bit are not covered by CI. |
+| macOS | GitHub-hosted macOS runner | Intel and Apple Silicon dependency wheels are available, but CI covers the current hosted runner only. |
+| Linux | GitHub-hosted Ubuntu runner | Other distributions may work when CodeSextant's binary dependencies provide compatible wheels. |
+
+The CLI works without a desktop. The GUI requires a local browser. Git is optional, but repositories with Git automatically respect `.gitignore`, `.git/info/exclude`, and global Git ignore rules during indexing.
+
+## Open the GUI
+
+Run this from the project you want to inspect:
+
+```bash
+codesextant gui .
+```
+
+Use an absolute path if the project is elsewhere:
+
+```powershell
+codesextant gui "C:\path\to\your\project"
+```
+
+The dashboard opens at `http://127.0.0.1:8790/`. It shows the daemon status and indexed projects. From a project row, use **Reindex** to apply source changes, **Map** to list important symbols, and **References** to inspect callers by symbol name.
+
+The dashboard is the current GUI. The star map shown above is a separate prototype and is not included in the published package. See the [getting started guide](https://github.com/Zeroxrain99/CodeSextant/blob/master/docs/getting-started.md) for headless use, daemon controls, and troubleshooting.
 
 ## Visual map
 
@@ -93,6 +126,7 @@ Resolved TS/JS references require Node and `npm install` inside `ts_bridge/`, wh
 
 ```bash
 python -m codesextant index      <repo>                     # build or incrementally update the index
+python -m codesextant gui        <repo>                     # index, start the daemon, and open the GUI
 python -m codesextant map        <repo> [--budget N]        # most important symbols, within a token budget
 python -m codesextant references <repo> <symbol> [--src-root R] [--def-path D]
 python -m codesextant symbols    <repo> [--file F]
@@ -100,13 +134,13 @@ python -m codesextant status     <repo>
 # any command takes --json for machine-readable output
 ```
 
-Running it as a resident service:
+Running the daemon without opening a browser:
 
 ```bash
+codesextant gui . --no-browser
 python -m codesextant.daemon ensure   # idempotent: starts one only if none is running
 python -m codesextant.daemon ping     # strict liveness check (verifies /health brand, not just the port)
 python -m codesextant.daemon stop
-# then open http://127.0.0.1:8790/ for a self-contained dashboard (inline CSS/JS, no CDN, works offline)
 ```
 
 HTTP endpoints, all taking `project=<absolute repo path>`:

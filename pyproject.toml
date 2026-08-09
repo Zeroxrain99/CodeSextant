@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codesextant"
-version = "0.17.0"
+version = "0.18.0"
 description = "Local code map for developers and AI agents, with tree-sitter symbols across 15 languages, import-resolved Python and TS/JS references, and one incremental index shared across local tools."
 readme = "README.md"
 license = "MIT"
@@ -26,13 +26,18 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
-    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
 ]
 
 [project.urls]
 Homepage = "https://github.com/Zeroxrain99/CodeSextant"
 Repository = "https://github.com/Zeroxrain99/CodeSextant"
 Issues = "https://github.com/Zeroxrain99/CodeSextant/issues"
+Documentation = "https://github.com/Zeroxrain99/CodeSextant/blob/master/docs/getting-started.md"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]

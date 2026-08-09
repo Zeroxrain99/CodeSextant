@@ -151,6 +151,30 @@ def cmd_install_skill(args) -> int:
     return 0
 
 
+def cmd_gui(args) -> int:
+    import webbrowser
+
+    from .client import CodesextantClient
+
+    project = os.path.abspath(args.path)
+    client = CodesextantClient(project=project)
+    started = client.ensure()
+    if started.get("action") not in ("already-running", "spawned"):
+        print(f"Could not start the CodeSextant daemon: {started.get('action')}", file=sys.stderr)
+        return 1
+
+    state = client.status()
+    if not state["indexed"]:
+        print(f"Indexing {project} for the first time...")
+        client.reindex()
+
+    url = f"{client.base}/"
+    if not args.no_browser and not webbrowser.open_new_tab(url):
+        print("The default browser could not be opened. Use the URL below.", file=sys.stderr)
+    print(f"Dashboard: {url}")
+    return 0
+
+
 def cmd_deadcode(args) -> int:
     r = engine.find_deadcode(args.path, scope_file=args.file, lang=args.lang)
     if args.json:
@@ -454,6 +478,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="replace an existing modified CodeSextant skill"
     )
     psi.set_defaults(func=cmd_install_skill)
+
+    pg = sub.add_parser("gui", help="index a project and open the local dashboard")
+    pg.add_argument("path", nargs="?", default=".", help="project path (defaults to current directory)")
+    pg.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="start the dashboard without opening a browser",
+    )
+    pg.set_defaults(func=cmd_gui)
 
     pd = sub.add_parser("deadcode", help="dead-code clues (unused imports + orphan symbol grading)")
     pd.add_argument("path")
