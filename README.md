@@ -120,7 +120,10 @@ to follow it before editing. The skill starts the shared daemon, binds the curre
 uses the map to narrow what should be read, checks references and impact before changes, and
 preserves confidence labels instead of treating name matches as confirmed callers.
 
-Resolved TS/JS references require Node and `npm install` inside `ts_bridge/`, which is available only in the GitHub repository. The PyPI package resolves Python references and returns low-confidence name matches for TS/JS. Clone the repository if you need ts-morph resolution.
+Resolved TS/JS references require Node 20 or newer and `npm install` inside `ts_bridge/`,
+which is available only in the GitHub repository. The PyPI package resolves Python
+references and returns low-confidence name matches for TS/JS. Clone the repository if
+you need ts-morph resolution.
 
 ## Commands
 

@@ -96,4 +96,6 @@ If the browser does not open, visit the printed URL or run with `--no-browser`. 
 python -m codesextant.daemon ping
 ```
 
-High-confidence TypeScript and JavaScript reference resolution needs Node and the `ts_bridge` directory from the GitHub repository. PyPI installations fall back to low-confidence name matching for those languages and label the results accordingly.
+High-confidence TypeScript and JavaScript reference resolution needs Node 20 or newer
+and the `ts_bridge` directory from the GitHub repository. PyPI installations fall back
+to low-confidence name matching for those languages and label the results accordingly.
