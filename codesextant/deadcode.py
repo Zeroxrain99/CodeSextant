@@ -248,7 +248,10 @@ def entry_point_func_names(root: str) -> set[str]:
     if not os.path.isfile(pyproject):
         return set()
     try:
-        import tomllib  # standard library on Python 3.11+
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # Python 3.10
+            import tomli as tomllib
         with open(pyproject, "rb") as f:
             data = tomllib.load(f)
     except Exception:

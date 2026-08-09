@@ -16,6 +16,7 @@ dependencies = [
     "tree-sitter-language-pack",
     "jedi>=0.19",
     "watchdog>=4.0",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
