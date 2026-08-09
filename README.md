@@ -7,14 +7,6 @@
 
 **A practical code navigation and change-impact tool for AI coding agents and human developers.**
 
-CodeSextant builds a local graph of symbols and reference edges so agents and developers can trace callers, locate code, and estimate change impact before editing.
-
-For AI agents, the index turns repository structure into targeted queries for the files and symbols worth reading. Developers can use the same graph through the CLI or HTTP API. The daemon updates it from native file events.
-
-Python and TypeScript/JavaScript references are resolved through imports. Other supported languages return low-confidence name matches. CodeSextant runs locally without an API key and does not send source code off the machine.
-
-[Install](#quick-start) · [Open the GUI](#open-the-gui) · [Give it to an AI agent](#give-codesextant-to-your-agent) · [Language support](#how-it-works)
-
 ## See the codebase
 
 ![A selected CodeSextant symbol with its source and resolved callers](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/docs/assets/visual-map-symbol-inspector.png)
@@ -24,6 +16,14 @@ Python and TypeScript/JavaScript references are resolved through imports. Other 
 Each star is a symbol with a file, line number, and source snippet. Selecting one opens the code and highlights its direct callers while unrelated symbols fade. Production and test edges use separate styles.
 
 The selected symbol is `index_paths()` at `codesextant/engine.py:257`. The inspector shows six high-confidence callers across two affected files.
+
+CodeSextant builds a local graph of symbols and reference edges so agents and developers can trace callers, locate code, and estimate change impact before editing.
+
+For AI agents, the index turns repository structure into targeted queries for the files and symbols worth reading. Developers can use the same graph through the CLI or HTTP API. The daemon updates it from native file events.
+
+Python and TypeScript/JavaScript references are resolved through imports. Other supported languages return low-confidence name matches. CodeSextant runs locally without an API key and does not send source code off the machine.
+
+[Install](#quick-start) · [Open the GUI](#open-the-gui) · [Give it to an AI agent](#give-codesextant-to-your-agent) · [Language support](#how-it-works)
 
 ## Quick start
 
