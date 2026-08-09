@@ -11,14 +11,18 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from contextlib import closing
 from pathlib import Path
+
+from . import cache_lease
 
 # Database schema version (bump on schema change; future migrations can key off this).
 # ``open()`` creates missing tables and ``_ensure_columns()`` adds missing columns.
 # The reported schema version does not gate migrations. Type changes and removals
 # still require a dedicated migration.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+_INDEX_GENERATION_KEY = "index_generation"
 _SYMBOL_SNAPSHOT_FORMAT = 1
 _MAP_SNAPSHOT_FORMAT = 1
 
@@ -60,18 +64,50 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def sqlite_wal_is_safe(version_info=None) -> bool:
+    """Return whether this SQLite runtime contains the WAL-reset fix."""
+    raw = sqlite3.sqlite_version_info if version_info is None else version_info
+    try:
+        version = tuple(int(part) for part in raw[:3])
+    except (TypeError, ValueError):
+        return False
+    if len(version) != 3:
+        return False
+    if version >= (3, 51, 3):
+        return True
+    if version[:2] == (3, 50):
+        return version[2] >= 7
+    if version[:2] == (3, 44):
+        return version[2] >= 6
+    return False
+
+
+def sqlite_runtime_status() -> dict:
+    """Describe the SQLite version and the journal policy selected for it."""
+    wal_safe = sqlite_wal_is_safe()
+    unsafe_override = _env_flag("CODESEXTANT_SQLITE_UNSAFE_WAL", False)
+    wal_requested = _env_flag("CODESEXTANT_SQLITE_WAL", True)
+    return {
+        "version": sqlite3.sqlite_version,
+        "wal_safe": wal_safe,
+        "unsafe_wal_override": unsafe_override,
+        "wal_requested": wal_requested,
+        "wal_allowed": wal_requested and (wal_safe or unsafe_override),
+    }
+
+
 def apply_connection_pragmas(conn: sqlite3.Connection) -> None:
     """Set the connection-level PRAGMAs that let "many readers + one writer" coexist.
 
-    Local clients share the same daemon. The default rollback journal locks out readers while
-    the writer commits. WAL (write-ahead log) switches this so the writer writes to
-    a side file and readers keep reading the last committed snapshot, so neither side
-    blocks the other.
+    Local clients share the same daemon. WAL permits concurrent readers, but affected
+    SQLite releases can corrupt a database during a rare WAL reset race. Safe releases
+    use WAL by default; affected releases fail closed to the rollback journal.
 
     Environment switches:
-      CODESEXTANT_SQLITE_WAL=0             -> fall back to the classic rollback journal
-      CODESEXTANT_SQLITE_BUSY_TIMEOUT_MS   -> max wait under contention (default 5000ms)
-      CODESEXTANT_SQLITE_SYNC_NORMAL=0     -> fall back to synchronous=FULL
+      CODESEXTANT_SQLITE_WAL=0              -> force the classic rollback journal
+      CODESEXTANT_SQLITE_UNSAFE_WAL=1       -> force WAL on an affected SQLite runtime
+      CODESEXTANT_SQLITE_BUSY_TIMEOUT_MS    -> max wait under contention (default 5000ms)
+      CODESEXTANT_SQLITE_SYNC_NORMAL=0      -> fall back to synchronous=FULL
 
     synchronous=NORMAL under WAL is still safe against a process crash; it can only
     lose the last few transactions on a power loss. This database is a rebuildable
@@ -80,13 +116,28 @@ def apply_connection_pragmas(conn: sqlite3.Connection) -> None:
     """
     busy_ms = max(0, _env_int("CODESEXTANT_SQLITE_BUSY_TIMEOUT_MS", 5000))
     conn.execute(f"PRAGMA busy_timeout={busy_ms}")
-    if _env_flag("CODESEXTANT_SQLITE_WAL", True):
+    runtime = sqlite_runtime_status()
+    current_mode = None
+    try:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        current_mode = str(row[0]).lower() if row else None
+    except sqlite3.DatabaseError:
+        pass
+    if runtime["wal_allowed"]:
         # Not fatal on failure (e.g. the database lives on a network drive without WAL support):
         # keep running on whatever journal mode is already in effect.
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.DatabaseError:
-            pass
+        if current_mode != "wal":
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.DatabaseError:
+                pass
+    else:
+        # Journal mode persists in the database file. Explicitly leave WAL so a
+        # database created by a different runtime cannot keep an unsafe mode.
+        # Avoid setting the already-active mode because that requests an
+        # unnecessary exclusive lock and can stall readers behind a writer.
+        if current_mode != "delete":
+            conn.execute("PRAGMA journal_mode=DELETE")
     if _env_flag("CODESEXTANT_SQLITE_SYNC_NORMAL", True):
         conn.execute("PRAGMA synchronous=NORMAL")
 
@@ -96,27 +147,38 @@ def symbol_snapshot_path(db_file: str | Path) -> Path:
     return Path(f"{db_file}.symbols-v{_SYMBOL_SNAPSHOT_FORMAT}.json")
 
 
+def _acquire_cache_lease_for_db(
+        db_file: str | Path) -> cache_lease.ProjectLease:
+    """Protect one managed database group during direct artifact access."""
+    path = Path(db_file)
+    if path.suffix != ".db":
+        raise cache_lease.LeaseUnsafeError(
+            "managed cache database must use the .db suffix")
+    return cache_lease.acquire_shared(path.stem, home=path.parent)
+
+
 def write_symbol_snapshot(db_file: str | Path, revision: tuple,
                           symbols: list[dict]) -> Path:
     """Atomically write a UTF-8 JSON snapshot; not pickle, so on-disk content can't execute arbitrary Python."""
     target = symbol_snapshot_path(db_file)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(
-        f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        with open(temp, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps({
-                "format": _SYMBOL_SNAPSHOT_FORMAT,
-                "revision": list(revision),
-            }, ensure_ascii=False, separators=(",", ":")))
-            handle.write("\n")
-            json.dump(symbols, handle, ensure_ascii=False, separators=(",", ":"))
-        os.replace(temp, target)
-    finally:
+    with _acquire_cache_lease_for_db(db_file):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_name(
+            f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
-            temp.unlink(missing_ok=True)
-        except OSError:
-            pass
+            with open(temp, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps({
+                    "format": _SYMBOL_SNAPSHOT_FORMAT,
+                    "revision": list(revision),
+                }, ensure_ascii=False, separators=(",", ":")))
+                handle.write("\n")
+                json.dump(symbols, handle, ensure_ascii=False, separators=(",", ":"))
+            os.replace(temp, target)
+        finally:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
     return target
 
 
@@ -129,32 +191,34 @@ def write_map_snapshot(db_file: str | Path, key_digest: str,
                        result: dict) -> Path:
     """Atomically write a map JSON tied to a revision/parameter digest; any index or env change misses immediately."""
     target = map_snapshot_path(db_file)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(
-        f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        with open(temp, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump({
-                "format": _MAP_SNAPSHOT_FORMAT,
-                "key_digest": key_digest,
-                "result": result,
-            }, handle, ensure_ascii=False, separators=(",", ":"))
-        os.replace(temp, target)
-    finally:
+    with _acquire_cache_lease_for_db(db_file):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_name(
+            f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
-            temp.unlink(missing_ok=True)
-        except OSError:
-            pass
+            with open(temp, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump({
+                    "format": _MAP_SNAPSHOT_FORMAT,
+                    "key_digest": key_digest,
+                    "result": result,
+                }, handle, ensure_ascii=False, separators=(",", ":"))
+            os.replace(temp, target)
+        finally:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
     return target
 
 
 def load_map_snapshot(db_file: str | Path, key_digest: str) -> dict | None:
     """Return the map only when the digest matches exactly; on corruption or a stale revision, fail-soft into a recompute."""
-    try:
-        with open(map_snapshot_path(db_file), encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return None
+    with _acquire_cache_lease_for_db(db_file):
+        try:
+            with open(map_snapshot_path(db_file), encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
     if (payload.get("format") != _MAP_SNAPSHOT_FORMAT
             or payload.get("key_digest") != key_digest
             or not isinstance(payload.get("result"), dict)):
@@ -296,16 +360,22 @@ class ProjectStore:
     """
 
     def __init__(self, conn: sqlite3.Connection, repo_path: str, db_file: Path,
+                 *, lease: cache_lease.ProjectLease,
                  read_only: bool = False):
         self.conn = conn
         self.repo_path = os.path.abspath(repo_path)
         self.project_key = project_key(repo_path)
         self.db_file = db_file
         self.read_only = read_only
+        self._cache_lease = lease
+        self._close_lock = threading.Lock()
+        self._closed = False
 
     # ── open / close ──
     @classmethod
-    def open_readonly(cls, repo_path: str) -> ProjectStore:
+    def open_readonly(cls, repo_path: str, *,
+                      busy_timeout_ms: int | None = None,
+                      lease_timeout_sec: float | None = None) -> ProjectStore:
         """Open a connection that is guaranteed not to write, for query-only worker processes / read-only endpoints.
 
         Why this is needed: every `open()` call writes (executescript creates tables,
@@ -328,34 +398,73 @@ class ProjectStore:
         it into an empty query result).
         """
         db_file = db_path_for(repo_path)
-        if not db_file.exists():
-            raise FileNotFoundError(
-                f"CodeSextant: project not indexed yet, no read-only database to open ({db_file})")
-        conn = sqlite3.connect(str(db_file))
-        conn.row_factory = sqlite3.Row
-        busy_ms = max(0, _env_int("CODESEXTANT_SQLITE_BUSY_TIMEOUT_MS", 30000))
-        conn.execute(f"PRAGMA busy_timeout={busy_ms}")
-        conn.execute("PRAGMA query_only=1")
-        return cls(conn, repo_path, db_file, read_only=True)
+        lease = cache_lease.acquire_shared(
+            project_key(repo_path),
+            home=db_file.parent,
+            timeout_sec=(
+                5.0 if lease_timeout_sec is None
+                else max(0.0, float(lease_timeout_sec))
+            ),
+        )
+        conn: sqlite3.Connection | None = None
+        try:
+            if not db_file.exists():
+                raise FileNotFoundError(
+                    f"CodeSextant: project not indexed yet, no read-only database to open ({db_file})")
+            conn = sqlite3.connect(str(db_file))
+            conn.row_factory = sqlite3.Row
+            busy_ms = max(0, (
+                _env_int("CODESEXTANT_SQLITE_BUSY_TIMEOUT_MS", 30000)
+                if busy_timeout_ms is None else int(busy_timeout_ms)
+            ))
+            conn.execute(f"PRAGMA busy_timeout={busy_ms}")
+            conn.execute("PRAGMA query_only=1")
+            return cls(
+                conn, repo_path, db_file, lease=lease, read_only=True)
+        except BaseException:
+            if conn is not None:
+                # Do not unregister until SQLite proves its handle is closed.
+                conn.close()
+            lease.close()
+            raise
 
     @classmethod
     def open(cls, repo_path: str) -> ProjectStore:
         """Open (or create) a project's database. Creates the database directory automatically if it doesn't exist."""
         db_file = db_path_for(repo_path)
-        db_file.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_file))
-        conn.row_factory = sqlite3.Row
-        apply_connection_pragmas(conn)
-        conn.executescript(_SCHEMA)
-        _ensure_columns(conn)  # backfill new columns on an existing database (migration hook)
-        store = cls(conn, repo_path, db_file)
-        store._set_meta("schema_version", str(SCHEMA_VERSION))
-        store._set_meta("repo_path", store.repo_path)
-        conn.commit()
-        return store
+        lease = cache_lease.acquire_shared(
+            project_key(repo_path), home=db_file.parent)
+        conn: sqlite3.Connection | None = None
+        try:
+            db_file.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(db_file))
+            conn.row_factory = sqlite3.Row
+            apply_connection_pragmas(conn)
+            conn.executescript(_SCHEMA)
+            _ensure_columns(conn)
+            store = cls(conn, repo_path, db_file, lease=lease)
+            store._set_meta("schema_version", str(SCHEMA_VERSION))
+            store._set_meta("repo_path", store.repo_path)
+            conn.execute(
+                "INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",
+                (_INDEX_GENERATION_KEY, "0"),
+            )
+            conn.commit()
+            return store
+        except BaseException:
+            if conn is not None:
+                # A close failure keeps the lease live until process exit.
+                conn.close()
+            lease.close()
+            raise
 
     def close(self) -> None:
-        self.conn.close()
+        with self._close_lock:
+            if self._closed:
+                return
+            self.conn.close()
+            self._cache_lease.close()
+            self._closed = True
 
     def __enter__(self) -> ProjectStore:
         return self
@@ -381,6 +490,31 @@ class ProjectStore:
         self._set_meta("git_head_sha", sha)
         self.conn.commit()
 
+    def index_generation(self) -> int:
+        """Return the source-graph generation used to fence reference writes."""
+        raw = self.get_meta(_INDEX_GENERATION_KEY, "0")
+        try:
+            generation = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"invalid {_INDEX_GENERATION_KEY} metadata: {raw!r}"
+            ) from exc
+        if generation < 0:
+            raise RuntimeError(
+                f"invalid {_INDEX_GENERATION_KEY} metadata: {raw!r}"
+            )
+        return generation
+
+    def _bump_index_generation(self) -> int:
+        """Advance the source-graph generation inside the caller's transaction."""
+        self.conn.execute(
+            "INSERT INTO meta(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET "
+            "value=CAST(meta.value AS INTEGER)+1",
+            (_INDEX_GENERATION_KEY, "1"),
+        )
+        return self.index_generation()
+
     # ── Incremental core: decide whether a file needs recomputing ──
     def needs_reindex(self, path: str, current_hash: str) -> bool:
         """Content hash changed (or the file isn't in the database yet) -> needs recomputing."""
@@ -400,24 +534,81 @@ class ProjectStore:
                            indexed_at: float) -> None:
         """Persist after a recompute: clear the file's old symbols, write the new ones, update the hash. The whole batch is one transaction."""
         cur = self.conn
-        # A changed file invalidates edges it emitted and edges that pointed at definitions
-        # inside it. Reference resolution is on demand, so keeping stale edges would be worse
-        # than temporarily having fewer edges until the affected symbol is queried again.
-        cur.execute("DELETE FROM refs WHERE src_path=? OR def_path=?", (path, path))
-        cur.execute("DELETE FROM symbols WHERE path=?", (path,))
-        cur.executemany(
-            "INSERT INTO symbols(path,kind,name,line,end_line,scope) "
-            "VALUES(?,?,?,?,?,?)",
-            [(path, s["kind"], s["name"], s["line"], s["end_line"], s.get("scope", ""))
-             for s in symbols],
-        )
-        cur.execute(
-            "INSERT INTO files(path,content_hash,indexed_at) VALUES(?,?,?) "
-            "ON CONFLICT(path) DO UPDATE SET "
-            "content_hash=excluded.content_hash, indexed_at=excluded.indexed_at",
-            (path, content_hash, indexed_at),
-        )
-        cur.commit()
+        with cur:
+            # A changed file invalidates edges it emitted and edges that pointed at definitions
+            # inside it. Reference resolution is on demand, so keeping stale edges would be worse
+            # than temporarily having fewer edges until the affected symbol is queried again.
+            cur.execute("DELETE FROM refs WHERE src_path=? OR def_path=?", (path, path))
+            cur.execute("DELETE FROM symbols WHERE path=?", (path,))
+            cur.executemany(
+                "INSERT INTO symbols(path,kind,name,line,end_line,scope) "
+                "VALUES(?,?,?,?,?,?)",
+                [(path, s["kind"], s["name"], s["line"], s["end_line"],
+                  s.get("scope", "")) for s in symbols],
+            )
+            cur.execute(
+                "INSERT INTO files(path,content_hash,indexed_at) VALUES(?,?,?) "
+                "ON CONFLICT(path) DO UPDATE SET "
+                "content_hash=excluded.content_hash, indexed_at=excluded.indexed_at",
+                (path, content_hash, indexed_at),
+            )
+            self._bump_index_generation()
+
+    def store_file_index(self, path: str, content_hash: str, symbols: list[dict],
+                         indexed_at: float, *, comments: list[dict],
+                         fingerprints: list[dict],
+                         winnow_index: list[dict]) -> None:
+        """Replace every derived row for one source file atomically.
+
+        Extraction happens before this method is called. If any statement fails,
+        SQLite rolls the entire replacement back, including the files-table hash,
+        so the next incremental pass still sees that the source needs indexing.
+        """
+        cur = self.conn
+        with cur:
+            # A changed definition invalidates both edges emitted by this file
+            # and edges from other files that resolved into it.
+            cur.execute("DELETE FROM refs WHERE src_path=? OR def_path=?", (path, path))
+            cur.execute("DELETE FROM symbols WHERE path=?", (path,))
+            cur.execute("DELETE FROM comments WHERE path=?", (path,))
+            cur.execute("DELETE FROM fingerprints WHERE path=?", (path,))
+            cur.execute("DELETE FROM fingerprint_index WHERE path=?", (path,))
+            cur.execute(
+                "INSERT INTO files(path,content_hash,indexed_at) VALUES(?,?,?) "
+                "ON CONFLICT(path) DO UPDATE SET "
+                "content_hash=excluded.content_hash, indexed_at=excluded.indexed_at",
+                (path, content_hash, indexed_at),
+            )
+            cur.executemany(
+                "INSERT INTO symbols(path,kind,name,line,end_line,scope) "
+                "VALUES(?,?,?,?,?,?)",
+                [(path, s["kind"], s["name"], s["line"], s["end_line"],
+                  s.get("scope", "")) for s in symbols],
+            )
+            cur.executemany(
+                "INSERT INTO comments(path,line,end_line,kind,is_doc,tag,scope,owner_line,text) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                [(path, c.get("line"), c.get("end_line", c.get("line")),
+                  c.get("kind", "line"), 1 if c.get("is_doc") else 0,
+                  c.get("tag"), c.get("scope", ""), c.get("owner_line"),
+                  c.get("text", "")) for c in comments],
+            )
+            cur.executemany(
+                "INSERT INTO fingerprints(path,name,kind,line,end_line,scope,shape_hash,"
+                "raw_token_hash,call_hash,node_count,nstmts,has_control_flow,cognitive) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(path, f.get("name"), f.get("kind"), f.get("line"),
+                  f.get("end_line"), f.get("scope", ""), f.get("shape_hash"),
+                  f.get("raw_token_hash"), f.get("call_hash"),
+                  f.get("node_count"), f.get("nstmts"),
+                  1 if f.get("has_control_flow") else 0,
+                  f.get("cognitive")) for f in fingerprints],
+            )
+            cur.executemany(
+                "INSERT INTO fingerprint_index(path,line,fp_value) VALUES(?,?,?)",
+                [(path, w.get("line"), w.get("fp_value")) for w in winnow_index],
+            )
+            self._bump_index_generation()
 
     def store_file_fingerprints(self, path: str, fingerprints: list[dict],
                                 winnow_index: list[dict]) -> None:
@@ -464,13 +655,22 @@ class ProjectStore:
         edges it emitted (src_path = it) + reference edges pointing at it (def_path = it, to avoid
         leaving stale edges pointing at a deleted definition file) and related index rows.
         """
-        self.conn.execute("DELETE FROM symbols WHERE path=?", (path,))
-        self.conn.execute("DELETE FROM files WHERE path=?", (path,))
-        self.conn.execute("DELETE FROM refs WHERE src_path=? OR def_path=?", (path, path))
-        self.conn.execute("DELETE FROM fingerprints WHERE path=?", (path,))
-        self.conn.execute("DELETE FROM fingerprint_index WHERE path=?", (path,))
-        self.conn.execute("DELETE FROM comments WHERE path=?", (path,))
-        self.conn.commit()
+        changed = 0
+        with self.conn:
+            changed += self.conn.execute(
+                "DELETE FROM symbols WHERE path=?", (path,)).rowcount
+            changed += self.conn.execute(
+                "DELETE FROM files WHERE path=?", (path,)).rowcount
+            changed += self.conn.execute(
+                "DELETE FROM refs WHERE src_path=? OR def_path=?", (path, path)).rowcount
+            changed += self.conn.execute(
+                "DELETE FROM fingerprints WHERE path=?", (path,)).rowcount
+            changed += self.conn.execute(
+                "DELETE FROM fingerprint_index WHERE path=?", (path,)).rowcount
+            changed += self.conn.execute(
+                "DELETE FROM comments WHERE path=?", (path,)).rowcount
+            if changed:
+                self._bump_index_generation()
 
     # ── Queries ──
     def get_symbols(self, file_path: str | None = None) -> list[dict]:
@@ -529,6 +729,56 @@ class ProjectStore:
         return [r["path"] for r in rows]
 
     # ── Reference edges ──
+    def replace_refs_for_symbol(
+            self, src_path: str, symbol_name: str, edges: list[dict], *,
+            expected_generation: int) -> bool:
+        """Replace one source and symbol edge set if the source graph is unchanged.
+
+        The immediate transaction serializes writers before the generation check.
+        Deleting only the requested tuple prevents concurrent symbol lookups in the
+        same source file from replacing each other's rows.
+        """
+        rows = []
+        for edge in edges:
+            if (edge.get("src_path") != src_path
+                    or edge.get("symbol_name") != symbol_name):
+                raise ValueError(
+                    "reference edge does not match its source and symbol scope"
+                )
+            rows.append((
+                src_path,
+                edge["src_line"],
+                symbol_name,
+                edge.get("def_path"),
+                edge.get("def_line"),
+                edge["confidence"],
+            ))
+
+        if self.conn.in_transaction:
+            raise RuntimeError(
+                "replace_refs_for_symbol requires an idle database connection"
+            )
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            if self.index_generation() != int(expected_generation):
+                self.conn.rollback()
+                return False
+            self.conn.execute(
+                "DELETE FROM refs WHERE src_path=? AND symbol_name=?",
+                (src_path, symbol_name),
+            )
+            self.conn.executemany(
+                "INSERT INTO refs(src_path,src_line,symbol_name,def_path,def_line,confidence) "
+                "VALUES(?,?,?,?,?,?)",
+                rows,
+            )
+        except BaseException:
+            self.conn.rollback()
+            raise
+        else:
+            self.conn.commit()
+            return True
+
     def replace_refs_for(self, src_path: str, edges: list[dict]) -> None:
         """Persist the reference edges a file emits (clear the file's old edges first, then write, to keep a single source of truth)."""
         self.conn.execute("DELETE FROM refs WHERE src_path=?", (src_path,))
@@ -612,29 +862,51 @@ class ProjectStore:
         return out
 
     # ── Stats (for status / panel use) ──
-    def stats(self) -> dict:
+    def stats(self, *, deadline: float | None = None) -> dict:
+        """Return project counts, interrupting SQLite when a deadline expires."""
         c = self.conn
-        n_files = c.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        n_symbols = c.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
-        n_refs = c.execute("SELECT COUNT(*) FROM refs").fetchone()[0]
-        # Keep stats to cheap COUNT queries. Duplicate groups require aggregation and
-        # would slow down every dashboard refresh.
-        n_fingerprints = c.execute("SELECT COUNT(*) FROM fingerprints").fetchone()[0]
-        n_comments = c.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
-        last_indexed = c.execute("SELECT MAX(indexed_at) FROM files").fetchone()[0]
-        return {
-            "project_key": self.project_key,
-            "repo_path": self.repo_path,
-            "db_file": str(self.db_file),
-            "indexed_files": n_files,
-            "symbols": n_symbols,
-            "refs": n_refs,
-            "fingerprints": n_fingerprints,
-            "comments": n_comments,
-            "last_indexed_at": last_indexed,
-            "schema_version": int(self.get_meta("schema_version", "0")),
-            "indexed_git_sha": self.get_meta("git_head_sha"),  # SHA recorded at index time
-        }
+        handler_installed = deadline is not None
+
+        def deadline_expired() -> bool:
+            return deadline is not None and time.monotonic() >= deadline
+
+        def scalar(query: str):
+            if deadline_expired():
+                raise sqlite3.OperationalError(
+                    "status stats interrupted by deadline")
+            return c.execute(query).fetchone()[0]
+
+        if handler_installed:
+            c.set_progress_handler(lambda: int(deadline_expired()), 1000)
+        try:
+            n_files = scalar("SELECT COUNT(*) FROM files")
+            n_symbols = scalar("SELECT COUNT(*) FROM symbols")
+            n_refs = scalar("SELECT COUNT(*) FROM refs")
+            # Keep stats to cheap COUNT queries. Duplicate groups require aggregation and
+            # would slow down every dashboard refresh.
+            n_fingerprints = scalar("SELECT COUNT(*) FROM fingerprints")
+            n_comments = scalar("SELECT COUNT(*) FROM comments")
+            last_indexed = scalar("SELECT MAX(indexed_at) FROM files")
+            result = {
+                "project_key": self.project_key,
+                "repo_path": self.repo_path,
+                "db_file": str(self.db_file),
+                "indexed_files": n_files,
+                "symbols": n_symbols,
+                "refs": n_refs,
+                "fingerprints": n_fingerprints,
+                "comments": n_comments,
+                "last_indexed_at": last_indexed,
+                "schema_version": int(self.get_meta("schema_version", "0")),
+                "indexed_git_sha": self.get_meta("git_head_sha"),
+            }
+            if deadline_expired():
+                raise sqlite3.OperationalError(
+                    "status stats interrupted by deadline")
+            return result
+        finally:
+            if handler_installed:
+                c.set_progress_handler(None, 0)
 
 
 def list_indexed_projects() -> list[dict]:
@@ -659,21 +931,27 @@ def list_indexed_projects() -> list[dict]:
             # The overview is a read-only operation. Applying the normal writer
             # PRAGMAs here attempts to switch journal mode and can block behind an
             # active indexer for minutes even though the COUNT queries are cheap.
-            uri = db_file.resolve().as_uri() + "?mode=ro"
-            with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as conn:
-                conn.row_factory = sqlite3.Row
-                conn.execute("PRAGMA busy_timeout=1000")
-                conn.execute("PRAGMA query_only=1")
-                row = conn.execute(
-                    "SELECT value FROM meta WHERE key='repo_path'"
-                ).fetchone()
-                repo_path = row["value"] if row else None
-                n_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-                n_symbols = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
-                n_refs = conn.execute("SELECT COUNT(*) FROM refs").fetchone()[0]
-                last_indexed = conn.execute(
-                    "SELECT MAX(indexed_at) FROM files"
-                ).fetchone()[0]
+            with cache_lease.acquire_shared(
+                    db_file.stem, home=db_dir):
+                uri = db_file.resolve().as_uri() + "?mode=ro"
+                with closing(sqlite3.connect(
+                        uri, uri=True, timeout=1.0)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("PRAGMA busy_timeout=1000")
+                    conn.execute("PRAGMA query_only=1")
+                    row = conn.execute(
+                        "SELECT value FROM meta WHERE key='repo_path'"
+                    ).fetchone()
+                    repo_path = row["value"] if row else None
+                    n_files = conn.execute(
+                        "SELECT COUNT(*) FROM files").fetchone()[0]
+                    n_symbols = conn.execute(
+                        "SELECT COUNT(*) FROM symbols").fetchone()[0]
+                    n_refs = conn.execute(
+                        "SELECT COUNT(*) FROM refs").fetchone()[0]
+                    last_indexed = conn.execute(
+                        "SELECT MAX(indexed_at) FROM files"
+                    ).fetchone()[0]
             out.append({
                 "project_key": db_file.stem,
                 "repo_path": repo_path,

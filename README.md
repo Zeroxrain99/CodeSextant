@@ -62,7 +62,7 @@ Use an absolute path if the project is elsewhere:
 codesextant gui "C:\path\to\your\project"
 ```
 
-The dashboard opens at `http://127.0.0.1:8790/`. It shows the daemon status and indexed projects. From a project row, use **Reindex** to apply source changes, **Map** to list important symbols, and **References** to inspect callers by symbol name.
+The command opens a short-lived local session URL, then redirects the browser to `http://127.0.0.1:8790/`. The long-lived API token never appears in the URL or page. The dashboard shows daemon status and indexed projects. From a project row, use **Reindex** to apply source changes, **Map** to list important symbols, and **References** to inspect callers by symbol name.
 
 The dashboard is the current GUI. The star map shown above is a separate prototype and is not included in the published package. See the [getting started guide](https://github.com/Zeroxrain99/CodeSextant/blob/master/docs/getting-started.md) for headless use, daemon controls, and troubleshooting.
 
@@ -83,9 +83,10 @@ Name matching cannot distinguish same-named symbols in different scopes. In coll
 | | |
 |---|---|
 | **Import resolution** | Python uses jedi, and TS/JS uses ts-morph `findReferences`. Resolved references are high confidence, while name matches are low confidence and require source verification. |
-| **One shared daemon** | A cross-process file lock and exclusive listen socket keep one process alive per machine. Claude Code, Cursor, the CLI, and HTTP clients can use the same instance. Projects have separate SQLite databases keyed by absolute repository path. |
+| **One shared daemon** | A cross-process file lock and exclusive listen socket allow only one active process per machine. Claude Code, Cursor, the CLI, and HTTP clients can use the same instance. Projects have separate persistent SQLite databases keyed by absolute repository path. |
 | **Language coverage** | Python and TypeScript/JavaScript have import-resolved references. Go, Rust, C#, Java, C, C++, Kotlin, Swift, PHP, Ruby, Bash, and Lua use tree-sitter symbol extraction with low-confidence name-matched references. |
 | **Event-driven updates** | Native file events send created, edited, moved, and deleted paths to the indexer. Full scans are reserved for initial indexing and recovery. |
+| **Persistent reconnect** | A new terminal, agent, or conversation reconnects to the existing SQLite index. The selected project is reconciled in the background after a daemon restart, so an existing graph can answer immediately. A full rebuild is not required. |
 | **Local only** | Runs without cloud calls or API keys. Source and index data stay on the machine. |
 | **Budgeted output** | `map` uses weighted PageRank to return the most important N symbols that fit a token budget, rather than dumping the whole graph. |
 
@@ -116,9 +117,10 @@ Keep the entry filename as `SKILL.md`. The containing `codesextant` directory is
 name under the Agent Skills specification.
 
 If an agent does not support skill directories, attach that one Markdown file and ask the agent
-to follow it before editing. The skill starts the shared daemon, binds the current repository,
-uses the map to narrow what should be read, checks references and impact before changes, and
-preserves confidence labels instead of treating name matches as confirmed callers.
+to use it while editing. The skill treats CodeSextant as an opportunistic accelerator, never a
+hard gate: it makes one bounded attempt, uses the map to narrow what should be read, and falls
+back immediately to focused AST, text, and source reads if the service is busy or unavailable.
+It also preserves confidence labels instead of treating name matches as confirmed callers.
 
 Resolved TS/JS references require Node 20 or newer and `npm install` inside `ts_bridge/`,
 which is available only in the GitHub repository. The PyPI package resolves Python
@@ -134,6 +136,7 @@ python -m codesextant map        <repo> [--budget N]        # most important sym
 python -m codesextant references <repo> <symbol> [--src-root R] [--def-path D]
 python -m codesextant symbols    <repo> [--file F]
 python -m codesextant status     <repo>
+python -m codesextant cache                                 # managed index cache usage
 # any command takes --json for machine-readable output
 ```
 
@@ -146,11 +149,11 @@ python -m codesextant.daemon ping     # strict liveness check (verifies /health 
 python -m codesextant.daemon stop
 ```
 
-HTTP endpoints, all taking `project=<absolute repo path>`:
+HTTP endpoints require a path-bound HMAC proof derived from the local secret in `~/.codesextant/daemon.token`. The secret itself is never sent over HTTP. Endpoints take `project=<absolute repo path>` where applicable, so use `CodesextantClient` instead of constructing authentication headers yourself:
 `GET /health` `/get_symbols` `/get_map` `/status` (`?fresh=1` to compare against git HEAD) `/projects`;
 `POST /find_references` `/reindex`.
 
-On Windows, `tools/register_windows_startup.ps1` registers the daemon to start on login (run it as administrator to get boot-time start as well). It is idempotent, so re-running it is safe. A supervisor task probes liveness every 5 seconds and restarts the daemon if it exits.
+On Windows, `tools/register_windows_startup.ps1` optionally registers one startup check at login. Run it as administrator to add boot-time start as well. It is idempotent, so re-running it also upgrades older repeating tasks. Normal recovery is demand-driven: the next client request starts a missing daemon and retries once.
 
 ## Architecture
 
@@ -159,14 +162,22 @@ On Windows, `tools/register_windows_startup.ps1` registers the daemon to start o
 │   tree-sitter symbol extraction + jedi / ts-morph import resolution               │
 │   incremental SQLite (content hash + git HEAD freshness) + weighted PageRank      │
 │   per-project isolation: sha1(repo path) -> ~/.codesextant/<key>.db               │
-│   HTTP API, plus a self-contained dashboard on GET /                              │
+│   HTTP API + deadline-bound route workers + self-contained dashboard on GET /     │
 └───────────────────────────────────────────────────────────────────────────────────┘
         ▲ one daemon, many clients: CLI, agent skills, IDE webviews, HTTP clients
 ```
 
-An exclusive socket and cross-process file lock keep one daemon alive per machine, so agents and developer tools share one graph instead of starting separate indexers.
+An exclusive socket and cross-process file lock keep at most one daemon active per machine, so agents and developer tools share one graph instead of starting separate indexers. Interactive symbol, map, reference, hierarchy, and impact requests have short deadlines and reserved execution capacity separate from rebuild and background work. The daemon exits after three idle hours by default. The persistent indexes remain on disk, and the next client starts the daemon again.
 
-Large cold `map` queries are served from a SQLite covering index plus a revision-checked JSON snapshot, with a small in-process LRU on top. Every snapshot is a cache keyed on index revision and query parameters; SQLite remains the only source of truth, and any change invalidates them.
+Large cold `map` queries are served from a SQLite covering index plus a revision-checked JSON snapshot. Direct in-process callers also use a small memory LRU; isolated HTTP workers rely on the persistent snapshots across requests. Every snapshot is a cache keyed on index revision and query parameters; SQLite remains the only source of truth, and any change invalidates them.
+
+Queue waits and coalesced followers honor their own request deadlines, and indexing checks cancellation between files. A timed-out follower detaches from a shared result. CPython cannot safely interrupt a thread in the middle of Jedi, tree-sitter, SQLite, or another native call, so production HTTP engine routes run in disposable child processes. When an owner reaches its request deadline, the daemon terminates and reaps that exact child process tree before releasing the execution slot. Background reconciliation retains a separate one-shot hard timeout for a native call that never returns. No periodic watchdog is used.
+
+## Local security and stored data
+
+Every data route is authenticated, including health and project listings. The dashboard shell contains no index data and its API calls require a short-lived session opened by `codesextant gui`. A single-use 60-second bootstrap stores that session only in the current tab's `sessionStorage`, then removes the code from the address bar. It does not use a cookie or persistent browser storage. Requests with a mismatched loopback `Host` header are rejected, request bodies and pre-auth connections are bounded, and the dashboard ships with a restrictive content security policy.
+
+Indexes are ordinary SQLite files, not encrypted vaults. They contain absolute paths, symbols, references, hashes, and extracted comments or docstrings. They do not contain full source files. Processes running as the same OS user, or identities allowed by the storage directory ACL, can read them. At quiescent daemon shutdown, CodeSextant removes cache groups for repositories missing beyond the grace period, then applies least-recently-used cleanup only when managed indexes exceed the configured quota. Projects used by that daemon lifetime are excluded. Every SQLite and snapshot user holds an OS-locked project lease, so cleanup skips groups still open in another CLI or process. Credentials, logs, locks, and unknown files are never candidates. Run `codesextant cache` to inspect managed usage. To remove all local indexes and credentials, stop the daemon and delete `~/.codesextant`. CodeSextant sends no telemetry and uploads no index data.
 
 ## Configuration
 
@@ -176,25 +187,45 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 |---|---|---|
 | `CODESEXTANT_HOME` | `~/.codesextant` | SQLite database directory |
 | `CODESEXTANT_PORT` | `8790` | daemon port |
-| `CODESEXTANT_SUPERVISOR_INTERVAL_SEC` | `5` | liveness probe interval, minimum 1 |
-| `CODESEXTANT_MAP_TIMEOUT_SEC` | `60` | client deadline for cold `map` queries only |
-| `CODESEXTANT_MAP_CACHE_SIZE` | `4` | trimmed map results cached per DB revision |
+| `CODESEXTANT_IDLE_TIMEOUT_SEC` | `10800` | idle seconds before the daemon exits; `0` disables idle shutdown |
+| `CODESEXTANT_CACHE_MAX_BYTES` | `10737418240` | managed index bytes that trigger shutdown-time LRU cleanup |
+| `CODESEXTANT_CACHE_TARGET_RATIO` | `0.9` | fraction of the quota retained after LRU cleanup |
+| `CODESEXTANT_CACHE_MISSING_GRACE_DAYS` | `30` | age before a cache for a missing repository can be removed |
+| `CODESEXTANT_CACHE_TOUCH_INTERVAL_SEC` | `60` | minimum interval between access marker updates per project |
+| `CODESEXTANT_INTERACTIVE_TIMEOUT_SEC` | `15` | client deadline for symbols, map, references, hierarchy, and impact |
+| `CODESEXTANT_MAP_TIMEOUT_SEC` | unset | optional client deadline override for cold `map` queries |
+| `CODESEXTANT_MAP_CACHE_SIZE` | `4` | trimmed map results retained by direct in-process callers |
 | `CODESEXTANT_NAMEGRAPH_MAX_FILES` | adaptive | override the file-scan cap; adapts 12 to 5000 by symbol count when unset |
 | `CODESEXTANT_NAMEGRAPH_MAX_UNIQUE_EDGES` | `250000` | hard cap so generated code cannot exhaust memory |
 | `CODESEXTANT_WATCH_ENABLED` | on | filesystem watcher for proactive incremental indexing |
+| `CODESEXTANT_WATCH_IDLE_TTL_SEC` | `10800` | idle seconds before a quiescent project watcher is detached |
 | `CODESEXTANT_WATCH_DEBOUNCE_MS` | `2000` | delay that combines a burst of file events into one dirty-path update |
 | `CODESEXTANT_WATCH_RETRY_MAX_SEC` | `60` | maximum exponential backoff after an incremental index is rejected or fails |
 | `CODESEXTANT_WATCH_RETRY_JITTER` | `0.2` | random spread applied to watcher retries to prevent synchronized retry bursts |
-| `CODESEXTANT_HEAVY_GLOBAL_CAP` | `2` | maximum heavy jobs running across all repositories |
+| `CODESEXTANT_WATCH_RECOVERY_FOLLOWER_CAP` | `8` | maximum first-query recovery followers for one project |
+| `CODESEXTANT_HEAVY_GLOBAL_CAP` | `4` | maximum heavy jobs running across all repositories |
+| `CODESEXTANT_INTERACTIVE_GLOBAL_RESERVE` | `3` | global slots reserved for interactive graph requests; one slot remains for maintenance |
 | `CODESEXTANT_HEAVY_QUEUE_CAP` | `8` | base queued jobs allowed per repository |
 | `CODESEXTANT_INTERACTIVE_QUEUE_RESERVE` | `2` | extra queue slots reserved for agent navigation queries |
 | `CODESEXTANT_PRIORITY_AGING_SEC` | `30` | wait time before queued work rises one priority level |
+| `CODESEXTANT_HEAVY_TIMEOUT_SEC` | `900` | default client and server deadline for batch and maintenance requests |
+| `CODESEXTANT_HEAVY_STUCK_SEC` | `1800` | one-shot hard timeout for a native heavy call; `0` disables it |
+| `CODESEXTANT_ROUTE_WORKER_PROCESS` | on | isolate production HTTP engine calls so request deadlines can terminate native work |
+| `CODESEXTANT_STATUS_DB_TIMEOUT_MS` | `150` | best-effort SQLite budget for the immediate status endpoint |
+| `CODESEXTANT_STATUS_GIT_TIMEOUT_SEC` | `0.5` | Git freshness budget when `status?fresh=1` is requested |
+| `CODESEXTANT_STATUS_TIMEOUT_SEC` | `2` | client transport deadline for the diagnostic status request |
 | `CODESEXTANT_OVERLOAD_RETRY_AFTER_SEC` | `5` | `Retry-After` value returned with an overload response |
+| `CODESEXTANT_MAX_BODY_BYTES` | `65536` | maximum JSON request body size |
+| `CODESEXTANT_MAX_HANDLER_THREADS` | `64` | maximum concurrent HTTP handlers, including pre-auth connections |
+| `CODESEXTANT_PREAUTH_TIMEOUT_SEC` | `5` | socket read timeout before request authentication completes |
+| `CODESEXTANT_AUTH_TIME_SKEW_SEC` | `60` | acceptance window for a single-use signed request proof |
+| `CODESEXTANT_AUTH_REPLAY_CAP` | `8192` | bounded in-memory nonce replay cache |
+| `CODESEXTANT_BROWSER_SESSION_CAP` | `64` | maximum active dashboard sessions held in daemon memory |
 | `CODESEXTANT_TS_MORPH_DISABLED` | off | force TS/JS to name matching |
 | `CODESEXTANT_NODE` | `node` | Node executable used by the TS/JS bridge; IDE hosts can provide their bundled runtime |
 | `CODESEXTANT_TS_MORPH_TIMEOUT` | `30` | ts-morph subprocess timeout, seconds |
 | `CODESEXTANT_GIT_FRESHNESS_DISABLED` | off | stop comparing the index against git HEAD |
-| `CODESEXTANT_CSRF_GUARD` | on | Origin check on POST endpoints (allows localhost, Tauri and IDE webviews; blocks cross-site) |
+| `CODESEXTANT_CSRF_GUARD` | on | Origin allowlist for signed native integrations; dashboard writes always require exact same-origin |
 
 A few lower-level language-inference knobs (`CODESEXTANT_INFER_LANG_*`) are documented in the source.
 
@@ -213,7 +244,7 @@ The suite covers the daemon lifecycle, incremental indexing, map scalability, sn
 - PageRank quality depends on how dense the reference edges are, and those accumulate as `find_references` is called. A freshly indexed repo produces a rougher map than one that has been queried for a while.
 - High-confidence TS/JS resolution requires `npm install` in `ts_bridge/`, which is included only in the GitHub repository. PyPI installations return low-confidence name matches for TS/JS.
 - Go and Rust use tree-sitter symbols and low-confidence name-matched references. Their imports are not resolved.
-- Event-driven updates require the daemon to be running. After downtime or a missed event, `status?fresh=1` checks the index against git HEAD and a reindex restores it.
+- Event-driven updates require the daemon to be running. After downtime, the first graph query can return the existing index while one background reconciliation runs. Its `index_lifecycle.stale_possible` field tells callers to verify affected source. `status?fresh=1` remains available for an explicit Git HEAD check.
 
 ## Repository layout
 

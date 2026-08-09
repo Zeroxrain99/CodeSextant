@@ -38,13 +38,15 @@ def test_other_project_is_not_blocked_by_a_slow_project():
 
     slow_thread = threading.Thread(
         target=lambda: sharded.run(("k", "big", ""), slow,
-                                   label="/find_unwired", shard="E:/big"))
+                                   label="/find_unwired", shard="E:/big",
+                                   priority="batch"))
     slow_thread.start()
     assert slow_started.wait(timeout=5), "slow job never started"
 
     started = time.monotonic()
     result = sharded.run(("k", "small", ""), lambda: "fast",
-                         label="/get_symbols", shard="E:/small")
+                         label="/get_symbols", shard="E:/small",
+                         priority="interactive")
     elapsed = time.monotonic() - started
 
     release_slow.set()

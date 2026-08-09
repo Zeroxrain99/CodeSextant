@@ -139,6 +139,32 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_cache(args) -> int:
+    from . import cache_gc
+
+    result = cache_gc.inventory()
+    if args.json:
+        _emit(result, True)
+    else:
+        mib = result["managed_bytes"] / (1024 * 1024)
+        print(
+            f"Managed cache: {result['project_count']} project(s), "
+            f"{mib:.1f} MiB")
+        for project in result["projects"][:20]:
+            size = project["bytes"] / (1024 * 1024)
+            print(
+                f"  {project['project_key'][:12]}  {size:9.1f} MiB  "
+                f"repo={project['repo_state']}  "
+                f"artifacts={project['artifact_count']}")
+        if result["project_count"] > 20:
+            print(f"  ... and {result['project_count'] - 20} more")
+        if result["issues"]:
+            print(
+                f"  {len(result['issues'])} cache group issue(s) were preserved "
+                "instead of pruned")
+    return 0
+
+
 def cmd_install_skill(args) -> int:
     from .skill_install import install_skill
 
@@ -168,10 +194,13 @@ def cmd_gui(args) -> int:
         print(f"Indexing {project} for the first time...")
         client.reindex()
 
-    url = f"{client.base}/"
-    if not args.no_browser and not webbrowser.open_new_tab(url):
-        print("The default browser could not be opened. Use the URL below.", file=sys.stderr)
-    print(f"Dashboard: {url}")
+    url = client.dashboard_url()
+    opened = False
+    if not args.no_browser:
+        opened = bool(webbrowser.open_new_tab(url))
+        if not opened:
+            print("The default browser could not be opened. Use the URL below.", file=sys.stderr)
+    print(f"Dashboard: {client.base + '/' if opened else url}")
     return 0
 
 
@@ -466,6 +495,9 @@ def _build_parser() -> argparse.ArgumentParser:
     pt = sub.add_parser("status", help="check a project's index status")
     pt.add_argument("path")
     pt.set_defaults(func=cmd_status)
+
+    pc = sub.add_parser("cache", help="show managed local index cache usage")
+    pc.set_defaults(func=cmd_cache)
 
     psi = sub.add_parser("install-skill", help="install the bundled Agent Skill")
     psi.add_argument(

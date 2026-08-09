@@ -28,7 +28,9 @@ This command does three things:
 
 1. It creates the first index if the project has not been indexed.
 2. It starts the shared local daemon, or reuses the existing one.
-3. It opens `http://127.0.0.1:8790/` in the default browser.
+3. It opens a single-use local session URL, then redirects to `http://127.0.0.1:8790/`.
+
+The local API signs each request with HMAC using a secret stored under `~/.codesextant`. The secret itself is never sent over HTTP. The browser receives only a bounded in-memory dashboard session, stored in the current tab's `sessionStorage` rather than a cookie or persistent browser storage.
 
 The initial index may take time in a large repository. CodeSextant respects Git's standard ignore rules, including `.gitignore` and `.git/info/exclude`. Generated files and dependency directories should be ignored in the repository rather than indexed.
 
@@ -62,7 +64,7 @@ codesextant references . SYMBOL --def-path path/to/file.py
 
 ## Control the daemon
 
-The daemon is shared by local CodeSextant clients and listens only on the loopback interface.
+The daemon is shared by local CodeSextant clients, listens only on the loopback interface, and authenticates every route.
 
 ```bash
 python -m codesextant.daemon ping
@@ -72,7 +74,21 @@ python -m codesextant.daemon stop
 
 Set `CODESEXTANT_PORT` before starting the daemon if port 8790 is already in use.
 
-On Windows, repository clones include `tools/register_windows_startup.ps1` for optional startup registration. A normal PyPI installation does not need startup registration because `codesextant gui` and agent clients start the daemon when required.
+Indexes survive daemon exits and machine restarts. A new agent session reconnects to the existing project database and attaches a watcher only for that project. Existing graph data can answer immediately while one background reconciliation applies changes made during downtime. Responses expose `index_lifecycle.stale_possible` when source verification is still required. CodeSextant does not rebuild every historical project.
+
+The daemon exits after three idle hours by default. A missing daemon is started by the next client request, which retries once. On Windows, repository clones include `tools/register_windows_startup.ps1` for an optional one-shot login check. A normal PyPI installation does not need startup registration.
+
+Interactive graph requests use a short deadline and reserved capacity. Treat CodeSextant as an accelerator, not a gate: after one timeout, HTTP 503 or 504, authentication or upgrade warning, or missing index, continue with focused AST queries, `rg`, and direct source reads. Do not resend the same failed heavy query in the same task.
+
+`status` is a bounded diagnostic endpoint. It still returns HTTP 200 with `service_load` and `background_recoveries` when SQLite is temporarily locked. In that case, `partial=true` and `index_status_error="database-busy"` identify the unavailable index details.
+
+## Local data and cleanup
+
+CodeSextant stores one SQLite database per absolute project path. The database contains paths, symbols, references, hashes, and extracted comments or docstrings. It does not store full source files and is not encrypted. Access follows the permissions on `~/.codesextant`, so processes running as the same OS user or identities allowed by that directory ACL can read it.
+
+Run `codesextant cache` to inspect managed index usage without exposing repository paths. At a quiescent daemon shutdown, caches for repositories missing beyond 30 days are removed. If managed indexes exceed 10 GiB, older inactive cache groups are removed until usage reaches 90 percent of that quota. Projects used by the current daemon are excluded. OS-locked project leases also make cleanup skip a group that is open in another CLI or process. Credentials, logs, locks, and unknown files are never deletion candidates. These limits can be changed with the `CODESEXTANT_CACHE_*` environment variables documented in the README.
+
+To remove all indexes, browser sessions, and the local API token, stop the daemon and delete `~/.codesextant`. CodeSextant does not upload the index or send telemetry.
 
 ## Install the agent skill
 
@@ -90,7 +106,7 @@ If the `codesextant` command is not on `PATH`, use the module form:
 python -m codesextant gui .
 ```
 
-If the browser does not open, visit the printed URL or run with `--no-browser`. Check daemon health with:
+If the browser does not open, use the printed single-use URL before it expires, or run the command again. Check daemon health with:
 
 ```bash
 python -m codesextant.daemon ping

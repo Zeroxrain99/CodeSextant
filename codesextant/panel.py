@@ -168,8 +168,14 @@ function fmtUptime(sec) {
 }
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  const session = sessionStorage.getItem("codesextant.session");
+  const headers = new Headers((opts && opts.headers) || {});
+  if (session) headers.set("X-CodeSextant-Session", session);
+  const r = await fetch(path, {...(opts || {}), headers});
   const data = await r.json().catch(() => ({}));
+  if (r.status === 401) {
+    throw new Error("Dashboard session missing or expired. Run `codesextant gui` to open a new session.");
+  }
   if (!r.ok) throw new Error(data.error || (r.status + " " + r.statusText));
   return data;
 }
@@ -346,7 +352,10 @@ async function loadLinks() {
 
 async function loadAll() { await Promise.all([loadHealth(), loadProjects()]); }
 loadAll();
-setInterval(loadHealth, 5000);  // refresh service status every 5s (uptime / offline detection)
+window.addEventListener('focus', loadAll);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) loadAll();
+});
 </script>
 </body>
 </html>

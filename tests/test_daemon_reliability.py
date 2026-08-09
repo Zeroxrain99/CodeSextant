@@ -170,9 +170,12 @@ def test_health_returns_promptly_while_watcher_manager_lock_is_held(monkeypatch)
 
 def test_interprocess_lock_excludes_second_holder(tmp_path):
     lock_path = tmp_path / "daemon.lock"
-    with daemon._InterprocessFileLock(lock_path, timeout=0.1), pytest.raises(TimeoutError):
-        with daemon._InterprocessFileLock(lock_path, timeout=0.05):
-            pass
+    with (
+        daemon._InterprocessFileLock(lock_path, timeout=0.1),
+        pytest.raises(TimeoutError),
+        daemon._InterprocessFileLock(lock_path, timeout=0.05),
+    ):
+        pass
 
 
 def test_instance_probe_timeout_is_unknown_not_a_healthy_owner(tmp_path, monkeypatch):
@@ -282,16 +285,26 @@ def test_require_project_with_watcher_disabled_never_imports_watcher(monkeypatch
     assert daemon._WATCH_MGR is None
 
 
-def test_require_project_with_watcher_enabled_still_registers_watch(monkeypatch):
-    """The queue-3 auto-watch behaviour must survive the disabled-switch gate."""
+def test_status_preparation_does_not_construct_a_watcher(monkeypatch):
+    """Status remains available as a diagnostic path while recovery is unhealthy."""
     monkeypatch.setenv("CODESEXTANT_WATCH_ENABLED", "1")
     calls = []
     monkeypatch.setattr(
         daemon, "_get_watch_mgr",
-        lambda: SimpleNamespace(ensure_watch=lambda p: calls.append(p)))
+        lambda: SimpleNamespace(
+            ensure_watch=lambda p: calls.append(p),
+            ensure_ready=lambda p, **_kwargs: calls.append(p),
+        ))
 
     assert daemon._require_project("C:/some/project") == "C:/some/project"
-    assert calls == ["C:/some/project"]
+    assert calls == []
+    lifecycle = daemon._prepare_project(
+        "/status",
+        urllib.parse.urlparse("/status?project=C%3A%2Fsome%2Fproject"),
+        None,
+    )
+    assert calls == []
+    assert lifecycle == {"recovery": "not-blocking", "stale_possible": True}
 
 
 def test_concurrent_ensure_spawns_only_once(tmp_path, monkeypatch):
@@ -305,7 +318,12 @@ def test_concurrent_ensure_spawns_only_once(tmp_path, monkeypatch):
 
     def fake_spawn(port):
         state["spawns"] += 1
-        state["health"] = {"service": "codesextant", "pid": 4242, "port": port}
+        state["health"] = {
+            "service": "codesextant",
+            "api_version": daemon.API_VERSION,
+            "pid": 4242,
+            "port": port,
+        }
         return SimpleNamespace(pid=4242)
 
     monkeypatch.setattr(daemon, "http_ping", fake_ping)
@@ -333,7 +351,12 @@ def test_ensure_confirms_slow_branded_listener_before_port_conflict(
     def delayed_ping(*_args, timeout=0.6, **_kwargs):
         timeouts.append(timeout)
         if timeout >= 2.0:
-            return {"service": "codesextant", "pid": 4243, "port": 18795}
+            return {
+                "service": "codesextant",
+                "api_version": daemon.API_VERSION,
+                "pid": 4243,
+                "port": 18795,
+            }
         return None
 
     monkeypatch.setattr(daemon, "http_ping", delayed_ping)
@@ -349,9 +372,9 @@ def test_ensure_confirms_slow_branded_listener_before_port_conflict(
     assert max(timeouts) >= 2.0
 
 
-def test_ensure_uses_instance_lock_when_busy_daemon_health_times_out(
+def test_ensure_reports_unverified_owner_when_health_times_out(
         tmp_path, monkeypatch):
-    """CPU-bound map may starve /health; the daemon's lifetime lock still proves ownership."""
+    """A lifetime lock proves ownership, not API or authentication compatibility."""
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "db"))
     monkeypatch.setattr(daemon, "http_ping", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(daemon, "is_port_listening", lambda **_kwargs: True)
@@ -368,14 +391,14 @@ def test_ensure_uses_instance_lock_when_busy_daemon_health_times_out(
     finally:
         lock.release()
 
-    assert result["action"] == "already-running"
+    assert result["action"] == "owner-alive-unverified"
     assert result["port"] == 18798
-    assert result["health_proof"] == "instance-lock"
+    assert result["health_proof"] == "instance-lock-only"
 
 
-def test_ensure_uses_instance_lock_even_when_tcp_probe_misses(
+def test_ensure_does_not_reuse_lock_owner_when_tcp_probe_misses(
         tmp_path, monkeypatch):
-    """A full accept backlog must not bypass the stronger lifetime-lock proof."""
+    """A full accept backlog must not turn process ownership into protocol proof."""
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "db"))
     monkeypatch.setattr(daemon, "http_ping", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(daemon, "is_port_listening", lambda **_kwargs: False)
@@ -392,13 +415,13 @@ def test_ensure_uses_instance_lock_even_when_tcp_probe_misses(
     finally:
         lock.release()
 
-    assert result["action"] == "already-running"
-    assert result["health_proof"] == "instance-lock"
+    assert result["action"] == "owner-alive-unverified"
+    assert result["health_proof"] == "instance-lock-only"
 
 
-def test_startup_lock_timeout_falls_back_to_instance_lock(
+def test_startup_lock_timeout_reports_unverified_instance_owner(
         tmp_path, monkeypatch):
-    """A client losing the startup-lock race must still reuse the live owner."""
+    """A client losing the startup race fails fast without spawning or reusing."""
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "db"))
     monkeypatch.setattr(daemon, "http_ping", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -417,8 +440,8 @@ def test_startup_lock_timeout_falls_back_to_instance_lock(
     finally:
         startup.release()
 
-    assert result["action"] == "already-running"
-    assert result["health_proof"] == "instance-lock"
+    assert result["action"] == "owner-alive-unverified"
+    assert result["health_proof"] == "instance-lock-only"
 
 
 class _JsonResponse:
@@ -564,8 +587,8 @@ def test_client_does_not_retry_http_application_error(monkeypatch, tmp_path):
     assert calls["ensure"] == 0
 
 
-def test_client_map_has_longer_cold_query_deadline(monkeypatch, tmp_path):
-    """A cold map may legitimately take minutes, including FIFO queue wait."""
+def test_client_map_has_short_interactive_deadline(monkeypatch, tmp_path):
+    """An interactive map fails fast instead of inheriting the batch budget."""
     seen = []
 
     def capture_open(*_args, timeout=None, **_kwargs):
@@ -573,9 +596,9 @@ def test_client_map_has_longer_cold_query_deadline(monkeypatch, tmp_path):
         return _JsonResponse({"count": 1})
 
     monkeypatch.setattr(client.urllib.request, "urlopen", capture_open)
-    c = client.CodesextantClient(project=str(tmp_path), port=18797, timeout=5.0)
+    c = client.CodesextantClient(project=str(tmp_path), port=18797, timeout=30.0)
     assert c.get_map() == {"count": 1}
-    assert seen == [900.0]
+    assert seen == [15.0]
 
 
 def test_client_reindex_has_dedicated_long_deadline(monkeypatch, tmp_path):
@@ -594,19 +617,19 @@ def test_client_reindex_has_dedicated_long_deadline(monkeypatch, tmp_path):
     assert seen == [321.0]
 
 
-def test_client_impact_uses_shared_heavy_deadline(monkeypatch, tmp_path):
+def test_client_impact_uses_interactive_deadline(monkeypatch, tmp_path):
     seen = []
 
     def capture_open(*_args, timeout=None, **_kwargs):
         seen.append(timeout)
         return _JsonResponse({"blast_radius": 1})
 
-    monkeypatch.setenv("CODESEXTANT_HEAVY_TIMEOUT_SEC", "432")
+    monkeypatch.setenv("CODESEXTANT_INTERACTIVE_TIMEOUT_SEC", "12")
     monkeypatch.setattr(client.urllib.request, "urlopen", capture_open)
     c = client.CodesextantClient(project=str(tmp_path), port=18804, timeout=5.0)
 
     assert c.impact("renderGameSettings") == {"blast_radius": 1}
-    assert seen == [432.0]
+    assert seen == [12.0]
 
 
 def test_send_json_ignores_windows_client_abort():
@@ -665,8 +688,8 @@ def test_supervisor_busy_instance_never_calls_ensure(monkeypatch):
 
     result = supervisor.supervise_once(port=18805)
 
-    assert result["action"] == "already-running"
-    assert result["health_proof"] == "instance-lock"
+    assert result["action"] == "owner-alive-unverified"
+    assert result["health_proof"] == "instance-lock-only"
 
 
 def test_busy_owner_never_spawns_under_concurrent_supervisor_and_client(
@@ -694,8 +717,8 @@ def test_busy_owner_never_spawns_under_concurrent_supervisor_and_client(
     finally:
         instance.release()
 
-    assert {result["action"] for result in results} == {"already-running"}
-    assert {result["health_proof"] for result in results} == {"instance-lock"}
+    assert {result["action"] for result in results} == {"owner-alive-unverified"}
+    assert {result["health_proof"] for result in results} == {"instance-lock-only"}
 
 
 def test_heavy_work_coordinator_single_flights_same_key():

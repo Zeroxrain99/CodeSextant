@@ -47,17 +47,11 @@ $Action = New-ScheduledTaskAction `
     -Execute $PythonW `
     -Argument ('"{0}" run' -f $Supervisor) `
     -WorkingDirectory $ProjectRoot
-$Heartbeat = New-ScheduledTaskTrigger `
-    -Once `
-    -At (Get-Date).AddMinutes(1) `
-    -RepetitionInterval (New-TimeSpan -Minutes 1) `
-    -RepetitionDuration (New-TimeSpan -Days 3650)
 if ($IsAdmin) {
     $StartupMode = 'system-boot-and-logon'
     $Triggers = @(
         (New-ScheduledTaskTrigger -AtStartup),
-        (New-ScheduledTaskTrigger -AtLogOn -User $UserId),
-        $Heartbeat
+        (New-ScheduledTaskTrigger -AtLogOn -User $UserId)
     )
     $Principal = New-ScheduledTaskPrincipal `
         -UserId $UserId `
@@ -68,8 +62,7 @@ if ($IsAdmin) {
     # earliest reliable non-elevated startup point and still supports restart.
     $StartupMode = 'user-logon'
     $Triggers = @(
-        (New-ScheduledTaskTrigger -AtLogOn -User $UserId),
-        $Heartbeat
+        (New-ScheduledTaskTrigger -AtLogOn -User $UserId)
     )
     $Principal = New-ScheduledTaskPrincipal `
         -UserId $UserId `
@@ -78,9 +71,9 @@ if ($IsAdmin) {
 }
 $Settings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew `
-    -RestartCount 255 `
+    -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
-    -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
     -StartWhenAvailable `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
@@ -90,7 +83,7 @@ $Task = New-ScheduledTask `
     -Trigger $Triggers `
     -Principal $Principal `
     -Settings $Settings `
-    -Description 'CodeSextant supervisor: startup plus one-minute recovery heartbeat.'
+    -Description 'CodeSextant one-shot startup check. Clients recover the daemon on demand.'
 try {
     Register-ScheduledTask -TaskName $TaskName -InputObject $Task -Force `
         -ErrorAction Stop | Out-Null

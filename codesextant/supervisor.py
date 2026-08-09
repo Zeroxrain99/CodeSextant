@@ -1,8 +1,7 @@
-"""CodeSextant daemon watchdog used by the Windows startup task.
+"""One-shot CodeSextant daemon check used by the Windows startup task.
 
-The supervisor is intentionally tiny: one process-wide lock, strict /health
-checks, and the daemon's existing ``ensure_running`` as the only launch path.
-This keeps daemon startup logic in one source of truth.
+Clients recover the daemon on demand after transport failure. The startup task
+uses this module once at login so it never turns liveness into a polling loop.
 """
 from __future__ import annotations
 
@@ -56,10 +55,11 @@ def _heavy_stuck_threshold_sec() -> float:
 def _heavy_job_is_stuck(health: dict) -> bool:
     """True when /health telemetry proves an over-age active heavy job.
 
-    /health is isolated from the heavy lane by design, so a wedged job keeps
-    the daemon "healthy" forever while every heavy request piles up to 503.
-    The supervisor is the only external actor able to break that state.
-    Missing or malformed telemetry (older daemon) must read as not-stuck.
+    /health is isolated from the heavy lane by design. Production HTTP engine
+    calls are deadline-bound child processes, and background native work has an
+    in-process one-shot hard timer. This one-shot supervisor check remains a
+    manual and login-time recovery aid, not a polling authority. Missing or
+    malformed telemetry from an older daemon must read as not-stuck.
     """
     threshold = _heavy_stuck_threshold_sec()
     if threshold <= 0:
@@ -93,10 +93,9 @@ def supervise_once(*, port: int | None = None) -> dict:
             return result
         return {"action": "healthy", "pid": health.get("pid"),
                 "port": port, "health": health}
-    # A CPU-heavy query can starve HTTP/TCP probes while the OS-backed lifetime
-    # lock still proves that the authority process exists.  Do not compete with
-    # ordinary clients for the startup lock or amplify a busy period with
-    # duplicate spawn attempts.
+    # The OS-backed lifetime lock proves only that an authority process exists.
+    # It does not prove API or authentication compatibility, so return the
+    # explicit unverified state and never reuse or replace that owner here.
     owner = daemon._instance_owner_result(port)
     if owner is not None:
         return owner
@@ -105,15 +104,8 @@ def supervise_once(*, port: int | None = None) -> dict:
 
 def run(*, port: int | None = None, interval_sec: float | None = None,
         max_backoff_sec: float = 60.0) -> int:
-    """Watch forever; a scheduled-task restart policy protects this process."""
+    """Perform one startup check and exit without polling."""
     port = port or daemon._port()
-    if interval_sec is None:
-        try:
-            interval_sec = float(os.environ.get(
-                "CODESEXTANT_SUPERVISOR_INTERVAL_SEC", "5"))
-        except ValueError:
-            interval_sec = 5.0
-    interval_sec = max(1.0, interval_sec)
     lg = _logger()
 
     try:
@@ -124,34 +116,21 @@ def run(*, port: int | None = None, interval_sec: float | None = None,
         lg.info("supervisor duplicate ignored port=%d", port)
         return 0
 
-    failures = 0
-    lg.info("supervisor started port=%d interval=%.1fs", port, interval_sec)
+    started = time.monotonic()
     try:
-        while True:
-            try:
-                result = supervise_once(port=port)
-                action = result.get("action")
-                if action in ("healthy", "already-running", "spawned"):
-                    if action == "spawned":
-                        lg.warning("daemon recovered pid=%s port=%d",
-                                   result.get("pid"), port)
-                    failures = 0
-                    delay = interval_sec
-                else:
-                    failures += 1
-                    delay = min(max_backoff_sec,
-                                interval_sec * (2 ** min(failures, 4)))
-                    lg.error("daemon recovery failed action=%s retry=%.1fs",
-                             action, delay)
-            except Exception as exc:  # watchdog must survive one bad probe
-                failures += 1
-                delay = min(max_backoff_sec,
-                            interval_sec * (2 ** min(failures, 4)))
-                lg.exception("supervisor probe failed retry=%.1fs: %s", delay, exc)
-            time.sleep(delay)
-    except KeyboardInterrupt:
-        lg.info("supervisor interrupted")
-        return 0
+        result = supervise_once(port=port)
+        action = result.get("action")
+        elapsed = time.monotonic() - started
+        if action in ("healthy", "already-running", "spawned"):
+            lg.info("one-shot startup check complete action=%s port=%d elapsed=%.3fs",
+                    action, port, elapsed)
+            return 0
+        lg.error("one-shot startup check failed action=%s port=%d elapsed=%.3fs",
+                 action, port, elapsed)
+        return 1
+    except Exception as exc:
+        lg.exception("one-shot startup check failed port=%d: %s", port, exc)
+        return 1
     finally:
         supervisor_lock.release()
 

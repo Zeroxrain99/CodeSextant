@@ -24,6 +24,10 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from codesextant import local_auth
 
 # This short timeout is only for the initial health check. A daemon that cannot
 # answer it promptly is already too busy for a useful measurement.
@@ -32,10 +36,19 @@ _HEALTH_PROBE_TIMEOUT_SEC = 10.0
 
 def _timed_get(base: str, path: str, params: dict, timeout: float) -> tuple[float, str]:
     """Return elapsed milliseconds and status without aborting the benchmark."""
-    url = f"{base}{path}?" + urllib.parse.urlencode(params)
+    target = f"{path}?" + urllib.parse.urlencode(params)
+    url = f"{base}{target}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "X-CodeSextant-Timeout-Ms": str(int(max(0.1, timeout - 1) * 1000)),
+        },
+    )
+    for name, value in local_auth.request_headers("GET", target).items():
+        request.add_unredirected_header(name, value)
     started = time.perf_counter()
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
             resp.read()
         status = str(resp.status if hasattr(resp, "status") else 200)
     except Exception as exc:  # noqa: BLE001 - one failed request is a result
@@ -95,8 +108,12 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     try:
+        request = urllib.request.Request(f"{args.base}/health")
+        for name, value in local_auth.request_headers(
+                "GET", "/health").items():
+            request.add_unredirected_header(name, value)
         with urllib.request.urlopen(
-                f"{args.base}/health", timeout=_HEALTH_PROBE_TIMEOUT_SEC) as r:
+                request, timeout=_HEALTH_PROBE_TIMEOUT_SEC) as r:
             health = json.loads(r.read().decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
         print(f"Could not reach the daemon at {args.base}: {exc}", file=sys.stderr)

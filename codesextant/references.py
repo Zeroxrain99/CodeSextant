@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
 import jedi
 
@@ -349,6 +350,15 @@ def _run_ts_bridge(payload: dict, timeout: float) -> dict | None:
     """
     bridge = _ts_bridge_dir()
     raw = json.dumps(payload).encode("utf-8")
+    deadline_raw = os.environ.get("CODESEXTANT_ROUTE_DEADLINE_MONOTONIC")
+    if deadline_raw:
+        try:
+            remaining = float(deadline_raw) - time.monotonic() - 0.1
+        except (TypeError, ValueError):
+            remaining = timeout
+        if remaining <= 0:
+            return None
+        timeout = min(timeout, remaining)
     try:
         _kw = {"input": raw, "capture_output": True, "cwd": bridge, "timeout": timeout}
         if os.name == "nt":

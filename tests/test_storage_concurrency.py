@@ -25,6 +25,7 @@ def _pragma(conn: sqlite3.Connection, name: str):
 def test_store_opens_in_wal_mode(tmp_path, monkeypatch):
     """WAL lets readers keep reading while a writer is mid-transaction."""
     monkeypatch.setattr(storage, "default_db_dir", lambda: tmp_path)
+    monkeypatch.setenv("CODESEXTANT_SQLITE_UNSAFE_WAL", "1")
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -51,6 +52,7 @@ def test_reader_not_blocked_by_open_write_transaction(tmp_path, monkeypatch):
     committed snapshot immediately.
     """
     monkeypatch.setattr(storage, "default_db_dir", lambda: tmp_path)
+    monkeypatch.setenv("CODESEXTANT_SQLITE_UNSAFE_WAL", "1")
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -94,6 +96,7 @@ def test_reader_not_blocked_by_open_write_transaction(tmp_path, monkeypatch):
 def test_wal_mode_survives_reopen(tmp_path, monkeypatch):
     """Journal mode is persistent, so reopening must not silently regress."""
     monkeypatch.setattr(storage, "default_db_dir", lambda: tmp_path)
+    monkeypatch.setenv("CODESEXTANT_SQLITE_UNSAFE_WAL", "1")
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -124,3 +127,53 @@ def test_wal_can_be_disabled_by_switch(tmp_path, monkeypatch):
 
     with storage.ProjectStore.open(str(repo)) as store:
         assert str(_pragma(store.conn, "journal_mode")).lower() != "wal"
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ((3, 44, 5), False),
+        ((3, 44, 6), True),
+        ((3, 45, 1), False),
+        ((3, 49, 9), False),
+        ((3, 50, 6), False),
+        ((3, 50, 7), True),
+        ((3, 51, 2), False),
+        ((3, 51, 3), True),
+        ((3, 52, 0), True),
+    ],
+)
+def test_wal_safety_gate_matches_fixed_sqlite_releases(version, expected):
+    assert storage.sqlite_wal_is_safe(version) is expected
+
+
+def test_affected_sqlite_defaults_to_rollback_journal(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "default_db_dir", lambda: tmp_path)
+    monkeypatch.setattr(storage.sqlite3, "sqlite_version_info", (3, 45, 1))
+    monkeypatch.delenv("CODESEXTANT_SQLITE_WAL", raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    monkeypatch.setenv("CODESEXTANT_SQLITE_UNSAFE_WAL", "1")
+    with storage.ProjectStore.open(str(repo)) as store:
+        assert str(_pragma(store.conn, "journal_mode")).lower() == "wal"
+
+    monkeypatch.delenv("CODESEXTANT_SQLITE_UNSAFE_WAL")
+    with storage.ProjectStore.open(str(repo)) as store:
+        assert str(_pragma(store.conn, "journal_mode")).lower() != "wal"
+
+
+def test_sqlite_runtime_status_reports_effective_wal_policy(monkeypatch):
+    monkeypatch.setattr(storage.sqlite3, "sqlite_version", "3.45.1")
+    monkeypatch.setattr(storage.sqlite3, "sqlite_version_info", (3, 45, 1))
+    monkeypatch.delenv("CODESEXTANT_SQLITE_UNSAFE_WAL", raising=False)
+
+    status = storage.sqlite_runtime_status()
+
+    assert status == {
+        "version": "3.45.1",
+        "wal_safe": False,
+        "unsafe_wal_override": False,
+        "wal_requested": True,
+        "wal_allowed": False,
+    }

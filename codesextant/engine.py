@@ -23,7 +23,16 @@ from collections import OrderedDict
 from copy import deepcopy
 from threading import RLock, Thread
 
-from . import clones, comments, namegraph, project_state, references, storage, symbols
+from . import (
+    clones,
+    comments,
+    namegraph,
+    project_state,
+    references,
+    storage,
+    symbols,
+    work_coordinator,
+)
 from .ranking import rank_symbols
 from .symbols import SUPPORTED_EXTENSIONS
 
@@ -39,6 +48,7 @@ _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
 _MAP_CACHE: OrderedDict[tuple, dict] = OrderedDict()
 _MAP_CACHE_LOCK = RLock()
 _SYMBOL_SNAPSHOT_INFLIGHT: set[tuple[str, tuple]] = set()
+_SYMBOL_SNAPSHOT_THREADS: set[Thread] = set()
 _MAP_CACHE_ENV = (
     "CODESEXTANT_NAMEGRAPH_DISABLED", "CODESEXTANT_NAMEGRAPH_MAX_FANOUT",
     "CODESEXTANT_NAMEGRAPH_MAX_FILES", "CODESEXTANT_NAMEGRAPH_MAP_WORK_BUDGET",
@@ -51,6 +61,11 @@ _MAP_CACHE_ENV = (
 
 def _schedule_symbol_snapshot(db_file, revision: tuple, symbols: list[dict]) -> None:
     """Write the snapshot lazily, off the response path; one writer per revision per process."""
+    if os.environ.get("CODESEXTANT_ROUTE_WORKER_CHILD") == "1":
+        # A disposable route worker exits as soon as its response is delivered,
+        # so a delayed daemon thread would never publish the snapshot.
+        storage.write_symbol_snapshot(db_file, revision, symbols)
+        return
     key = (str(db_file), tuple(revision))
     with _MAP_CACHE_LOCK:
         if key in _SYMBOL_SNAPSHOT_INFLIGHT:
@@ -67,8 +82,37 @@ def _schedule_symbol_snapshot(db_file, revision: tuple, symbols: list[dict]) -> 
         finally:
             with _MAP_CACHE_LOCK:
                 _SYMBOL_SNAPSHOT_INFLIGHT.discard(key)
+                _SYMBOL_SNAPSHOT_THREADS.discard(thread)
 
-    Thread(target=worker, name="codesextant-symbol-snapshot", daemon=True).start()
+    thread = Thread(
+        target=worker,
+        name="codesextant-symbol-snapshot",
+        daemon=True,
+    )
+    with _MAP_CACHE_LOCK:
+        _SYMBOL_SNAPSHOT_THREADS.add(thread)
+    try:
+        thread.start()
+    except Exception:
+        with _MAP_CACHE_LOCK:
+            _SYMBOL_SNAPSHOT_THREADS.discard(thread)
+            _SYMBOL_SNAPSHOT_INFLIGHT.discard(key)
+        raise
+
+
+def wait_for_snapshot_writers(timeout: float | None = None) -> bool:
+    """Wait for delayed cache writers before daemon ownership is released."""
+    deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+    while True:
+        with _MAP_CACHE_LOCK:
+            threads = [thread for thread in _SYMBOL_SNAPSHOT_THREADS if thread.is_alive()]
+        if not threads:
+            return True
+        for thread in threads:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return False
+            thread.join(timeout=remaining)
 
 # Definitions that can be reference targets. The variable kind covers exported TS/JS
 # constants, arrow functions, and object literals. Without it, those definitions have no
@@ -207,6 +251,7 @@ def _git_head_sha(repo_path: str) -> str | None:
 
 def _index_source_file(store: storage.ProjectStore, fp: str, *, force: bool = False):
     """Index one supported source file without discovering any other paths."""
+    work_coordinator.cancellation_point()
     try:
         with open(fp, "rb") as source_file:
             source = source_file.read()
@@ -224,20 +269,19 @@ def _index_source_file(store: storage.ProjectStore, fp: str, *, force: bool = Fa
             symbols.extract_symbols_from_source(source, lang, file_path=fp, tree=tree)
             if lang else []
         )
-        store.store_file_symbols(fp, content_hash, extracted, indexed_at=time.time())
+        indexed_comments: list[dict] = []
         if lang and comments.comments_enabled():
             try:
-                store.store_file_comments(
-                    fp,
-                    comments.extract_comments_from_source(
-                        source, lang, file_path=fp, tree=tree
-                    ),
+                indexed_comments = comments.extract_comments_from_source(
+                    source, lang, file_path=fp, tree=tree
                 )
             except Exception as exc:
                 print(
                     f"  Warning: comment extraction failed ({fp}): {type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
+        fingerprints: list[dict] = []
+        winnow_index: list[dict] = []
         if lang and clones.dedup_enabled():
             try:
                 fingerprints = clones.extract_fingerprints_from_source(
@@ -248,14 +292,32 @@ def _index_source_file(store: storage.ProjectStore, fp: str, *, force: bool = Fa
                     for fingerprint in fingerprints
                     for value in fingerprint.get("winnow", [])
                 ]
-                store.store_file_fingerprints(fp, fingerprints, winnow_index)
             except Exception as exc:
+                fingerprints = []
+                winnow_index = []
                 print(
                     f"  Warning: fingerprint/complexity extraction failed ({fp}): "
                     f"{type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
+
+        # No cancellation point belongs inside the SQLite transaction. Once
+        # replacement starts, every derived table must advance or roll back as
+        # one file revision.
+        work_coordinator.cancellation_point()
+        store.store_file_index(
+            fp,
+            content_hash,
+            extracted,
+            indexed_at=time.time(),
+            comments=indexed_comments,
+            fingerprints=fingerprints,
+            winnow_index=winnow_index,
+        )
+        work_coordinator.cancellation_point()
         return "indexed", None
+    except work_coordinator.HeavyWorkDeadlineExceeded:
+        raise
     except Exception as exc:
         return "error", {"path": fp, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -306,6 +368,7 @@ def index_paths(path: str, changed_paths) -> dict:
     if not os.path.isdir(path):
         raise NotADirectoryError(f"index_paths: '{path}' is not a valid directory")
 
+    work_coordinator.cancellation_point()
     abs_path = os.path.abspath(path)
     targets = sorted({
         target
@@ -321,6 +384,7 @@ def index_paths(path: str, changed_paths) -> dict:
         candidates: set[str] = set()
         removed_paths: set[str] = set()
         for target in targets:
+            work_coordinator.cancellation_point()
             if os.path.isdir(target):
                 if _path_is_skipped(abs_path, target):
                     continue
@@ -347,11 +411,13 @@ def index_paths(path: str, changed_paths) -> dict:
                 if old.startswith(prefix) and old not in removed_paths
             ]
             for old in descendants:
+                work_coordinator.cancellation_point()
                 store.remove_file(old)
                 removed += 1
                 removed_paths.add(old)
 
         for source_path in sorted(candidates):
+            work_coordinator.cancellation_point()
             outcome, error = _index_source_file(store, source_path)
             if outcome == "indexed":
                 indexed += 1
@@ -366,8 +432,10 @@ def index_paths(path: str, changed_paths) -> dict:
                     errors += 1
                     error_files.append(error)
 
+        work_coordinator.cancellation_point()
         sha = _git_head_sha(abs_path)
         if sha:
+            work_coordinator.cancellation_point()
             store.record_git_sha(sha)
         stats = store.stats()
 
@@ -406,6 +474,7 @@ def index_project(path: str, *, force: bool = False) -> dict:
     if not os.path.isdir(path):
         raise NotADirectoryError(f"index_project: '{path}' is not a valid directory")
 
+    work_coordinator.cancellation_point()
     abs_path = os.path.abspath(path)
     t0 = time.perf_counter()
     indexed = skipped = errors = 0
@@ -414,6 +483,7 @@ def index_project(path: str, *, force: bool = False) -> dict:
     with storage.ProjectStore.open(abs_path) as store:
         seen_files: set[str] = set()
         for fp in _iter_source_files(abs_path):
+            work_coordinator.cancellation_point()
             seen_files.add(fp)
             outcome, error = _index_source_file(store, fp, force=force)
             if outcome == "indexed":
@@ -428,13 +498,16 @@ def index_project(path: str, *, force: bool = False) -> dict:
         # of truth for the current project view.
         removed = 0
         for old_path in store.all_indexed_files():
+            work_coordinator.cancellation_point()
             if old_path not in seen_files:
                 store.remove_file(old_path)
                 removed += 1
 
         # Record Git HEAD at index time. Non-Git repositories record nothing.
+        work_coordinator.cancellation_point()
         sha = _git_head_sha(abs_path)
         if sha:
+            work_coordinator.cancellation_point()
             store.record_git_sha(sha)
 
         elapsed = time.perf_counter() - t0
@@ -473,7 +546,7 @@ def get_symbols(path: str, file: str | None = None) -> dict:
         }
 
     target_file = os.path.abspath(file) if file else None
-    with storage.ProjectStore.open(abs_path) as store:
+    with storage.ProjectStore.open_readonly(abs_path) as store:
         syms = store.get_symbols(target_file)
         return {
             "project_key": store.project_key,
@@ -573,11 +646,21 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
     # Without def_path, pull same-named definitions from the index as candidates (the
     # first stage's coarse filter benefits from the index too).
     candidate_defs: list[dict] = []
+    reference_generation: int | None = None
     db_file = storage.db_path_for(abs_path)
     if db_file.exists():
-        with storage.ProjectStore.open(abs_path) as store:
-            candidate_defs = [d for d in store.find_symbol_definitions(symbol)
-                              if d["kind"] in _REFERENCEABLE_KINDS]
+        with storage.ProjectStore.open_readonly(abs_path) as store:
+            # Pin both the generation and candidate definitions to one SQLite
+            # snapshot. A reindex after this point makes persistence fail closed.
+            store.conn.execute("BEGIN")
+            try:
+                reference_generation = store.index_generation()
+                candidate_defs = [
+                    d for d in store.find_symbol_definitions(symbol)
+                    if d["kind"] in _REFERENCEABLE_KINDS
+                ]
+            finally:
+                store.conn.rollback()
     if def_path is None and candidate_defs:
         def_path = candidate_defs[0]["path"]
 
@@ -629,7 +712,8 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
     result["reliability"] = _refs_reliability(result)
 
     # Persist the high-confidence reference edges, grouped by source file, for PageRank later.
-    if persist and db_file.exists() and result.get("definition"):
+    if (persist and db_file.exists() and result.get("definition")
+            and reference_generation is not None):
         d = result["definition"]
         edges_by_src: dict[str, list[dict]] = {}
         for ref in result["high_confidence"]:
@@ -647,12 +731,12 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
         if edges_by_src:
             with storage.ProjectStore.open(abs_path) as store:
                 for sp, edges in edges_by_src.items():
-                    # Note: replace_refs_for clears *all* of that source file's old edges.
-                    # To avoid wiping other symbols' edges, accumulate instead: read the
-                    # file's existing edges back and merge.
-                    existing = [e for e in store.all_refs() if e["src_path"] == sp
-                                and e["symbol_name"] != symbol]
-                    store.replace_refs_for(sp, existing + edges)
+                    if not store.replace_refs_for_symbol(
+                            sp,
+                            symbol,
+                            edges,
+                            expected_generation=reference_generation):
+                        break
 
     return result
 
@@ -696,7 +780,7 @@ def call_hierarchy(path: str, symbol: str, *, direction: str = "both",
         raise RuntimeError(
             f"call_hierarchy: project has not been indexed yet (no {db_file}); call index_project first.")
 
-    with storage.ProjectStore.open(abs_path) as store:
+    with storage.ProjectStore.open_readonly(abs_path) as store:
         candidate_defs = [d for d in store.find_symbol_definitions(symbol)
                           if d["kind"] in _REFERENCEABLE_KINDS]
     if def_path is None and candidate_defs:
@@ -728,7 +812,7 @@ def call_hierarchy(path: str, symbol: str, *, direction: str = "both",
         except Exception:
             pass  # failing to build edges is not fatal; fall back to whatever the refs table already holds
 
-    with storage.ProjectStore.open(abs_path) as store:
+    with storage.ProjectStore.open_readonly(abs_path) as store:
         result["edges_in_graph"] = len(store.all_refs())
         if direction in ("up", "both"):
             result["callers"] = store.traverse_call_graph(
@@ -882,7 +966,10 @@ def _get_map_uncached(path: str, token_budget: int = 2000, *, damping: float = 0
     tokens_per_symbol = 12
     top_n = max(1, token_budget // tokens_per_symbol)
 
-    with storage.ProjectStore.open(abs_path) as store:
+    with storage.ProjectStore.open_readonly(abs_path) as store:
+        # Keep revision, symbols, references, and indexed-file membership on
+        # one SQLite snapshot while an explicit reindex may commit in parallel.
+        store.conn.execute("BEGIN")
         symbol_revision = store.symbol_revision()
         symbols = store.load_symbol_snapshot(symbol_revision)
         symbol_snapshot_hit = symbols is not None
@@ -988,12 +1075,6 @@ def get_map(path: str, token_budget: int = 2000, *, damping: float = 0.85,
             abs_path, token_budget, damping=damping, focus_symbols=focus_symbols,
             focus_files=focus_files, with_name_edges=with_name_edges)
 
-    # Finish the idempotent schema/index migration before reading the revision, so an
-    # upgrade does not store the result under the pre-migration key and recompute it from
-    # scratch next time. open() no longer modifies meta unconditionally, so a normal cache
-    # hit costs only one cheap open/close of the database.
-    with storage.ProjectStore.open(abs_path):
-        pass
     key = _map_cache_key(
         abs_path, token_budget, damping, focus_symbols, focus_files, with_name_edges)
     key_digest = _map_cache_digest(key)
@@ -1268,7 +1349,7 @@ def find_unwired(path: str, *, max_fanout: int | None = None) -> dict:
         raise RuntimeError(
             f"find_unwired: project has not been indexed yet (no {db_file}); call index_project first.")
 
-    with storage.ProjectStore.open(abs_path) as store:
+    with storage.ProjectStore.open_readonly(abs_path) as store:
         syms = store.get_symbols()
         indexed = store.all_indexed_files()
 
@@ -1436,7 +1517,7 @@ def get_comment_overview(path: str, *, scope_file: str | None = None) -> dict:
     kinds = _comment_coverage_kinds()
     skip_private = _comment_skip_private()
 
-    with storage.ProjectStore.open(abs_path) as store:
+    with storage.ProjectStore.open_readonly(abs_path) as store:
         conn = store.conn
         sym_q = "SELECT path,name,kind,line,scope FROM symbols"
         sym_p: list = []
@@ -1540,7 +1621,7 @@ def find_comment_tags(path: str, *, tags: list[str] | None = None,
     want = {t.upper() for t in tags} if tags else None
     marker_re = comments._marker_re()
 
-    with storage.ProjectStore.open(abs_path) as store:
+    with storage.ProjectStore.open_readonly(abs_path) as store:
         q = "SELECT path,line,scope,text FROM comments WHERE tag IS NOT NULL"
         p: list = []
         if target:
@@ -1576,7 +1657,7 @@ def get_comments(path: str, file: str | None = None, *, scope: str | None = None
         return {"project_key": storage.project_key(abs_path), "count": 0, "comments": [],
                 "note": f"project has not been indexed yet (no {db_file}); call index_project first."}
     target = os.path.abspath(file) if file else None
-    with storage.ProjectStore.open(abs_path) as store:
+    with storage.ProjectStore.open_readonly(abs_path) as store:
         q = ("SELECT path,line,end_line,kind,is_doc,tag,scope,owner_line,text "
              "FROM comments WHERE 1=1")
         p: list = []
@@ -1641,7 +1722,7 @@ def get_health(path: str) -> dict:
     if not db_file.exists():
         raise RuntimeError(f"get_health: project has not been indexed yet (no {db_file}); call index_project first.")
 
-    with storage.ProjectStore.open(abs_path) as store:
+    with storage.ProjectStore.open_readonly(abs_path) as store:
         syms = store.get_symbols()
         fps = store.conn.execute(
             "SELECT path,line,node_count,shape_hash,cognitive FROM fingerprints").fetchall()
@@ -1962,7 +2043,7 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
                "boilerplate_suppressed_groups": 0, "total_units_scanned": 0,
                "stage2_ran": bool(target) or near_global}
 
-    with storage.ProjectStore.open(abs_path) as store:
+    with storage.ProjectStore.open_readonly(abs_path) as store:
         conn = store.conn
         # Exact and renamed grouping always runs against the whole repository's
         # fingerprints with no WHERE path filter. Otherwise scope_file mode turns stage 1

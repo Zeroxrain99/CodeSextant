@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
+import time
 from collections.abc import Callable
 
-from . import storage
+from . import cache_lease, storage
 
 
-def git_head_sha(repo_path: str) -> str | None:
+def git_head_sha(repo_path: str, *, timeout_sec: float = 5.0) -> str | None:
     """Read a repository's Git HEAD without opening the parsing stack."""
     if os.environ.get("CODESEXTANT_GIT_FRESHNESS_DISABLED", "").lower() in (
         "1",
@@ -18,7 +20,11 @@ def git_head_sha(repo_path: str) -> str | None:
     ):
         return None
     try:
-        kwargs = {"capture_output": True, "text": True, "timeout": 5}
+        kwargs = {
+            "capture_output": True,
+            "text": True,
+            "timeout": max(0.05, float(timeout_sec)),
+        }
         if os.name == "nt":
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
         result = subprocess.run(["git", "-C", repo_path, "rev-parse", "HEAD"], **kwargs)
@@ -34,6 +40,8 @@ def status(
     *,
     check_freshness: bool = False,
     git_head_reader: Callable[[str], str | None] = git_head_sha,
+    busy_timeout_ms: int | None = None,
+    git_timeout_sec: float = 5.0,
 ) -> dict:
     """Return index state without importing tree-sitter, Jedi, or ranking code."""
     abs_path = os.path.abspath(path)
@@ -45,12 +53,43 @@ def status(
             "repo_path": abs_path,
             "db_file": str(db_file),
         }
-    with storage.ProjectStore.open_readonly(abs_path) as store:
-        state = store.stats()
+    try:
+        database_budget_sec = (
+            None if busy_timeout_ms is None
+            else max(0.0, float(busy_timeout_ms) / 1000.0))
+        database_deadline = (
+            None if database_budget_sec is None
+            else time.monotonic() + database_budget_sec)
+        with storage.ProjectStore.open_readonly(
+            abs_path,
+            busy_timeout_ms=busy_timeout_ms,
+            lease_timeout_sec=database_budget_sec,
+        ) as store:
+            state = store.stats(deadline=database_deadline)
+    except (sqlite3.DatabaseError, OSError, cache_lease.LeaseError) as exc:
+        error_text = str(exc).lower()
+        reason = (
+            "database-busy"
+            if (isinstance(exc, cache_lease.LeaseBusyError)
+                or "locked" in error_text or "busy" in error_text)
+            else "unavailable"
+        )
+        return {
+            "indexed": True,
+            "project_key": storage.project_key(abs_path),
+            "repo_path": abs_path,
+            "db_file": str(db_file),
+            "partial": True,
+            "index_status_error": reason,
+        }
     state["indexed"] = True
     if check_freshness:
         indexed_sha = state.get("indexed_git_sha")
-        current_sha = git_head_reader(abs_path)
+        if git_head_reader is git_head_sha:
+            current_sha = git_head_reader(
+                abs_path, timeout_sec=git_timeout_sec)
+        else:
+            current_sha = git_head_reader(abs_path)
         state["current_git_sha"] = current_sha
         if indexed_sha and current_sha:
             state["git_stale"] = indexed_sha != current_sha

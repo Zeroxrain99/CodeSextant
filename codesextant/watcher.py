@@ -18,14 +18,17 @@ Switches (all tolerant of .lower()):
   - CODESEXTANT_WATCH_DEBOUNCE_MS = the debounce window in milliseconds (default 2000).
   - CODESEXTANT_WATCH_RETRY_MAX_SEC = overload retry cap in seconds (default 60).
   - CODESEXTANT_WATCH_RETRY_JITTER = retry spread as a fraction (default 0.2).
+  - CODESEXTANT_WATCH_RECOVERY_FOLLOWER_CAP = concurrent recovery followers
+    (defaults to CODESEXTANT_HEAVY_FOLLOWER_CAP, normally 8).
 """
 from __future__ import annotations
 
 import os
 import random
 import threading
+import time
 
-from . import engine, symbols, work_coordinator
+from . import engine, storage, symbols, work_coordinator
 
 
 def watch_enabled() -> bool:
@@ -67,10 +70,41 @@ def _retry_jitter() -> float:
         return 0.2
 
 
+class _RecoveryAttempt:
+    """One recovery generation shared by its leader and waiting followers."""
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.error: BaseException | None = None
+        self.followers = 0
+
+
+def _recovery_follower_capacity() -> int:
+    raw_value = os.environ.get(
+        "CODESEXTANT_WATCH_RECOVERY_FOLLOWER_CAP",
+        os.environ.get("CODESEXTANT_HEAVY_FOLLOWER_CAP", "8"),
+    )
+    try:
+        return max(1, int(raw_value))
+    except (TypeError, ValueError):
+        return 8
+
+
+def _clone_recovery_error(exc: BaseException) -> BaseException:
+    """Give each follower its own exception while retaining type and details."""
+    try:
+        cloned = type(exc)(*exc.args)
+        if hasattr(exc, "__dict__"):
+            cloned.__dict__.update(exc.__dict__.copy())
+        return cloned
+    except Exception:  # pragma: no cover - defensive for exotic exceptions
+        return RuntimeError(f"{type(exc).__name__}: {exc}")
+
+
 class _ProjectWatch:
     """A single project's watchdog observer + debounced incremental indexing."""
 
-    def __init__(self, repo_path: str, logger):
+    def __init__(self, repo_path: str, logger, *, on_activity=None):
         self.repo_path = os.path.abspath(repo_path)
         self.logger = logger
         self._pending: set[str] = set()
@@ -80,6 +114,10 @@ class _ProjectWatch:
         self._generation = 0
         self._stopping = False
         self._retry_delay: float | None = None
+        self._flushing = 0
+        self._flush_done = threading.Event()
+        self._flush_done.set()
+        self._on_activity = on_activity or (lambda: None)
 
     def start(self) -> None:
         from watchdog.events import FileSystemEventHandler
@@ -129,6 +167,7 @@ class _ProjectWatch:
             if self._timer is not None:
                 self._timer.cancel()
             self._arm_timer_locked(self._jittered_retry_delay_locked())
+        self._on_activity()
 
     def _arm_timer_locked(self, delay: float | None = None) -> None:
         """Arm at most one debounce/retry timer while holding ``_lock``."""
@@ -169,6 +208,9 @@ class _ProjectWatch:
             self._pending.clear()
             generation = self._generation
             self._timer = None
+            if pending:
+                self._flushing += 1
+                self._flush_done.clear()
         if not pending:
             return
         try:
@@ -208,6 +250,23 @@ class _ProjectWatch:
                     self._pending.update(pending)
                     if self._timer is None:
                         self._arm_timer_locked(self._advance_retry_delay_locked())
+        finally:
+            try:
+                self._on_activity()
+            finally:
+                with self._lock:
+                    self._flushing -= 1
+                    if self._flushing == 0:
+                        self._flush_done.set()
+
+    def is_quiescent(self) -> bool:
+        """Return whether eviction can stop this watcher without dropping work."""
+        with self._lock:
+            return (
+                not self._pending
+                and self._timer is None
+                and not self._flushing
+            )
 
     def stop(self) -> None:
         with self._lock:
@@ -233,51 +292,138 @@ class _ProjectWatch:
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
+        # An entered timer callback may already own an index transaction. The
+        # daemon must retain its instance lock until every such callback leaves,
+        # otherwise a replacement daemon can overlap the old writer. Running
+        # heavy calls already use this timeout as their process-level hard-stop
+        # boundary. A configured zero deliberately disables that boundary.
+        hard_timeout = getattr(
+            work_coordinator.SHARED_SHARDED, "hard_timeout_sec", 0
+        )
+        if not self._flush_done.wait(
+                timeout=hard_timeout if hard_timeout > 0 else None):
+            work_coordinator.fail_fast_stuck_job("watcher/shutdown-drain")
 
 
 class WatchManager:
-    """Manages watchers for multiple projects (held by the daemon singleton). Idempotent:
-    a given project is only attached once."""
+    """Attach, recover, and evict project watchers on demand."""
 
-    def __init__(self, logger):
+    def __init__(self, logger, *, idle_ttl_sec: float | None = None,
+                 clock=time.monotonic, on_activity=None):
         self.logger = logger
         self._watches: dict[str, _ProjectWatch] = {}
         self._lock = threading.Lock()
         self._watched_snapshot: tuple[str, ...] = ()
+        self._project_paths: dict[str, str] = {}
+        self._last_activity: dict[str, float] = {}
+        self._recovery_states: dict[str, str] = {}
+        self._recovery_attempts: dict[str, _RecoveryAttempt] = {}
+        self._recovery_follower_capacity = _recovery_follower_capacity()
+        self._clock = clock
+        self._on_activity = on_activity or (lambda: None)
+        if idle_ttl_sec is None:
+            try:
+                idle_ttl_sec = float(os.environ.get(
+                    "CODESEXTANT_WATCH_IDLE_TTL_SEC", "10800"))
+            except ValueError:
+                idle_ttl_sec = 10800.0
+        self._idle_ttl_sec = max(0.0, float(idle_ttl_sec))
+        self._eviction_timer: threading.Timer | None = None
+        self._stopped = False
+
+    @staticmethod
+    def _normalize(repo_path: str) -> str:
+        return os.path.normcase(os.path.abspath(repo_path))
+
+    @staticmethod
+    def _absolute(repo_path: str) -> str:
+        """Return an I/O path without changing its case on Windows."""
+        return os.path.abspath(repo_path)
+
+    def _refresh_snapshot_locked(self) -> None:
+        self._watched_snapshot = tuple(sorted(
+            self._project_paths.get(
+                project_key, getattr(watch, "repo_path", project_key)
+            )
+            for project_key, watch in self._watches.items()
+        ))
+
+    def _touch_locked(self, project_key: str) -> None:
+        self._last_activity[project_key] = self._clock()
+        self._arm_eviction_locked()
+
+    def _arm_eviction_locked(self) -> None:
+        if self._eviction_timer is not None:
+            self._eviction_timer.cancel()
+            self._eviction_timer = None
+        if self._stopped or self._idle_ttl_sec <= 0 or not self._last_activity:
+            return
+        next_expiry = min(self._last_activity.values()) + self._idle_ttl_sec
+        delay = max(0.001, next_expiry - self._clock())
+        timer = threading.Timer(delay, self._eviction_due)
+        timer.daemon = True
+        self._eviction_timer = timer
+        timer.start()
+
+    def _eviction_due(self) -> None:
+        with self._lock:
+            self._eviction_timer = None
+        self.evict_idle()
+
+    def _watch_activity(self, project_key: str) -> None:
+        with self._lock:
+            if self._stopped or project_key not in self._watches:
+                return
+            self._touch_locked(project_key)
+        self._on_activity()
 
     def ensure_watch(self, repo_path: str) -> bool:
         """Ensure a project is being watched (idempotent). Returns True=being watched /
         False=not attached (disabled/watchdog missing/failed)."""
-        if not watch_enabled():
+        if not watch_enabled() or not repo_path:
             return False
+        rp = self._absolute(repo_path)
+        project_key = self._normalize(rp)
+        with self._lock:
+            if self._stopped:
+                return False
+            if project_key in self._watches:
+                self._touch_locked(project_key)
+                return True
         try:
             import watchdog.observers  # noqa: F401  probe availability
         except ImportError:
             return False  # watchdog not installed -> silently back off (content-hash fallback still applies)
-        if not repo_path:
-            return False
-        rp = os.path.abspath(repo_path)
         if not os.path.isdir(rp):
             return False
-        with self._lock:
-            if rp in self._watches:
-                return True
-        w = _ProjectWatch(rp, self.logger)
+        w = _ProjectWatch(
+            rp, self.logger,
+            on_activity=lambda: self._watch_activity(project_key))
         try:
             w.start()
         except Exception as exc:
             self.logger.warning("watcher attach failed %s: %s", rp, exc)
             return False
         keep = False
+        available = False
         with self._lock:
-            if rp not in self._watches:
-                self._watches[rp] = w
-                self._watched_snapshot = tuple(sorted(self._watches))
+            if self._stopped:
+                available = False
+            elif project_key not in self._watches:
+                self._watches[project_key] = w
+                self._project_paths.setdefault(project_key, rp)
+                self._refresh_snapshot_locked()
+                self._touch_locked(project_key)
                 keep = True
+                available = True
+            else:
+                self._touch_locked(project_key)
+                available = True
         if not keep:
             w.stop()
-            return True
+            return available
         self.logger.info("watcher attached %s (debounce %.1fs)", rp, _debounce_sec())
+        self._on_activity()
         return True
 
     def watched(self) -> list[str]:
@@ -287,15 +433,114 @@ class WatchManager:
         """Lock-free immutable snapshot for the health control plane."""
         return self._watched_snapshot
 
-    def recover(self, repo_path: str) -> dict:
-        """Reconcile once after daemon startup to cover changes made while it was down.
+    def ensure_ready(self, repo_path: str, *, deadline: float | None = None) -> dict:
+        """Reconcile one existing index before its first real query."""
+        rp = self._absolute(repo_path)
+        project_key = self._normalize(rp)
+        with self._lock:
+            if self._stopped:
+                raise RuntimeError("CodeSextant watcher manager is stopped")
+        self.ensure_watch(rp)
+        if not storage.db_path_for(rp).exists():
+            self.mark_ready(rp)
+            return {"action": "not-indexed", "repo_path": rp}
 
-        This runs during daemon startup rather than on a timer. The watcher must be
-        attached before this runs so an edit during recovery is still queued afterward.
+        with self._lock:
+            if self._stopped:
+                raise RuntimeError("CodeSextant watcher manager is stopped")
+            self._project_paths.setdefault(project_key, rp)
+            self._touch_locked(project_key)
+            state = self._recovery_states.get(project_key, "unseen")
+            if state == "ready":
+                return {"action": "ready", "repo_path": rp}
+            if state == "recovering":
+                attempt = self._recovery_attempts[project_key]
+                if attempt.followers >= self._recovery_follower_capacity:
+                    raise work_coordinator.HeavyWorkQueueFull(
+                        "watcher recovery follower capacity reached; retry later")
+                attempt.followers += 1
+                leader = False
+            else:
+                attempt = _RecoveryAttempt()
+                self._recovery_states[project_key] = "recovering"
+                self._recovery_attempts[project_key] = attempt
+                leader = True
+
+        if not leader:
+            try:
+                remaining = (
+                    None if deadline is None
+                    else max(0.0, deadline - time.monotonic())
+                )
+                if not attempt.event.wait(timeout=remaining):
+                    raise work_coordinator.HeavyWorkDeadlineExceeded(
+                        "watcher recovery follower deadline exceeded")
+                if attempt.error is not None:
+                    raise _clone_recovery_error(attempt.error)
+                with self._lock:
+                    if self._stopped:
+                        raise RuntimeError("CodeSextant watcher manager is stopped")
+                    self._touch_locked(project_key)
+                return {"action": "ready", "repo_path": rp}
+            finally:
+                with self._lock:
+                    attempt.followers -= 1
+
+        try:
+            result = (
+                self.recover(rp)
+                if deadline is None
+                else self.recover(rp, deadline=deadline)
+            )
+        except BaseException as exc:
+            with self._lock:
+                attempt.error = exc
+                if self._recovery_attempts.get(project_key) is attempt:
+                    self._recovery_states[project_key] = "unseen"
+                    self._recovery_attempts.pop(project_key, None)
+                attempt.event.set()
+            raise
+        else:
+            notify = False
+            with self._lock:
+                if (not self._stopped
+                        and self._recovery_attempts.get(project_key) is attempt):
+                    self._recovery_states[project_key] = "ready"
+                    self._recovery_attempts.pop(project_key, None)
+                    self._touch_locked(project_key)
+                    notify = True
+                attempt.event.set()
+            if notify:
+                self._on_activity()
+            return result
+
+    def mark_ready(self, repo_path: str) -> None:
+        rp = self._absolute(repo_path)
+        project_key = self._normalize(rp)
+        with self._lock:
+            if self._stopped:
+                return
+            self._project_paths.setdefault(project_key, rp)
+            self._recovery_states[project_key] = "ready"
+            self._touch_locked(project_key)
+            attempt = self._recovery_attempts.pop(project_key, None)
+            if attempt is not None:
+                attempt.event.set()
+
+    def recovery_state(self, repo_path: str) -> str:
+        project_key = self._normalize(repo_path)
+        with self._lock:
+            return self._recovery_states.get(project_key, "unseen")
+
+    def recover(self, repo_path: str, *, deadline: float | None = None) -> dict:
+        """Reconcile on the first real query after a daemon restart.
+
+        The watcher is attached first, so an edit during recovery remains queued
+        for the targeted incremental pass that follows.
         """
-        rp = os.path.abspath(repo_path)
+        rp = self._absolute(repo_path)
         key = work_coordinator.make_work_key(
-            "/reindex", rp, {"force": False, "source": "watcher-recovery"}
+            "/reindex", rp, {"force": False}
         )
         result = work_coordinator.SHARED_SHARDED.run(
             key,
@@ -303,9 +548,10 @@ class WatchManager:
             label="watcher/recovery",
             shard=key[1],
             priority="background",
+            deadline=deadline,
         )
         self.logger.info(
-            "watcher startup recovery %s -> indexed=%s skipped=%s removed=%s",
+            "watcher first-query recovery %s -> indexed=%s skipped=%s removed=%s",
             rp,
             result.get("indexed"),
             result.get("skipped"),
@@ -313,10 +559,63 @@ class WatchManager:
         )
         return result
 
+    def evict_idle(self, *, now: float | None = None) -> list[str]:
+        """Evict expired lifecycle entries, stopping quiescent watchers."""
+        now = self._clock() if now is None else now
+        expired: list[tuple[str, _ProjectWatch | None]] = []
+        with self._lock:
+            if self._stopped:
+                return []
+            for project_key, last_activity in list(self._last_activity.items()):
+                idle_for = now - last_activity
+                if idle_for < self._idle_ttl_sec:
+                    continue
+                if self._recovery_states.get(project_key) == "recovering":
+                    self._last_activity[project_key] = now
+                    continue
+                watch = self._watches.get(project_key)
+                if watch is not None and not watch.is_quiescent():
+                    self._last_activity[project_key] = now
+                    continue
+                rp = self._project_paths.pop(project_key, project_key)
+                expired.append((rp, watch))
+                self._watches.pop(project_key, None)
+                self._last_activity.pop(project_key, None)
+                self._recovery_states.pop(project_key, None)
+                self._recovery_attempts.pop(project_key, None)
+            self._refresh_snapshot_locked()
+            self._arm_eviction_locked()
+        for rp, watch in expired:
+            if watch is not None:
+                watch.stop()
+                self.logger.info("watcher evicted after idle timeout %s", rp)
+        return [rp for rp, _watch in expired]
+
+    def has_pending_work(self) -> bool:
+        with self._lock:
+            if any(state == "recovering" for state in self._recovery_states.values()):
+                return True
+            watches = list(self._watches.values())
+        return any(not watch.is_quiescent() for watch in watches)
+
     def stop_all(self) -> None:
         with self._lock:
             watches = list(self._watches.values())
             self._watches.clear()
             self._watched_snapshot = ()
+            self._project_paths.clear()
+            self._last_activity.clear()
+            self._recovery_states.clear()
+            attempts = list(self._recovery_attempts.values())
+            self._recovery_attempts.clear()
+            self._stopped = True
+            if self._eviction_timer is not None:
+                self._eviction_timer.cancel()
+                self._eviction_timer = None
+        for attempt in attempts:
+            if attempt.error is None:
+                attempt.error = RuntimeError(
+                    "CodeSextant watcher manager stopped during recovery")
+            attempt.event.set()
         for w in watches:
             w.stop()

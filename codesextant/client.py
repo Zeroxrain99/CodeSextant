@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import daemon
+from . import daemon, local_auth
 
 
 class CodesextantClient:
@@ -61,9 +61,33 @@ class CodesextantClient:
         request_timeout = self.timeout if timeout is None else timeout
         for attempt in range(2):
             try:
+                self._refresh_request_auth(request)
                 with urllib.request.urlopen(request, timeout=request_timeout) as r:
+                    response_headers = getattr(r, "headers", None)
+                    if response_headers is not None:
+                        api_version = response_headers.get(
+                            "X-CodeSextant-API-Version")
+                        if api_version != str(daemon.API_VERSION):
+                            raise RuntimeError(
+                                "CodeSextant daemon API is outdated. Finish its work and "
+                                "stop that verified process from its original environment "
+                                "before retrying."
+                            )
                     return json.loads(r.read().decode("utf-8"))
-            except urllib.error.HTTPError:
+            except urllib.error.HTTPError as exc:
+                if exc.code == 401:
+                    scheme = exc.headers.get("WWW-Authenticate")
+                    if scheme and scheme != local_auth.AUTH_SCHEME:
+                        raise RuntimeError(
+                            "CodeSextant daemon uses an older authentication protocol. "
+                            "Let current work drain, stop it with its matching client, "
+                            "then start a fresh daemon."
+                        ) from exc
+                    raise PermissionError(
+                        "CodeSextant daemon rejected the local request proof. The client "
+                        "and daemon may use different CODESEXTANT_HOME directories; do not "
+                        "restart or kill a busy daemon automatically."
+                    ) from exc
                 raise
             except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as exc:
                 reason = getattr(exc, "reason", None)
@@ -98,17 +122,64 @@ class CodesextantClient:
 
     def _get(self, path: str, params: dict, *, timeout: float | None = None) -> dict:
         qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
-        url = f"{self.base}{path}?{qs}" if qs else f"{self.base}{path}"
-        return self._open_json(url, timeout=timeout)
+        target = f"{path}?{qs}" if qs else path
+        url = f"{self.base}{target}"
+        request = urllib.request.Request(
+            url,
+            method="GET",
+            headers=self._deadline_headers(timeout),
+        )
+        return self._open_json(request, timeout=timeout)
 
     def _post(self, path: str, body: dict, *,
               timeout: float | None = None) -> dict:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             f"{self.base}{path}", data=data, method="POST",
-            headers={"Content-Type": "application/json; charset=utf-8"},
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                **self._deadline_headers(timeout),
+            },
         )
         return self._open_json(req, timeout=timeout)
+
+    @staticmethod
+    def _deadline_headers(timeout: float | None) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if timeout is not None:
+            cooperative_timeout = max(0.1, float(timeout) - 1.0)
+            headers["X-CodeSextant-Timeout-Ms"] = str(
+                int(cooperative_timeout * 1000))
+        return headers
+
+    @staticmethod
+    def _refresh_request_auth(request: urllib.request.Request) -> None:
+        """Attach a fresh path-bound proof that urllib will not copy on redirect."""
+        parsed = urllib.parse.urlsplit(request.full_url)
+        target = parsed.path or "/"
+        if parsed.query:
+            target += f"?{parsed.query}"
+        body = request.data or b""
+        for name in (
+            "Authorization",
+            "X-CodeSextant-Timestamp",
+            "X-CodeSextant-Nonce",
+            "X-CodeSextant-Content-SHA256",
+        ):
+            request.remove_header(name)
+        for name, value in local_auth.request_headers(
+                request.get_method(), target, body).items():
+            request.add_unredirected_header(name, value)
+
+    def dashboard_url(self) -> str:
+        """Create a short-lived browser URL without exposing the local secret."""
+        response = self._post("/_browser_session", {})
+        path = response.get("path")
+        parsed = urllib.parse.urlsplit(path or "")
+        if (parsed.scheme or parsed.netloc or parsed.path != "/_session"
+                or not parsed.query.startswith("code=")):
+            raise RuntimeError("CodeSextant daemon returned an invalid dashboard path")
+        return f"{self.base}{path}"
 
     def _heavy_timeout(self, specific_env: str | None = None) -> float:
         """Deadline for FIFO queue wait plus one expensive engine operation."""
@@ -125,6 +196,27 @@ class CodesextantClient:
                 configured = 900.0
         return max(self.timeout, configured)
 
+    def _interactive_timeout(self, specific_env: str | None = None) -> float:
+        """Return the fail-fast budget for an interactive graph query."""
+        raw = os.environ.get(specific_env) if specific_env else None
+        if raw is None:
+            raw = os.environ.get("CODESEXTANT_INTERACTIVE_TIMEOUT_SEC")
+        if raw is None:
+            return max(0.1, min(float(self.timeout), 15.0))
+        try:
+            return max(0.1, float(raw))
+        except (TypeError, ValueError):
+            return max(0.1, min(float(self.timeout), 15.0))
+
+    def _status_timeout(self) -> float:
+        """Bound the diagnostic path so it can never become a task gate."""
+        try:
+            configured = float(os.environ.get(
+                "CODESEXTANT_STATUS_TIMEOUT_SEC", "2"))
+        except (TypeError, ValueError):
+            configured = 2.0
+        return max(0.1, min(float(self.timeout), configured))
+
     def _proj(self, project: str | None) -> str:
         p = project or self.project
         if not p:
@@ -140,17 +232,23 @@ class CodesextantClient:
         # Freshness checks are opt-in so an unguarded GET does not
         # trigger a git spawn). The response includes git_stale / indexed_git_sha /
         # current_git_sha.
-        return self._get("/status", {"project": self._proj(project),
-                                     "fresh": "1" if fresh else None})
+        return self._get(
+            "/status",
+            {
+                "project": self._proj(project),
+                "fresh": "1" if fresh else None,
+            },
+            timeout=self._status_timeout(),
+        )
 
     def get_symbols(self, file: str | None = None, project: str | None = None) -> dict:
         return self._get("/get_symbols", {"project": self._proj(project), "file": file},
-                         timeout=self._heavy_timeout())
+                         timeout=self._interactive_timeout())
 
     def get_map(self, budget: int = 2000, project: str | None = None,
                 focus_symbols=None, focus_files=None) -> dict:
         # The daemon accepts focus lists as comma-separated query parameters.
-        map_timeout = self._heavy_timeout("CODESEXTANT_MAP_TIMEOUT_SEC")
+        map_timeout = self._interactive_timeout("CODESEXTANT_MAP_TIMEOUT_SEC")
         return self._get("/get_map", {
             "project": self._proj(project), "budget": budget,
             "focus_symbols": ",".join(focus_symbols) if focus_symbols else None,
@@ -165,7 +263,7 @@ class CodesextantClient:
             "project": self._proj(project), "symbol": symbol,
             "def_path": def_path, "src_root": src_root,
             "include_low_confidence": include_low_confidence, "persist": persist,
-        }, timeout=self._heavy_timeout())
+        }, timeout=self._interactive_timeout())
 
     def reindex(self, force: bool = False, project: str | None = None) -> dict:
         return self._post(
@@ -236,7 +334,7 @@ class CodesextantClient:
             "project": self._proj(project), "symbol": symbol,
             "direction": direction, "max_hops": max_hops,
             "def_path": def_path, "src_root": src_root},
-            timeout=self._heavy_timeout())
+            timeout=self._interactive_timeout())
 
     def impact(self, symbol: str, *, max_hops: int | None = None,
                def_path: str | None = None, src_root: str | None = None,
@@ -245,4 +343,4 @@ class CodesextantClient:
         return self._post("/impact", {
             "project": self._proj(project), "symbol": symbol,
             "max_hops": max_hops, "def_path": def_path, "src_root": src_root},
-            timeout=self._heavy_timeout())
+            timeout=self._interactive_timeout())
