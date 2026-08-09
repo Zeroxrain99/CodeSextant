@@ -999,8 +999,8 @@ def test_heavy_http_route_uses_shared_coordinator(monkeypatch):
     calls = []
 
     class CoordinatorProbe:
-        def run(self, key, work, *, label, shard=None):
-            calls.append((key, label, shard))
+        def run(self, key, work, *, label, shard=None, priority="batch"):
+            calls.append((key, label, shard, priority))
             return work()
 
         def snapshot(self):
@@ -1019,6 +1019,7 @@ def test_heavy_http_route_uses_shared_coordinator(monkeypatch):
     # Admission is sharded by repository so one project cannot queue behind
     # another project's expensive job.
     assert calls[0][2] == os.path.normcase(os.path.abspath("C:/repo"))
+    assert calls[0][3] == "interactive"
 
 
 def test_heavy_route_shards_distinct_projects_apart(monkeypatch):
@@ -1028,7 +1029,7 @@ def test_heavy_route_shards_distinct_projects_apart(monkeypatch):
     shards = []
 
     class CoordinatorProbe:
-        def run(self, key, work, *, label, shard=None):
+        def run(self, key, work, *, label, shard=None, priority="batch"):
             shards.append(shard)
             return work()
 
@@ -1039,6 +1040,31 @@ def test_heavy_route_shards_distinct_projects_apart(monkeypatch):
             urlparse("/impact"), {"project": project, "symbol": "x"})
 
     assert len(set(shards)) == 2, f"projects shared one lane: {shards}"
+
+
+def test_queue_rejection_returns_retry_after_and_load_telemetry(monkeypatch):
+    from urllib.parse import urlparse
+
+    class RejectingCoordinator:
+        def run(self, *_args, **_kwargs):
+            raise daemon.work_coordinator.HeavyWorkQueueFull("interactive queue full")
+
+        def snapshot(self):
+            return {"queued": 10, "queued_by_priority": {"interactive": 2}}
+
+    monkeypatch.setattr(daemon, "_HEAVY_COORDINATOR", RejectingCoordinator())
+    monkeypatch.setenv("CODESEXTANT_OVERLOAD_RETRY_AFTER_SEC", "7")
+
+    with pytest.raises(daemon._HttpError) as info:
+        daemon._execute_route(
+            "/get_map", lambda _parsed, _body: (200, {}),
+            urlparse("/get_map?project=C%3A%2Frepo"), None)
+
+    error = info.value
+    assert error.code == 503
+    assert error.headers == {"Retry-After": "7"}
+    assert error.details["retry_after_sec"] == 7
+    assert error.details["heavy_work"]["queued"] == 10
 
 
 def test_ai_usage_scan_is_admitted_as_heavy_work(monkeypatch, tmp_path):
@@ -1063,8 +1089,8 @@ def test_watcher_reindex_uses_same_heavy_coordinator(monkeypatch, tmp_path):
     calls = []
 
     class CoordinatorProbe:
-        def run(self, key, work, *, label, shard=None):
-            calls.append((key, label))
+        def run(self, key, work, *, label, shard=None, priority="batch"):
+            calls.append((key, label, priority))
             return work()
 
     monkeypatch.setattr(
@@ -1082,6 +1108,7 @@ def test_watcher_reindex_uses_same_heavy_coordinator(monkeypatch, tmp_path):
 
     assert len(calls) == 1
     assert calls[0][1] == "watcher/reindex"
+    assert calls[0][2] == "background"
 
 
 def test_watcher_reindex_uses_generation_key_not_http_singleflight_key(
@@ -1091,7 +1118,7 @@ def test_watcher_reindex_uses_generation_key_not_http_singleflight_key(
     keys = []
 
     class CoordinatorProbe:
-        def run(self, key, work, *, label, shard=None):
+        def run(self, key, work, *, label, shard=None, priority="batch"):
             keys.append(key)
             return work()
 
@@ -1201,6 +1228,32 @@ def test_watcher_queue_rejection_keeps_pending_changes_and_schedules_retry(
     assert project_watch._timer is not None
     assert project_watch._timer.is_alive()
     project_watch.stop()
+
+
+def test_watcher_overload_retries_back_off_exponentially(monkeypatch, tmp_path):
+    """A saturated daemon must not receive another watcher attempt every debounce window."""
+    from codesextant import watcher as watcher_module
+
+    class RejectingCoordinator:
+        def run(self, *_args, **_kwargs):
+            raise watcher_module.work_coordinator.HeavyWorkQueueFull("full")
+
+    monkeypatch.setattr(
+        watcher_module.work_coordinator, "SHARED_SHARDED", RejectingCoordinator())
+    monkeypatch.setattr(watcher_module, "_debounce_sec", lambda: 2.0)
+    monkeypatch.setattr(watcher_module.random, "uniform", lambda _low, _high: 1.0)
+    logger = SimpleNamespace(info=lambda *_args, **_kwargs: None,
+                             warning=lambda *_args, **_kwargs: None)
+    project_watch = watcher_module._ProjectWatch(str(tmp_path), logger)
+    project_watch._pending.add(str(tmp_path / "changed.py"))
+    delays = []
+    project_watch._arm_timer_locked = lambda delay=None: delays.append(delay)
+
+    project_watch._flush()
+    project_watch._flush()
+    project_watch._flush()
+
+    assert delays == [2.0, 4.0, 8.0]
 
 
 def test_watcher_stop_prevents_callbacks_from_rearming_timer(tmp_path):

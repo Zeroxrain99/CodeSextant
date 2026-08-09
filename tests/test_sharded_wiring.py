@@ -31,8 +31,8 @@ def test_watcher_reindex_is_admitted_through_the_sharded_lane(monkeypatch, tmp_p
     seen = []
 
     class CoordinatorProbe:
-        def run(self, key, work, *, label, shard=None):
-            seen.append((label, shard))
+        def run(self, key, work, *, label, shard=None, priority="batch"):
+            seen.append((label, shard, priority))
             return {"indexed": 1, "skipped": 0, "removed": 0}
 
     monkeypatch.setattr(wc, "SHARED_SHARDED", CoordinatorProbe())
@@ -45,9 +45,10 @@ def test_watcher_reindex_is_admitted_through_the_sharded_lane(monkeypatch, tmp_p
     mgr._flush()
 
     assert len(seen) == 1, "watcher did not go through the shared coordinator"
-    label, shard = seen[0]
+    label, shard, priority = seen[0]
     assert label == "watcher/reindex"
     assert shard, "watcher submitted no shard; it would land in the catch-all lane"
+    assert priority == "background"
 
 
 def test_watcher_reindex_shares_the_project_lane_with_http():

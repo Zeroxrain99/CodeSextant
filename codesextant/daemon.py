@@ -419,10 +419,13 @@ def _require_project(project: str | None):
 
 class _HttpError(Exception):
     """A controlled error carrying an HTTP status code (→ the endpoint returns the matching code + message, not a 500)."""
-    def __init__(self, code: int, msg: str):
+    def __init__(self, code: int, msg: str, *, headers: dict[str, str] | None = None,
+                 details: dict | None = None):
         super().__init__(msg)
         self.code = code
         self.msg = msg
+        self.headers = headers or {}
+        self.details = details or {}
 
 
 # Each endpoint's implementation takes (parsed_url, body_dict) and returns (code, result_dict)
@@ -763,6 +766,22 @@ _HEAVY_PATHS = frozenset({
     "/impact",
 })
 
+_INTERACTIVE_HEAVY_PATHS = frozenset({
+    "/get_symbols",
+    "/get_map",
+    "/find_references",
+    "/call_hierarchy",
+    "/impact",
+})
+
+
+def _overload_retry_after_sec() -> int:
+    try:
+        return max(1, int(os.environ.get(
+            "CODESEXTANT_OVERLOAD_RETRY_AFTER_SEC", "5")))
+    except (TypeError, ValueError):
+        return 5
+
 
 def _route_work_key(path: str, parsed, body: dict | None):
     """Canonicalize one request into (single-flight key, admission shard).
@@ -789,11 +808,23 @@ def _execute_route(path: str, handler, parsed, body: dict | None):
     if path not in _HEAVY_PATHS:
         return handler(parsed, body)
     key, shard = _route_work_key(path, parsed, body)
+    priority = "interactive" if path in _INTERACTIVE_HEAVY_PATHS else "batch"
     try:
         return _HEAVY_COORDINATOR.run(
-            key, lambda: handler(parsed, body), label=path, shard=shard)
+            key, lambda: handler(parsed, body), label=path, shard=shard,
+            priority=priority)
     except work_coordinator.HeavyWorkQueueFull as exc:
-        raise _HttpError(503, str(exc)) from exc
+        retry_after = _overload_retry_after_sec()
+        heavy = _HEAVY_COORDINATOR.snapshot()
+        raise _HttpError(
+            503,
+            str(exc),
+            headers={"Retry-After": str(retry_after)},
+            details={
+                "retry_after_sec": retry_after,
+                "heavy_work": heavy,
+            },
+        ) from exc
 
 
 def _method_hint(path: str, routes: dict) -> str | None:
@@ -817,11 +848,14 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass  # default access log silenced; we record hits ourselves via the codesextant.daemon logger
 
-    def _send_json(self, code: int, obj: dict):
+    def _send_json(self, code: int, obj: dict, *,
+                   headers: dict[str, str] | None = None):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -904,9 +938,11 @@ class _Handler(BaseHTTPRequestHandler):
                     self.command, parsed.path, code, dt, _summ(result))
             self._send_json(code, result)
         except _HttpError as he:
-            lg.warning("endpoint %s %s parameter error → %d: %s",
-                       self.command, parsed.path, he.code, he.msg)
-            self._send_json(he.code, {"error": he.msg, "service": SERVICE_NAME})
+            rejection = "parameter error" if he.code < 500 else "request rejected"
+            lg.warning("endpoint %s %s %s → %d: %s",
+                       self.command, parsed.path, rejection, he.code, he.msg)
+            payload = {"error": he.msg, "service": SERVICE_NAME, **he.details}
+            self._send_json(he.code, payload, headers=he.headers)
         except Exception as exc:  # a real engine error → 500 + log it (with traceback), never swallow silently
             lg.exception("endpoint %s %s execution failed: %s", self.command, parsed.path, exc)
             self._send_json(500, {"error": f"{type(exc).__name__}: {exc}",

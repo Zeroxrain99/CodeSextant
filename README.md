@@ -183,6 +183,13 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 | `CODESEXTANT_NAMEGRAPH_MAX_UNIQUE_EDGES` | `250000` | hard cap so generated code cannot exhaust memory |
 | `CODESEXTANT_WATCH_ENABLED` | on | filesystem watcher for proactive incremental indexing |
 | `CODESEXTANT_WATCH_DEBOUNCE_MS` | `2000` | delay that combines a burst of file events into one dirty-path update |
+| `CODESEXTANT_WATCH_RETRY_MAX_SEC` | `60` | maximum exponential backoff after an incremental index is rejected or fails |
+| `CODESEXTANT_WATCH_RETRY_JITTER` | `0.2` | random spread applied to watcher retries to prevent synchronized retry bursts |
+| `CODESEXTANT_HEAVY_GLOBAL_CAP` | `2` | maximum heavy jobs running across all repositories |
+| `CODESEXTANT_HEAVY_QUEUE_CAP` | `8` | base queued jobs allowed per repository |
+| `CODESEXTANT_INTERACTIVE_QUEUE_RESERVE` | `2` | extra queue slots reserved for agent navigation queries |
+| `CODESEXTANT_PRIORITY_AGING_SEC` | `30` | wait time before queued work rises one priority level |
+| `CODESEXTANT_OVERLOAD_RETRY_AFTER_SEC` | `5` | `Retry-After` value returned with an overload response |
 | `CODESEXTANT_TS_MORPH_DISABLED` | off | force TS/JS to name matching |
 | `CODESEXTANT_NODE` | `node` | Node executable used by the TS/JS bridge; IDE hosts can provide their bundled runtime |
 | `CODESEXTANT_TS_MORPH_TIMEOUT` | `30` | ts-morph subprocess timeout, seconds |

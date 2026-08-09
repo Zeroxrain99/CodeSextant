@@ -249,3 +249,90 @@ def test_reentrancy_still_fails_fast():
 
     with pytest.raises(RuntimeError):
         sharded.run(("k", "p", "inner"), outer, label="/get_map", shard="E:/p")
+
+
+def test_interactive_work_overtakes_background_in_the_same_project():
+    """A full background lane must not make an agent query wait behind maintenance."""
+    sharded = _sharded(global_capacity=1, shard_queue_capacity=1)
+    active_started = threading.Event()
+    release_active = threading.Event()
+    order = []
+
+    def active_background():
+        active_started.set()
+        release_active.wait(timeout=5)
+        order.append("active")
+
+    holder = threading.Thread(target=lambda: sharded.run(
+        ("k", "p", "active"), active_background,
+        label="watcher/reindex", shard="E:/p", priority="background"))
+    holder.start()
+    assert active_started.wait(timeout=5)
+
+    queued_background = threading.Thread(target=lambda: sharded.run(
+        ("k", "p", "queued"), lambda: order.append("background"),
+        label="watcher/reindex", shard="E:/p", priority="background"))
+    queued_background.start()
+
+    deadline = time.monotonic() + 5
+    while sharded.snapshot().get("queued_by_priority", {}).get("background") != 1:
+        assert time.monotonic() < deadline, "background job never entered the queue"
+        time.sleep(0.01)
+
+    interactive = threading.Thread(target=lambda: sharded.run(
+        ("k", "p", "interactive"), lambda: order.append("interactive"),
+        label="/get_map", shard="E:/p", priority="interactive"))
+    interactive.start()
+
+    deadline = time.monotonic() + 5
+    while sharded.snapshot().get("queued_by_priority", {}).get("interactive") != 1:
+        assert time.monotonic() < deadline, "interactive reserve was not admitted"
+        time.sleep(0.01)
+
+    release_active.set()
+    for thread in (holder, interactive, queued_background):
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    assert order == ["active", "interactive", "background"]
+
+
+def test_interactive_work_overtakes_background_at_the_global_gate():
+    """Background work from other repositories must not monopolize global slots."""
+    sharded = _sharded(global_capacity=1)
+    active_started = threading.Event()
+    release_active = threading.Event()
+    order = []
+
+    def active_background():
+        active_started.set()
+        release_active.wait(timeout=5)
+        order.append("active")
+
+    holder = threading.Thread(target=lambda: sharded.run(
+        ("k", "a", "active"), active_background,
+        label="watcher/reindex", shard="E:/a", priority="background"))
+    holder.start()
+    assert active_started.wait(timeout=5)
+
+    queued_background = threading.Thread(target=lambda: sharded.run(
+        ("k", "b", "queued"), lambda: order.append("background"),
+        label="watcher/reindex", shard="E:/b", priority="background"))
+    queued_background.start()
+
+    interactive = threading.Thread(target=lambda: sharded.run(
+        ("k", "c", "interactive"), lambda: order.append("interactive"),
+        label="/get_map", shard="E:/c", priority="interactive"))
+    interactive.start()
+
+    deadline = time.monotonic() + 5
+    while sharded.snapshot().get("global_waiting") != 2:
+        assert time.monotonic() < deadline, "jobs never reached the global gate"
+        time.sleep(0.01)
+
+    release_active.set()
+    for thread in (holder, interactive, queued_background):
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    assert order == ["active", "interactive", "background"]

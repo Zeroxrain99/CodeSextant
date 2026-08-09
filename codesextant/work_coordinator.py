@@ -1,17 +1,17 @@
 """Process-wide admission control for CodeSextant's expensive work.
 
-The daemon is intentionally a single authority process.  Running two cold
-maps or indexes in parallel inside that one Python process only makes both
-slower and can starve the control plane.  This module provides one FIFO lane
-for expensive work plus single-flight coalescing for identical overlapping
-requests.  It is dependency-light so ``/health`` can inspect queue state
-without importing the parser/index engine.
+The daemon is intentionally a single authority process. Running too many cold
+maps or indexes in parallel inside that one Python process only makes all of
+them slower and can starve the control plane. This module provides per-project
+priority-aware lanes, a priority-aware global capacity gate, and single-flight
+coalescing for identical overlapping requests. It is dependency-light so
+``/health`` can inspect queue state without importing the parser/index engine.
 
 Known limits:
 
 * Deadline stacking: the client's heavy deadline (default 900s via
   ``CODESEXTANT_HEAVY_TIMEOUT_SEC``; ``CODESEXTANT_MAP_TIMEOUT_SEC`` /
-  ``CODESEXTANT_REINDEX_TIMEOUT_SEC`` override per action) covers FIFO
+  ``CODESEXTANT_REINDEX_TIMEOUT_SEC`` override per action) covers priority
   queue wait plus one run for typical loads, but several stacked
   near-deadline jobs can exceed a queued client's deadline.  The client
   deliberately does NOT resend on timeout (no duplicate amplification);
@@ -55,9 +55,26 @@ class HeavyWorkQueueFull(RuntimeError):
     """Admission rejected before creating another blocked request thread."""
 
 
+_PRIORITY_VALUE = {"background": 0, "batch": 1, "interactive": 2}
+
+
+def _priority_value(priority: str) -> int:
+    try:
+        return _PRIORITY_VALUE[priority]
+    except KeyError:
+        raise ValueError(f"unknown heavy-work priority: {priority!r}") from None
+
+
 def _positive_env(name: str, default: int) -> int:
     try:
         return max(1, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    try:
+        return max(0.001, float(os.environ.get(name, str(default))))
     except (TypeError, ValueError):
         return default
 
@@ -94,6 +111,7 @@ class _Job:
     ticket: int
     created_at: float
     owner_thread_id: int
+    priority: str
     started_at: float | None = None
     done: bool = False
     followers: int = 0
@@ -102,10 +120,12 @@ class _Job:
 
 
 class HeavyWorkCoordinator:
-    """Serialize unique heavy jobs and coalesce identical concurrent jobs."""
+    """Serialize unique jobs with bounded priority admission and aging."""
 
     def __init__(self, *, queue_capacity: int | None = None,
-                 follower_capacity: int | None = None):
+                 follower_capacity: int | None = None,
+                 interactive_reserve: int | None = None,
+                 priority_aging_sec: float | None = None):
         self._condition = threading.Condition()
         self._queue: deque[_Job] = deque()
         self._inflight: dict[Hashable, _Job] = {}
@@ -115,14 +135,23 @@ class HeavyWorkCoordinator:
             "CODESEXTANT_HEAVY_QUEUE_CAP", 8)
         self._follower_capacity = follower_capacity or _positive_env(
             "CODESEXTANT_HEAVY_FOLLOWER_CAP", 8)
+        self._interactive_reserve = (
+            _positive_env("CODESEXTANT_INTERACTIVE_QUEUE_RESERVE", 2)
+            if interactive_reserve is None else max(1, interactive_reserve))
+        self._priority_aging_sec = (
+            _positive_float_env("CODESEXTANT_PRIORITY_AGING_SEC", 30.0)
+            if priority_aging_sec is None else max(0.001, priority_aging_sec))
+        self._rejected_by_priority = {name: 0 for name in _PRIORITY_VALUE}
 
-    def run(self, key: Hashable, work: Callable[[], Any], *, label: str) -> Any:
-        """Run ``work`` in the process-wide FIFO heavy lane.
+    def run(self, key: Hashable, work: Callable[[], Any], *, label: str,
+            priority: str = "batch") -> Any:
+        """Run ``work`` in a bounded priority-aware heavy lane.
 
         Calls with the same key that overlap join the leader and receive its
         result or exception.  Completed results are not cached, so a later
         request always observes current repository state.
         """
+        priority_value = _priority_value(priority)
         with self._condition:
             owner_thread_id = threading.get_ident()
             existing = self._inflight.get(key)
@@ -144,9 +173,13 @@ class HeavyWorkCoordinator:
                     self._active.owner_thread_id == owner_thread_id):
                 raise RuntimeError(
                     "reentrant heavy work is not allowed for the owner thread")
-            if len(self._queue) >= self._queue_capacity:
+            queue_limit = self._queue_capacity + (
+                self._interactive_reserve
+                if priority_value == _PRIORITY_VALUE["interactive"] else 0)
+            if len(self._queue) >= queue_limit:
+                self._rejected_by_priority[priority] += 1
                 raise HeavyWorkQueueFull(
-                    "heavy queue capacity reached; retry later")
+                    f"{priority} heavy queue capacity reached; retry later")
 
             self._next_ticket += 1
             job = _Job(
@@ -155,12 +188,13 @@ class HeavyWorkCoordinator:
                 ticket=self._next_ticket,
                 created_at=time.monotonic(),
                 owner_thread_id=owner_thread_id,
+                priority=priority,
             )
             self._inflight[key] = job
             self._queue.append(job)
-            while self._active is not None or self._queue[0] is not job:
+            while self._active is not None or self._next_job_locked() is not job:
                 self._condition.wait()
-            self._queue.popleft()
+            self._queue.remove(job)
             self._active = job
             job.started_at = time.monotonic()
 
@@ -193,6 +227,10 @@ class HeavyWorkCoordinator:
             return {
                 "active": active.label if active is not None else None,
                 "queued": len(self._queue),
+                "queued_by_priority": {
+                    name: sum(job.priority == name for job in self._queue)
+                    for name in _PRIORITY_VALUE
+                },
                 "followers": sum(job.followers for job in self._inflight.values()),
                 "active_for_sec": (
                     round(now - active.started_at, 3)
@@ -200,11 +238,98 @@ class HeavyWorkCoordinator:
                     else 0.0
                 ),
                 "oldest_queued_for_sec": (
-                    round(now - self._queue[0].created_at, 3)
+                    round(now - min(job.created_at for job in self._queue), 3)
                     if self._queue else 0.0
                 ),
                 "queue_capacity": self._queue_capacity,
                 "follower_capacity": self._follower_capacity,
+                "interactive_queue_reserve": self._interactive_reserve,
+                "priority_aging_sec": self._priority_aging_sec,
+                "rejected_by_priority": self._rejected_by_priority.copy(),
+            }
+
+    def _next_job_locked(self) -> _Job | None:
+        """Choose by priority, then age old work upward to prevent starvation."""
+        if not self._queue:
+            return None
+        now = time.monotonic()
+
+        def rank(job: _Job):
+            waited = max(0.0, now - job.created_at)
+            aged = min(
+                _PRIORITY_VALUE["interactive"],
+                _priority_value(job.priority) + int(waited / self._priority_aging_sec),
+            )
+            return aged, -job.ticket
+
+        return max(self._queue, key=rank)
+
+
+@dataclass
+class _GateWaiter:
+    priority: str
+    ticket: int
+    created_at: float
+
+
+class _PriorityGate:
+    """Bound global concurrency while dispatching interactive work first."""
+
+    def __init__(self, capacity: int, *, priority_aging_sec: float):
+        self._capacity = capacity
+        self._priority_aging_sec = priority_aging_sec
+        self._condition = threading.Condition()
+        self._waiters: list[_GateWaiter] = []
+        self._next_ticket = 0
+        self._in_use = 0
+        self._throttled_total = 0
+
+    def acquire(self, priority: str) -> float:
+        _priority_value(priority)
+        with self._condition:
+            self._next_ticket += 1
+            waiter = _GateWaiter(priority, self._next_ticket, time.monotonic())
+            self._waiters.append(waiter)
+            if self._in_use >= self._capacity or self._next_waiter_locked() is not waiter:
+                self._throttled_total += 1
+            while (self._in_use >= self._capacity
+                   or self._next_waiter_locked() is not waiter):
+                self._condition.wait()
+            self._waiters.remove(waiter)
+            self._in_use += 1
+            return time.monotonic() - waiter.created_at
+
+    def release(self) -> None:
+        with self._condition:
+            self._in_use -= 1
+            self._condition.notify_all()
+
+    def _next_waiter_locked(self) -> _GateWaiter | None:
+        if not self._waiters:
+            return None
+        now = time.monotonic()
+
+        def rank(waiter: _GateWaiter):
+            waited = max(0.0, now - waiter.created_at)
+            aged = min(
+                _PRIORITY_VALUE["interactive"],
+                _priority_value(waiter.priority)
+                + int(waited / self._priority_aging_sec),
+            )
+            return aged, -waiter.ticket
+
+        return max(self._waiters, key=rank)
+
+    def snapshot(self) -> dict:
+        with self._condition:
+            return {
+                "in_use": self._in_use,
+                "waiting": len(self._waiters),
+                "waiting_by_priority": {
+                    name: sum(waiter.priority == name for waiter in self._waiters)
+                    for name in _PRIORITY_VALUE
+                },
+                "throttled_total": self._throttled_total,
             }
 
 
@@ -216,7 +341,7 @@ def _env_flag(name: str, default: bool) -> bool:
 
 
 class ShardedHeavyWork:
-    """Per-project FIFO lanes behind one bounded global concurrency budget.
+    """Per-project priority-aware lanes behind one bounded global budget.
 
     One global lane made any repository's expensive job block every other
     repository's cheap one.  Measured in production on 2026-07-18: a query
@@ -237,6 +362,8 @@ class ShardedHeavyWork:
       CODESEXTANT_HEAVY_GLOBAL_CAP: concurrent heavy jobs machine-wide (default 2)
       CODESEXTANT_HEAVY_QUEUE_CAP: queued jobs per shard (default 8)
       CODESEXTANT_HEAVY_FOLLOWER_CAP: coalesced followers per job (default 8)
+      CODESEXTANT_INTERACTIVE_QUEUE_RESERVE: extra agent query slots (default 2)
+      CODESEXTANT_PRIORITY_AGING_SEC: seconds before queued work rises one level (default 30)
 
     Known limit: a job that itself calls back into a
     *different* shard would hold one global slot while waiting for another.  No
@@ -259,10 +386,10 @@ class ShardedHeavyWork:
         self._global_capacity = (
             _positive_env("CODESEXTANT_HEAVY_GLOBAL_CAP", 2)
             if global_capacity is None else max(1, global_capacity))
-        self._global_slots = threading.BoundedSemaphore(self._global_capacity)
-        self._in_use = 0
-        self._waiting = 0
-        self._throttled_total = 0
+        self._priority_aging_sec = _positive_float_env(
+            "CODESEXTANT_PRIORITY_AGING_SEC", 30.0)
+        self._global_gate = _PriorityGate(
+            self._global_capacity, priority_aging_sec=self._priority_aging_sec)
         # Only log completions slower than this, so the daemon log keeps
         # signal (the minute-long jobs) instead of one line per cheap query.
         self._slow_log_sec = float(
@@ -284,7 +411,8 @@ class ShardedHeavyWork:
             return coord
 
     def run(self, key: Hashable, work: Callable[[], Any], *, label: str,
-            shard: str | None = None) -> Any:
+            shard: str | None = None, priority: str = "batch") -> Any:
+        _priority_value(priority)
         shard_name = self._shard_name(shard)
         coord = self._coordinator_for(shard_name)
 
@@ -292,37 +420,23 @@ class ShardedHeavyWork:
             # Count the wait *before* blocking so an operator tuning
             # CODESEXTANT_HEAVY_GLOBAL_CAP can see whether the cap actually
             # binds, instead of guessing from end-to-end latency.
-            acquired = self._global_slots.acquire(blocking=False)
-            if not acquired:
-                with self._lock:
-                    self._waiting += 1
-                    self._throttled_total += 1
-                waited_from = time.monotonic()
-                try:
-                    self._global_slots.acquire()
-                finally:
-                    with self._lock:
-                        self._waiting -= 1
+            waited = self._global_gate.acquire(priority)
+            if waited > 0.001:
                 _log.info(
-                    "global cap throttled %s (shard %s) %.1fs; cap=%d, raise it via "
-                    "CODESEXTANT_HEAVY_GLOBAL_CAP",
-                    label, shard_name or "(no project)",
-                    time.monotonic() - waited_from, self._global_capacity)
-            with self._lock:
-                self._in_use += 1
+                    "global cap throttled %s priority=%s (shard %s) %.1fs; cap=%d",
+                    label, priority,
+                    shard_name or "(no project)", waited, self._global_capacity)
             started = time.monotonic()
             try:
                 return work()
             finally:
                 elapsed = time.monotonic() - started
-                with self._lock:
-                    self._in_use -= 1
-                self._global_slots.release()
+                self._global_gate.release()
                 if elapsed >= self._slow_log_sec:
                     _log.info("heavy job completed %s (shard %s) took %.1fs",
                               label, shard_name or "(no project)", elapsed)
 
-        return coord.run(key, _globally_gated, label=label)
+        return coord.run(key, _globally_gated, label=label, priority=priority)
 
     def snapshot(self) -> dict:
         """Aggregate telemetry; keeps the keys ``supervisor`` already watches.
@@ -332,17 +446,18 @@ class ShardedHeavyWork:
         """
         with self._lock:
             shards = list(self._shards.items())
-            in_use = self._in_use
-            waiting = self._waiting
-            throttled_total = self._throttled_total
         parts = [(name, coord.snapshot()) for name, coord in shards]
+        gate = self._global_gate.snapshot()
 
         worst_label, worst_age = None, 0.0
         queued = followers = 0
+        queued_by_priority = {name: 0 for name in _PRIORITY_VALUE}
         oldest_queued = 0.0
         for _name, snap in parts:
             queued += snap["queued"]
             followers += snap["followers"]
+            for name, count in snap["queued_by_priority"].items():
+                queued_by_priority[name] += count
             oldest_queued = max(oldest_queued, snap["oldest_queued_for_sec"])
             if snap["active"] is not None and snap["active_for_sec"] >= worst_age:
                 worst_label, worst_age = snap["active"], snap["active_for_sec"]
@@ -353,6 +468,7 @@ class ShardedHeavyWork:
         return {
             "active": worst_label,
             "queued": queued,
+            "queued_by_priority": queued_by_priority,
             "followers": followers,
             "active_for_sec": worst_age if worst_label is not None else 0.0,
             "oldest_queued_for_sec": oldest_queued,
@@ -360,11 +476,12 @@ class ShardedHeavyWork:
             "follower_capacity": probe["follower_capacity"],
             "shards": len(parts),
             "global_capacity": self._global_capacity,
-            "global_in_use": in_use,
-            # Waiting purely on the global cap (not on their own shard's FIFO).
+            "global_in_use": gate["in_use"],
+            # Waiting purely on the global cap, not on their own shard queue.
             # Persistently > 0 means the cap is the binding constraint.
-            "global_waiting": waiting,
-            "global_throttled_total": throttled_total,
+            "global_waiting": gate["waiting"],
+            "global_waiting_by_priority": gate["waiting_by_priority"],
+            "global_throttled_total": gate["throttled_total"],
             "sharding_enabled": _env_flag("CODESEXTANT_HEAVY_SHARDING", True),
         }
 

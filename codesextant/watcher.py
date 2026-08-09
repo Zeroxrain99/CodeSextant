@@ -16,10 +16,13 @@ Design principles:
 Switches (all tolerant of .lower()):
   - CODESEXTANT_WATCH_ENABLED = 0/false/no/off to disable (default on).
   - CODESEXTANT_WATCH_DEBOUNCE_MS = the debounce window in milliseconds (default 2000).
+  - CODESEXTANT_WATCH_RETRY_MAX_SEC = overload retry cap in seconds (default 60).
+  - CODESEXTANT_WATCH_RETRY_JITTER = retry spread as a fraction (default 0.2).
 """
 from __future__ import annotations
 
 import os
+import random
 import threading
 
 from . import engine, symbols, work_coordinator
@@ -48,6 +51,22 @@ def _stop_join_timeout() -> float:
         return 2.0
 
 
+def _retry_max_sec() -> float:
+    try:
+        value = float(os.environ.get("CODESEXTANT_WATCH_RETRY_MAX_SEC", "60"))
+        return value if value > 0 else 60.0
+    except ValueError:
+        return 60.0
+
+
+def _retry_jitter() -> float:
+    try:
+        return min(1.0, max(0.0, float(os.environ.get(
+            "CODESEXTANT_WATCH_RETRY_JITTER", "0.2"))))
+    except ValueError:
+        return 0.2
+
+
 class _ProjectWatch:
     """A single project's watchdog observer + debounced incremental indexing."""
 
@@ -60,6 +79,7 @@ class _ProjectWatch:
         self._observer = None
         self._generation = 0
         self._stopping = False
+        self._retry_delay: float | None = None
 
     def start(self) -> None:
         from watchdog.events import FileSystemEventHandler
@@ -108,13 +128,28 @@ class _ProjectWatch:
             self._generation += 1
             if self._timer is not None:
                 self._timer.cancel()
-            self._arm_timer_locked()
+            self._arm_timer_locked(self._jittered_retry_delay_locked())
 
-    def _arm_timer_locked(self) -> None:
+    def _arm_timer_locked(self, delay: float | None = None) -> None:
         """Arm at most one debounce/retry timer while holding ``_lock``."""
-        self._timer = threading.Timer(_debounce_sec(), self._flush)
+        self._timer = threading.Timer(
+            _debounce_sec() if delay is None else delay, self._flush)
         self._timer.daemon = True
         self._timer.start()
+
+    def _jittered_retry_delay_locked(self) -> float | None:
+        if self._retry_delay is None:
+            return None
+        jitter = _retry_jitter()
+        factor = random.uniform(1.0 - jitter, 1.0 + jitter)
+        return min(_retry_max_sec(), self._retry_delay * factor)
+
+    def _advance_retry_delay_locked(self) -> float:
+        base = _debounce_sec()
+        self._retry_delay = (
+            base if self._retry_delay is None
+            else min(_retry_max_sec(), self._retry_delay * 2.0))
+        return self._jittered_retry_delay_locked() or base
 
     def _flush(self) -> None:
         caller = threading.current_thread()
@@ -155,11 +190,14 @@ class _ProjectWatch:
                 lambda: engine.index_paths(self.repo_path, sorted(pending)),
                 label="watcher/reindex",
                 shard=key[1],
+                priority="background",
             )
             self.logger.info(
                 "watcher targeted reindex %s (triggered by %d changed paths) -> "
                 "indexed=%s skipped=%s removed=%s",
                 self.repo_path, n, r.get("indexed"), r.get("skipped"), r.get("removed"))
+            with self._lock:
+                self._retry_delay = None
         except Exception as exc:  # an indexing failure must not crash the watcher thread
             self.logger.warning("watcher incremental index failed %s: %s", self.repo_path, exc)
             with self._lock:
@@ -169,7 +207,7 @@ class _ProjectWatch:
                     # a single bounded debounce timer retries the whole set.
                     self._pending.update(pending)
                     if self._timer is None:
-                        self._arm_timer_locked()
+                        self._arm_timer_locked(self._advance_retry_delay_locked())
 
     def stop(self) -> None:
         with self._lock:
@@ -264,6 +302,7 @@ class WatchManager:
             lambda: engine.index_project(rp),
             label="watcher/recovery",
             shard=key[1],
+            priority="background",
         )
         self.logger.info(
             "watcher startup recovery %s -> indexed=%s skipped=%s removed=%s",
