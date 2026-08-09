@@ -535,30 +535,22 @@ def test_migration_adds_cognitive_to_old_db(tmp_path):
     conn.close()
 
 
-# On the code_health side, a cognitive of None renormalizes properly rather than
+# An unknown cognitive value is excluded from the denominator rather than
 # quietly turning into a perfect score.
-def test_code_health_none_cog_renormalize(tmp_path, monkeypatch):
-    monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "dbs"))
-    poc = os.path.join(CS, "_poc_graph_c")
-    if poc not in sys.path:
-        sys.path.insert(0, poc)
-    import code_health
+def test_health_none_cog_renormalize():
+    from collections import Counter
 
-    from codesextant import storage
-    repo = str(tmp_path / "repo")
-    os.makedirs(repo, exist_ok=True)
-    ap = os.path.join(repo, "a.py")
-    with storage.ProjectStore.open(repo) as store:
-        store.conn.execute("INSERT INTO files(path,content_hash,indexed_at) VALUES(?,?,?)",
-                           (ap, "h", 0.0))
-        store.conn.commit()
-        store.store_file_fingerprints(ap, [{
-            "name": "f", "kind": "function", "line": 1, "end_line": 9, "node_count": 300,
-            "shape_hash": "uniq", "raw_token_hash": "r", "call_hash": None, "nstmts": 5,
-            "has_control_flow": True, "cognitive": None, "winnow": [],
-        }], [])
+    from codesextant import health
+
     nodes = [{"name": "f", "file": "a.py", "line": 1}]
-    code_health.compute(repo, nodes)
+    fingerprints = {("a.py", 1): (300, "uniq", None)}
+    health.annotate(
+        nodes,
+        fingerprints,
+        Counter({"uniq": 1}),
+        set(),
+        key_of=lambda node: (node["file"], node["line"]),
+    )
     h = nodes[0]["health"]
     # cognitive=None drops that axis. What remains, bloat at full 1 and dup at 0,
     # renormalizes to penalty = 0.25/(0.25+0.30), roughly 0.45.
