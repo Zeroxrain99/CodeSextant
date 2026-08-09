@@ -556,6 +556,32 @@ def test_ts_morph_disabled_by_env(monkeypatch):
     assert references.ts_morph_available() is False
 
 
+def test_ts_morph_uses_host_selected_node(monkeypatch, tmp_path):
+    """An IDE can provide its own Node executable without modifying PATH."""
+    node = tmp_path / "host-node.exe"
+    node.write_bytes(b"")
+    monkeypatch.setenv("CODESEXTANT_NODE", str(node))
+    monkeypatch.setattr(references, "_ts_bridge_dir", lambda: str(tmp_path))
+    (tmp_path / "find_refs.mjs").write_text("", encoding="utf-8")
+    (tmp_path / "node_modules" / "ts-morph").mkdir(parents=True)
+    assert references.ts_morph_available() is True
+
+    called = {}
+
+    class _FakeProc:
+        returncode = 0
+        stdout = b'{"high_confidence":[]}'
+        stderr = b""
+
+    def fake_run(command, **kwargs):
+        called["command"] = command
+        return _FakeProc()
+
+    monkeypatch.setattr(references.subprocess, "run", fake_run)
+    assert references._run_ts_bridge({"symbol": "sample"}, 1) == {"high_confidence": []}
+    assert called["command"][0] == str(node)
+
+
 def test_c5_review_fixes_abstract_impl_destructure():
     """Regressions for three table and walk bugs found in adversarial review.
     The node types below were confirmed by running _probe2 against the grammars."""

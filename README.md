@@ -184,6 +184,7 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 | `CODESEXTANT_WATCH_ENABLED` | on | filesystem watcher for proactive incremental indexing |
 | `CODESEXTANT_WATCH_DEBOUNCE_MS` | `2000` | delay that combines a burst of file events into one dirty-path update |
 | `CODESEXTANT_TS_MORPH_DISABLED` | off | force TS/JS to name matching |
+| `CODESEXTANT_NODE` | `node` | Node executable used by the TS/JS bridge; IDE hosts can provide their bundled runtime |
 | `CODESEXTANT_TS_MORPH_TIMEOUT` | `30` | ts-morph subprocess timeout, seconds |
 | `CODESEXTANT_GIT_FRESHNESS_DISABLED` | off | stop comparing the index against git HEAD |
 | `CODESEXTANT_CSRF_GUARD` | on | Origin check on POST endpoints (allows localhost, Tauri and IDE webviews; blocks cross-site) |

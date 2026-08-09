@@ -320,6 +320,11 @@ def _ts_bridge_dir() -> str:
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ts_bridge")
 
 
+def _node_executable() -> str:
+    """Return the Node executable selected by the host application, or PATH's node."""
+    return os.environ.get("CODESEXTANT_NODE", "").strip() or "node"
+
+
 def ts_morph_available() -> bool:
     """node is on PATH and ts_bridge is ready (find_refs.mjs + node_modules/ts-morph).
     If either condition is unmet, the caller falls back to name matching.
@@ -327,7 +332,8 @@ def ts_morph_available() -> bool:
     Set CODESEXTANT_TS_MORPH_DISABLED=1 to disable the Node subprocess."""
     if os.environ.get("CODESEXTANT_TS_MORPH_DISABLED", "").lower() in ("1", "true", "yes", "on"):
         return False
-    if shutil.which("node") is None:
+    node = _node_executable()
+    if not (os.path.isfile(node) if os.path.isabs(node) else shutil.which(node)):
         return False
     bridge = _ts_bridge_dir()
     return (os.path.isfile(os.path.join(bridge, "find_refs.mjs"))
@@ -347,7 +353,7 @@ def _run_ts_bridge(payload: dict, timeout: float) -> dict | None:
         _kw = {"input": raw, "capture_output": True, "cwd": bridge, "timeout": timeout}
         if os.name == "nt":
             _kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-        proc = subprocess.run(["node", os.path.join(bridge, "find_refs.mjs")], **_kw)
+        proc = subprocess.run([_node_executable(), os.path.join(bridge, "find_refs.mjs")], **_kw)
     except (subprocess.TimeoutExpired, OSError):
         return None
     if proc.returncode != 0:
