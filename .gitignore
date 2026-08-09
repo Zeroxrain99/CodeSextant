@@ -36,8 +36,8 @@ _poc_graph_c/**/*.json
 # Not part of the product: development probes, internal planning docs, and the
 # internal discipline-ratchet config. They stay on disk but are not published.
 tools/*
-# ...except the Windows startup registration script, which the README tells
-# users to run. It is product tooling, not a development probe.
+# These files are public product tools rather than development probes.
+!tools/bench_contention.py
 !tools/register_windows_startup.ps1
 docs/
 # Publish only the verified README demo while keeping internal docs private.
