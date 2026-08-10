@@ -4,6 +4,17 @@ The package exposes indexing, symbol, reference, ranking, status, daemon, and
 client helpers through lazy imports. Symbols are extracted with tree-sitter.
 Python references use jedi, TypeScript and JavaScript can use ts-morph, and
 other languages return low-confidence name matches.
+
+Lifecycle notes (agent disconnect / reconnect / forget):
+
+* Heavy HTTP workers run in contained process trees (Windows Job Object /
+  POSIX process group). Deadline expiry or abrupt parent death reaps the tree;
+  agents do not leave orphan workers as a steady-state failure mode.
+* Short client disconnects reconnect with ``ensure()`` / ``already-running``
+  and reuse the persistent per-project SQLite index (no full reindex).
+* Long abandonment is reclaimed by ``cache_gc.prune`` (missing-repo grace,
+  idle-present grace, quota LRU) plus disposable temp workspace cleanup.
+  Explicit session cleanup: ``codesextant cache --forget PATH``.
 """
 from __future__ import annotations
 

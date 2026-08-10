@@ -24,10 +24,21 @@ from . import cache_lease, storage
 _DEFAULT_MAX_BYTES = 10 * 1024 ** 3
 _DEFAULT_TARGET_RATIO = 0.9
 _DEFAULT_MISSING_GRACE_DAYS = 30.0
+# Present repos that no agent has touched for this long become reclaimable.
+# Short reconnects keep using the persistent index; only long abandonment GC.
+_DEFAULT_IDLE_GRACE_DAYS = 14.0
 _DEFAULT_TOUCH_INTERVAL_SECONDS = 60.0
+_DEFAULT_SCRATCH_GRACE_HOURS = 24.0
 _PROJECT_DB_RE = re.compile(r"^(?P<key>[0-9a-f]{40})\.db$")
 _SNAPSHOT_SUFFIX_RE = re.compile(
     r"^\.(?:symbols|map)-v[0-9]+\.json$")
+# Disposable workspaces left by tests, smoke installs, and interrupted agents.
+# Only direct children of system temp roots with this product prefix are
+# candidates; repo paths and ~/.codesextant are never scanned here.
+_SCRATCH_DIR_RE = re.compile(
+    r"^codesextant-[A-Za-z0-9][A-Za-z0-9._-]{2,200}$",
+    re.IGNORECASE,
+)
 _ACCESS_SUFFIX = ".access.json"
 _ACCESS_FORMAT = 1
 _MAX_ACCESS_SIDECAR_BYTES = 64 * 1024
@@ -43,7 +54,9 @@ class CachePolicy:
     max_bytes: int
     target_ratio: float
     missing_grace_seconds: float
+    idle_grace_seconds: float
     touch_interval_seconds: float
+    scratch_grace_seconds: float
 
     @property
     def target_bytes(self) -> int:
@@ -100,7 +113,12 @@ def policy_from_env() -> CachePolicy:
     * ``CODESEXTANT_CACHE_MAX_BYTES`` defaults to 10 GiB.
     * ``CODESEXTANT_CACHE_TARGET_RATIO`` defaults to 0.9.
     * ``CODESEXTANT_CACHE_MISSING_GRACE_DAYS`` defaults to 30 days.
+    * ``CODESEXTANT_CACHE_IDLE_GRACE_DAYS`` defaults to 14 days for present
+      repos with no recent agent touch (short disconnects reconnect; long
+      abandonment reclaims disk).
     * ``CODESEXTANT_CACHE_TOUCH_INTERVAL_SEC`` defaults to 60 seconds.
+    * ``CODESEXTANT_CACHE_SCRATCH_GRACE_HOURS`` defaults to 24 hours for
+      disposable ``codesextant-*`` workspaces under the system temp root.
     """
     max_bytes = _positive_int(
         os.environ.get("CODESEXTANT_CACHE_MAX_BYTES"), _DEFAULT_MAX_BYTES)
@@ -115,16 +133,28 @@ def policy_from_env() -> CachePolicy:
         _DEFAULT_MISSING_GRACE_DAYS,
         minimum=0.0,
     )
+    idle_days = _finite_float(
+        os.environ.get("CODESEXTANT_CACHE_IDLE_GRACE_DAYS"),
+        _DEFAULT_IDLE_GRACE_DAYS,
+        minimum=0.0,
+    )
     touch_interval = _finite_float(
         os.environ.get("CODESEXTANT_CACHE_TOUCH_INTERVAL_SEC"),
         _DEFAULT_TOUCH_INTERVAL_SECONDS,
+        minimum=0.0,
+    )
+    scratch_hours = _finite_float(
+        os.environ.get("CODESEXTANT_CACHE_SCRATCH_GRACE_HOURS"),
+        _DEFAULT_SCRATCH_GRACE_HOURS,
         minimum=0.0,
     )
     return CachePolicy(
         max_bytes=max_bytes,
         target_ratio=target_ratio,
         missing_grace_seconds=missing_days * 86400.0,
+        idle_grace_seconds=idle_days * 86400.0,
         touch_interval_seconds=touch_interval,
+        scratch_grace_seconds=scratch_hours * 3600.0,
     )
 
 
@@ -673,7 +703,234 @@ def _policy_report(policy: CachePolicy) -> dict:
         "target_ratio": policy.target_ratio,
         "target_bytes": policy.target_bytes,
         "missing_grace_seconds": policy.missing_grace_seconds,
+        "idle_grace_seconds": policy.idle_grace_seconds,
         "touch_interval_seconds": policy.touch_interval_seconds,
+        "scratch_grace_seconds": policy.scratch_grace_seconds,
+    }
+
+
+def _scratch_roots() -> list[Path]:
+    """Return unique system temp roots that may hold product scratch dirs.
+
+    Empty env values must never become ``Path('')`` / cwd: that would scan a
+    project tree. Roots that contain a ``.git`` directory are rejected.
+    """
+    import tempfile
+
+    raw_candidates: list[str] = [tempfile.gettempdir()]
+    for env_name in ("TEMP", "TMP", "TMPDIR"):
+        value = os.environ.get(env_name)
+        if value and value.strip():
+            raw_candidates.append(value.strip())
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        if not raw:
+            continue
+        try:
+            resolved = Path(raw).resolve(strict=False)
+        except OSError:
+            continue
+        key = os.path.normcase(str(resolved))
+        if key in seen or not resolved.is_dir():
+            continue
+        try:
+            if (resolved / ".git").exists():
+                continue
+        except OSError:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    try:
+        resolved_root = root.resolve(strict=False)
+        resolved_target = path.resolve(strict=False)
+        root_text = os.path.normcase(str(resolved_root))
+        target_text = os.path.normcase(str(resolved_target))
+        return (
+            resolved_target == resolved_root
+            or os.path.commonpath((root_text, target_text)) == root_text
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _dir_total_bytes(path: Path) -> int:
+    total = 0
+    try:
+        for entry in path.rglob("*"):
+            try:
+                if entry.is_file() and not entry.is_symlink():
+                    total += entry.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        return 0
+    return total
+
+
+def prune_scratch(*, dry_run: bool = False,
+                  grace_seconds: float | None = None) -> dict:
+    """Delete orphaned product scratch directories under system temp.
+
+    Only direct children matching the known ``codesextant-*`` workspace naming
+    pattern are candidates. Symlinks, files, and names outside that pattern are
+    never touched. Age is measured from directory mtime.
+    """
+    policy = policy_from_env()
+    grace = (
+        policy.scratch_grace_seconds if grace_seconds is None
+        else max(0.0, float(grace_seconds))
+    )
+    cutoff = time.time() - grace
+    deleted: list[dict] = []
+    planned: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+    reclaimed = 0
+    for root in _scratch_roots():
+        try:
+            entries = list(root.iterdir())
+        except OSError as exc:
+            errors.append({
+                "root": str(root),
+                "operation": "list",
+                "error": type(exc).__name__,
+            })
+            continue
+        for entry in entries:
+            name = entry.name
+            if not _SCRATCH_DIR_RE.match(name):
+                continue
+            try:
+                if entry.is_symlink() or not entry.is_dir():
+                    skipped.append({
+                        "path": str(entry),
+                        "reason": "not-plain-directory",
+                    })
+                    continue
+                if not _is_within_root(entry, root):
+                    skipped.append({
+                        "path": str(entry),
+                        "reason": "outside-temp-root",
+                    })
+                    continue
+                mtime = entry.stat().st_mtime
+            except OSError as exc:
+                errors.append({
+                    "path": str(entry),
+                    "operation": "inspect",
+                    "error": type(exc).__name__,
+                })
+                continue
+            if mtime > cutoff:
+                skipped.append({
+                    "path": str(entry),
+                    "reason": "within-grace",
+                    "mtime": mtime,
+                })
+                continue
+            size = _dir_total_bytes(entry)
+            item = {
+                "path": str(entry),
+                "bytes": size,
+                "mtime": mtime,
+                "root": str(root),
+            }
+            if dry_run:
+                planned.append(item)
+                continue
+            try:
+                import shutil
+
+                shutil.rmtree(entry)
+            except OSError as exc:
+                errors.append({
+                    "path": str(entry),
+                    "operation": "rmtree",
+                    "error": type(exc).__name__,
+                })
+                continue
+            reclaimed += size
+            deleted.append(item)
+    return {
+        "dry_run": bool(dry_run),
+        "grace_seconds": grace,
+        "deleted": deleted,
+        "planned": planned,
+        "skipped": skipped,
+        "errors": errors,
+        "reclaimed_bytes": reclaimed if not dry_run else 0,
+        "projected_reclaimed_bytes": (
+            sum(item["bytes"] for item in planned) if dry_run else reclaimed
+        ),
+    }
+
+
+def forget_project(repo_path: str, *, dry_run: bool = False) -> dict:
+    """Drop one project's managed cache group after exclusive lease acquisition.
+
+    Use this when an agent session is finished and the project index should not
+    keep occupying disk. Active holders fail closed without deletion.
+    """
+    home = _resolved_home()
+    project_id = storage.project_key(repo_path)
+    records, inventory_issues = _inventory_records()
+    record = next(
+        (item for item in records if item.project_key == project_id), None)
+    if record is None:
+        return {
+            "dry_run": bool(dry_run),
+            "project_key": project_id,
+            "status": "absent",
+            "bytes_reclaimed": 0,
+            "artifacts_deleted": [],
+            "errors": list(inventory_issues),
+        }
+    base = {
+        "dry_run": bool(dry_run),
+        "project_key": project_id,
+        "bytes_before": record.total_bytes,
+    }
+    try:
+        exclusive = cache_lease.try_acquire_exclusive(
+            project_id, home=home)
+    except cache_lease.LeaseUnsafeError as exc:
+        return {
+            **base,
+            "status": "failed",
+            "reason": "unsafe-project-lease",
+            "bytes_reclaimed": 0,
+            "artifacts_deleted": [],
+            "errors": list(inventory_issues) + [{
+                "project_key": project_id,
+                "artifact": None,
+                "operation": "lease",
+                "error": type(exc).__name__,
+            }],
+        }
+    if exclusive is None:
+        return {
+            **base,
+            "status": "skipped",
+            "reason": "active-project-lease",
+            "bytes_reclaimed": 0,
+            "artifacts_deleted": [],
+            "errors": list(inventory_issues),
+        }
+    with exclusive:
+        action, action_errors = _delete_record(
+            record, home, dry_run=bool(dry_run))
+    return {
+        **base,
+        "status": action["status"],
+        "reason": "explicit-forget",
+        "bytes_reclaimed": action.get("bytes_reclaimed", 0),
+        "artifacts_deleted": action.get("artifacts_deleted", []),
+        "errors": list(inventory_issues) + list(action_errors),
     }
 
 
@@ -772,6 +1029,21 @@ def prune(*, exclude_project_keys=(), dry_run: bool = False) -> dict:
     for record in missing_candidates:
         apply(record, "missing-repo")
 
+    idle_cutoff = time.time() - policy.idle_grace_seconds
+    idle_candidates = sorted(
+        (
+            record for record in records
+            if record.project_key not in excluded_set
+            and record.project_key not in attempted
+            and not record.issues
+            and record.repo_state == "present"
+            and record.last_access <= idle_cutoff
+        ),
+        key=lambda record: (record.last_access, record.project_key),
+    )
+    for record in idle_candidates:
+        apply(record, "idle-present")
+
     quota_triggered = projected_bytes > policy.max_bytes
     if quota_triggered:
         lru_candidates = sorted(
@@ -788,6 +1060,8 @@ def prune(*, exclude_project_keys=(), dry_run: bool = False) -> dict:
                 break
             apply(record, "quota-lru")
 
+    scratch = prune_scratch(dry_run=bool(dry_run))
+
     if dry_run:
         after_bytes = before_bytes
         reclaimed_bytes = 0
@@ -797,6 +1071,7 @@ def prune(*, exclude_project_keys=(), dry_run: bool = False) -> dict:
         after_bytes = sum(record.total_bytes for record in after_records)
         projected_bytes = after_bytes
         reclaimed_bytes = max(0, before_bytes - after_bytes)
+    reclaimed_bytes += int(scratch.get("reclaimed_bytes") or 0)
     quota_limit = policy.target_bytes if quota_triggered else policy.max_bytes
     return {
         "dry_run": bool(dry_run),
@@ -809,5 +1084,6 @@ def prune(*, exclude_project_keys=(), dry_run: bool = False) -> dict:
         "quota_satisfied": projected_bytes <= quota_limit,
         "excluded_project_keys": excluded,
         "projects": actions,
+        "scratch": scratch,
         "errors": errors,
     }

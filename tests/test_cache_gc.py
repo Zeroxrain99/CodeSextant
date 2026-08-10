@@ -291,7 +291,9 @@ def test_policy_defaults_are_bounded_and_deterministic(monkeypatch):
         "CODESEXTANT_CACHE_MAX_BYTES",
         "CODESEXTANT_CACHE_TARGET_RATIO",
         "CODESEXTANT_CACHE_MISSING_GRACE_DAYS",
+        "CODESEXTANT_CACHE_IDLE_GRACE_DAYS",
         "CODESEXTANT_CACHE_TOUCH_INTERVAL_SEC",
+        "CODESEXTANT_CACHE_SCRATCH_GRACE_HOURS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -301,6 +303,8 @@ def test_policy_defaults_are_bounded_and_deterministic(monkeypatch):
     assert policy.target_ratio == 0.9
     assert policy.target_bytes == int(10 * 1024 ** 3 * 0.9)
     assert policy.missing_grace_seconds == 30 * 86400
+    assert policy.idle_grace_seconds == 14 * 86400
+    assert policy.scratch_grace_seconds == 24 * 3600
     assert policy.touch_interval_seconds > 0
 
 
@@ -310,3 +314,102 @@ def test_invalid_or_extreme_max_bytes_fall_back_to_safe_default(monkeypatch):
     for value in ("0", "-1", "", "nan", str(2 ** 80)):
         monkeypatch.setenv("CODESEXTANT_CACHE_MAX_BYTES", value)
         assert cache_gc.policy_from_env().max_bytes == 10 * 1024 ** 3
+
+
+def test_prune_removes_idle_present_projects_beyond_grace(
+        tmp_path, monkeypatch):
+    from codesextant import cache_gc, storage
+
+    home = tmp_path / "state"
+    monkeypatch.setenv("CODESEXTANT_HOME", str(home))
+    monkeypatch.setenv("CODESEXTANT_CACHE_IDLE_GRACE_DAYS", "14")
+    monkeypatch.setenv("CODESEXTANT_CACHE_MAX_BYTES", str(10 * 1024 ** 3))
+    now = time.time()
+    old_repo, old_db, _ = _write_project(
+        storage, home, "old-idle", accessed_at=now - 15 * 86400)
+    recent_repo, recent_db, _ = _write_project(
+        storage, home, "recent-idle", accessed_at=now - 1 * 86400)
+
+    report = cache_gc.prune()
+
+    old_key = storage.project_key(str(old_repo))
+    old_action = _project_action(report, old_key)
+    assert old_action["reason"] == "idle-present"
+    assert old_action["status"] == "deleted"
+    assert not old_db.exists()
+    assert recent_db.exists()
+    assert recent_repo.exists()
+
+
+def test_forget_project_deletes_one_group(tmp_path, monkeypatch):
+    from codesextant import cache_gc, storage
+
+    home = tmp_path / "state"
+    monkeypatch.setenv("CODESEXTANT_HOME", str(home))
+    now = time.time()
+    target_repo, target_db, _ = _write_project(
+        storage, home, "forget-me", accessed_at=now)
+    keep_repo, keep_db, _ = _write_project(
+        storage, home, "keep-me", accessed_at=now)
+
+    result = cache_gc.forget_project(str(target_repo))
+
+    assert result["status"] == "deleted"
+    assert result["reason"] == "explicit-forget"
+    assert not target_db.exists()
+    assert keep_db.exists()
+    assert keep_repo.exists()
+
+
+def test_prune_scratch_removes_old_product_workspaces(tmp_path, monkeypatch):
+    from codesextant import cache_gc
+
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    old = temp_root / "codesextant-smoke-abc123"
+    old.mkdir()
+    (old / "wheel.whl").write_bytes(b"x" * 100)
+    recent = temp_root / "codesextant-smoke-recent"
+    recent.mkdir()
+    (recent / "keep.bin").write_bytes(b"y" * 50)
+    foreign = temp_root / "other-tool-cache"
+    foreign.mkdir()
+    (foreign / "data").write_bytes(b"z" * 20)
+    now = time.time()
+    os_utime = __import__("os").utime
+    os_utime(old, (now - 48 * 3600, now - 48 * 3600))
+    os_utime(recent, (now - 1 * 3600, now - 1 * 3600))
+    monkeypatch.setenv("TEMP", str(temp_root))
+    monkeypatch.setenv("TMP", str(temp_root))
+    monkeypatch.setenv("TMPDIR", str(temp_root))
+    monkeypatch.setenv("CODESEXTANT_CACHE_SCRATCH_GRACE_HOURS", "24")
+    monkeypatch.setattr(cache_gc, "_scratch_roots", lambda: [temp_root])
+
+    report = cache_gc.prune_scratch()
+
+    assert not old.exists()
+    assert recent.exists()
+    assert foreign.exists()
+    assert report["reclaimed_bytes"] >= 100
+    assert any(item["path"] == str(old) for item in report["deleted"])
+
+
+def test_scratch_roots_never_resolve_empty_env_to_cwd(tmp_path, monkeypatch):
+    from codesextant import cache_gc
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("TEMP", str(tmp_path / "Temp"))
+    monkeypatch.setenv("TMP", str(tmp_path / "Temp"))
+    (tmp_path / "Temp").mkdir()
+    monkeypatch.setenv("TMPDIR", "")
+    monkeypatch.delenv("TMPDIR", raising=False)
+    import tempfile
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "Temp"))
+
+    roots = cache_gc._scratch_roots()
+
+    assert roots == [(tmp_path / "Temp").resolve()]
+    assert all(".git" not in str(root) for root in roots)

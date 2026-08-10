@@ -45,7 +45,12 @@ daemon. The security boundary is the operating-system identity that owns
   project-key database groups and their known cache companions are candidates;
   credentials, logs, locks, and unknown files are preserved. Every candidate
   is contained and revalidated immediately before deletion, and unverifiable
-  groups fail closed.
+  groups fail closed. Reclaim reasons are: missing-repo beyond grace, present
+  repos idle beyond grace (default 14 days without touch), quota LRU under the
+  max-bytes cap, and orphaned product scratch directories under the system temp
+  root matching a fixed `codesextant-*` name pattern. Explicit
+  `codesextant cache --forget PATH` drops one project after the same exclusive
+  lease gate.
 - **`ts_bridge/` runs Node as a subprocess** when resolving TypeScript. It reads
   project files and should receive the same trust as any local code-analysis
   tool.

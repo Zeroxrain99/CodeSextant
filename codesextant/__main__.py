@@ -142,6 +142,50 @@ def cmd_status(args) -> int:
 def cmd_cache(args) -> int:
     from . import cache_gc
 
+    if getattr(args, "forget", None):
+        result = cache_gc.forget_project(args.forget, dry_run=bool(args.dry_run))
+        if args.json:
+            _emit(result, True)
+        else:
+            status = result.get("status")
+            reclaimed = int(result.get("bytes_reclaimed") or 0) / (1024 * 1024)
+            print(
+                f"Forget {result.get('project_key', '')[:12]}… "
+                f"status={status} reclaimed={reclaimed:.1f} MiB")
+            if result.get("reason"):
+                print(f"  reason: {result['reason']}")
+            if result.get("errors"):
+                print(f"  {len(result['errors'])} error(s)")
+        return 0 if result.get("status") in (
+            "deleted", "planned", "absent") else 1
+
+    if getattr(args, "prune", False):
+        result = cache_gc.prune(dry_run=bool(args.dry_run))
+        if args.json:
+            _emit(result, True)
+        else:
+            before = int(result.get("before_bytes") or 0) / (1024 * 1024)
+            after = int(result.get("after_bytes") or 0) / (1024 * 1024)
+            reclaimed = int(result.get("reclaimed_bytes") or 0) / (1024 * 1024)
+            mode = "dry-run" if result.get("dry_run") else "applied"
+            print(
+                f"Cache prune ({mode}): {before:.1f} -> {after:.1f} MiB "
+                f"(reclaimed {reclaimed:.1f} MiB)")
+            for action in result.get("projects", [])[:20]:
+                print(
+                    f"  {action.get('project_key', '')[:12]}  "
+                    f"{action.get('status')}  "
+                    f"reason={action.get('reason')}")
+            scratch = result.get("scratch") or {}
+            scratch_n = len(scratch.get("deleted") or scratch.get("planned") or [])
+            if scratch_n:
+                print(
+                    f"  scratch workspaces: {scratch_n} "
+                    f"({int(scratch.get('reclaimed_bytes') or scratch.get('projected_reclaimed_bytes') or 0) / (1024 * 1024):.1f} MiB)")
+            if result.get("errors"):
+                print(f"  {len(result['errors'])} error(s) preserved fail-closed groups")
+        return 0 if not result.get("errors") else 1
+
     result = cache_gc.inventory()
     if args.json:
         _emit(result, True)
@@ -162,6 +206,9 @@ def cmd_cache(args) -> int:
             print(
                 f"  {len(result['issues'])} cache group issue(s) were preserved "
                 "instead of pruned")
+        print(
+            "  Tip: codesextant cache --prune  (auto GC) · "
+            "codesextant cache --forget PATH  (drop one project)")
     return 0
 
 
@@ -496,7 +543,26 @@ def _build_parser() -> argparse.ArgumentParser:
     pt.add_argument("path")
     pt.set_defaults(func=cmd_status)
 
-    pc = sub.add_parser("cache", help="show managed local index cache usage")
+    pc = sub.add_parser(
+        "cache",
+        help="show, prune, or forget managed local index cache usage",
+    )
+    pc.add_argument(
+        "--prune",
+        action="store_true",
+        help="reclaim idle/missing project indexes and orphaned temp workspaces",
+    )
+    pc.add_argument(
+        "--forget",
+        metavar="PATH",
+        default=None,
+        help="drop one project's managed index cache (explicit session cleanup)",
+    )
+    pc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --prune/--forget, report the plan without deleting",
+    )
     pc.set_defaults(func=cmd_cache)
 
     psi = sub.add_parser("install-skill", help="install the bundled Agent Skill")

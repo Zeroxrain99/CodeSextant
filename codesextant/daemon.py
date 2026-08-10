@@ -192,6 +192,8 @@ def _cache_policy_snapshot() -> dict:
             "max_bytes": policy.max_bytes,
             "target_bytes": policy.target_bytes,
             "missing_grace_seconds": policy.missing_grace_seconds,
+            "idle_grace_seconds": policy.idle_grace_seconds,
+            "scratch_grace_seconds": policy.scratch_grace_seconds,
         }
     except Exception as exc:
         return {"available": False, "error": type(exc).__name__}
@@ -2080,8 +2082,16 @@ def ensure_running(port: int | None = None, *, wait_sec: float = 6.0) -> dict:
         if _health_api_current(alive):
             lg.info("ensure: detected an existing daemon (pid=%s, port=%d) → idempotent, not restarting",
                     alive.get("pid"), port)
-            return {"action": "already-running", "pid": alive.get("pid"),
-                    "port": port, "health": alive}
+            return {
+                "action": "already-running",
+                "pid": alive.get("pid"),
+                "port": port,
+                "health": alive,
+                # Short client disconnects reconnect to the same daemon and
+                # reuse the persistent per-project index instead of redoing work.
+                "reconnect": True,
+                "index_reuse": "persistent-per-project",
+            }
         busy = _health_has_heavy_work(alive)
         lg.warning(
             "ensure: daemon API is outdated; refusing automatic replacement "
@@ -2115,8 +2125,14 @@ def ensure_running(port: int | None = None, *, wait_sec: float = 6.0) -> dict:
             alive = http_ping(port=port)
             if alive is not None:
                 if _health_api_current(alive):
-                    return {"action": "already-running", "pid": alive.get("pid"),
-                            "port": port, "health": alive}
+                    return {
+                        "action": "already-running",
+                        "pid": alive.get("pid"),
+                        "port": port,
+                        "health": alive,
+                        "reconnect": True,
+                        "index_reuse": "persistent-per-project",
+                    }
                 if _health_has_heavy_work(alive):
                     return _upgrade_required_result(alive, port, busy=True)
                 return _upgrade_required_result(alive, port, busy=False)
@@ -2145,9 +2161,14 @@ def ensure_running(port: int | None = None, *, wait_sec: float = 6.0) -> dict:
                         lg.info(
                             "ensure: slow confirmation of an existing daemon (pid=%s, port=%d) → idempotent, not restarting",
                             alive.get("pid"), port)
-                        return {"action": "already-running",
-                                "pid": alive.get("pid"), "port": port,
-                                "health": alive}
+                        return {
+                            "action": "already-running",
+                            "pid": alive.get("pid"),
+                            "port": port,
+                            "health": alive,
+                            "reconnect": True,
+                            "index_reuse": "persistent-per-project",
+                        }
                     return _upgrade_required_result(
                         alive, port, busy=_health_has_heavy_work(alive))
                 auth_state = _auth_state_result(
@@ -2188,8 +2209,14 @@ def ensure_running(port: int | None = None, *, wait_sec: float = 6.0) -> dict:
             port=port, timeout=_slow_health_timeout(wait_sec))
         if alive is not None:
             if _health_api_current(alive):
-                return {"action": "already-running", "pid": alive.get("pid"),
-                        "port": port, "health": alive}
+                return {
+                    "action": "already-running",
+                    "pid": alive.get("pid"),
+                    "port": port,
+                    "health": alive,
+                    "reconnect": True,
+                    "index_reuse": "persistent-per-project",
+                }
             return _upgrade_required_result(
                 alive, port, busy=_health_has_heavy_work(alive))
         auth_state = _auth_state_result(

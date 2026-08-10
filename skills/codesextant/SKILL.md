@@ -69,6 +69,19 @@ Check `index_lifecycle.stale_possible` and verify affected source when it is tru
 failure, or an explicit rebuild. Never make an interactive coding task wait for a first full
 index, and never use `force=True` unless the user requests a full rebuild.
 
+## Disconnect, reconnect, and cleanup
+
+- **Short interrupt / reconnect:** call `cs.ensure()` again. `action=="already-running"` with
+  `reconnect=true` means reuse the shared daemon and the existing per-project index. Do not
+  force-reindex and do not spawn a second daemon.
+- **Heavy work containment:** route workers run in a disposable process tree owned by the
+  daemon. Deadlines and parent death reap them; do not PID-kill the shared daemon when one
+  agent session drops.
+- **Session finished / forgotten:** prefer automatic GC. Optional explicit reclaim:
+  `codesextant cache --forget ABSOLUTE_REPO_PATH`. Machine-wide reclaim of idle/missing indexes
+  and orphaned temp workspaces: `codesextant cache --prune` (add `--dry-run` first). Never
+  delete `~/.codesextant` wholesale while a daemon is busy.
+
 ## Finish a task
 
 Recheck references and impact for changed public symbols. Report confidence labels and any
