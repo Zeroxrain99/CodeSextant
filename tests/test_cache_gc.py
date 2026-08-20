@@ -413,3 +413,69 @@ def test_scratch_roots_never_resolve_empty_env_to_cwd(tmp_path, monkeypatch):
 
     assert roots == [(tmp_path / "Temp").resolve()]
     assert all(".git" not in str(root) for root in roots)
+
+
+def _write_sqlite_project(storage, home: Path, name: str, *,
+                          journal_mode: str = "delete"):
+    """Real SQLite database with repo_path metadata but no access sidecar."""
+    import sqlite3
+    repo = home.parent / name
+    repo.mkdir()
+    db_file = storage.db_path_for(str(repo))
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_file)
+    try:
+        conn.execute(f"PRAGMA journal_mode={journal_mode}")
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('repo_path', ?)",
+            (str(repo.resolve()),))
+        conn.commit()
+    finally:
+        conn.close()
+    return repo, db_file
+
+
+def test_forget_succeeds_on_wal_group_without_access_sidecar(
+        tmp_path, monkeypatch):
+    """Reading repo_path during inventory must not touch -shm, or the
+    deletion is rejected by our own restat guard (changed-since-inventory)."""
+    from codesextant import cache_gc, storage
+
+    home = tmp_path / "state"
+    monkeypatch.setenv("CODESEXTANT_HOME", str(home))
+    repo, db_file = _write_sqlite_project(
+        storage, home, "wal-orphan", journal_mode="wal")
+    shm = Path(f"{db_file}-shm")
+    shm.write_bytes(b"")
+
+    result = cache_gc.forget_project(str(repo))
+
+    assert result["status"] == "deleted", result
+    assert not db_file.exists()
+    assert not shm.exists()
+
+
+def test_idle_grace_ignores_shm_and_wal_mtime(tmp_path, monkeypatch):
+    """A daemon restart touches -shm on every database it opens; that touch
+    is not project activity and must not keep idle groups alive forever."""
+    import os
+
+    from codesextant import cache_gc, storage
+
+    home = tmp_path / "state"
+    monkeypatch.setenv("CODESEXTANT_HOME", str(home))
+    monkeypatch.setenv("CODESEXTANT_CACHE_IDLE_GRACE_DAYS", "14")
+    monkeypatch.setenv("CODESEXTANT_CACHE_MAX_BYTES", str(10 * 1024 ** 3))
+    repo, db_file = _write_sqlite_project(storage, home, "stale-idle")
+    old = time.time() - 20 * 86400
+    os.utime(db_file, (old, old))
+    shm = Path(f"{db_file}-shm")
+    shm.write_bytes(b"")
+
+    report = cache_gc.prune()
+
+    action = _project_action(report, storage.project_key(str(repo)))
+    assert action["reason"] == "idle-present"
+    assert action["status"] == "deleted", action
+    assert not db_file.exists()

@@ -246,7 +246,10 @@ def _read_repo_path_from_db(path: Path, project_key: str) -> tuple[
         str | None, dict | None]:
     try:
         with cache_lease.acquire_shared(project_key, home=path.parent):
-            uri = path.resolve(strict=True).as_uri() + "?mode=ro"
+            # immutable: a plain ro connection on a WAL database still creates
+            # and touches the -shm index, which then trips our own
+            # changed-since-inventory restat and feeds the mtime fallback.
+            uri = path.resolve(strict=True).as_uri() + "?mode=ro&immutable=1"
             with closing(sqlite3.connect(uri, uri=True, timeout=0.1)) as conn:
                 conn.execute("PRAGMA query_only=1")
                 conn.execute("PRAGMA busy_timeout=100")
@@ -374,9 +377,15 @@ def _inventory_records() -> tuple[list[_ProjectRecord], list[dict]]:
                 db_artifact.path, project_key)
             if db_issue is not None:
                 project_issues.append(db_issue)
+        # -shm/-wal are touched by any SQLite open, including our own
+        # inventory, so they are not evidence of real project activity.
         last_access = (
             accessed_at if accessed_at is not None
-            else max((artifact.modified_at for artifact in artifacts), default=0.0)
+            else max(
+                (artifact.modified_at for artifact in artifacts
+                 if artifact.kind not in ("shm", "wal")),
+                default=0.0,
+            )
         )
         repo_state = (
             "unknown" if repo_path is None
