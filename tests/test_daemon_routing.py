@@ -113,3 +113,55 @@ def test_a_real_engine_failure_is_still_an_internal_error():
         daemon._execute_route(
             "/get_map", handler, urlparse("/get_map?project=/tmp/x"), None,
             deadline=time.monotonic() + 30)
+
+
+def test_a_worker_killed_before_answering_is_retryable_not_a_defect():
+    """SIGKILL comes from outside the work: containment, or a kernel short of memory.
+
+    The request did not finish, but nothing about it was wrong, and the caller's move is
+    to retry. Reported as 500 it reads as a defect in CodeSextant and carries no
+    documented response.
+    """
+    from urllib.parse import urlparse
+
+    from codesextant import daemon, worker_process
+
+    def handler(_parsed, _body):
+        raise worker_process.RouteWorkerError(
+            "route worker exited without a result (exit=-9)", exitcode=-9)
+
+    with pytest.raises(daemon._HttpError) as caught:
+        daemon._execute_route(
+            "/get_map", handler, urlparse("/get_map?project=/tmp/x"), None,
+            deadline=time.monotonic() + 30)
+
+    assert caught.value.code == 503
+    assert caught.value.headers.get("Retry-After")
+    assert caught.value.details.get("reason") == "worker-killed"
+
+
+def test_a_worker_that_crashed_is_still_a_defect():
+    """A crash signal is a different claim and must not be dressed up as weather."""
+    from urllib.parse import urlparse
+
+    from codesextant import daemon, worker_process
+
+    for exitcode in (-11, -6, 1):  # SIGSEGV, SIGABRT, a plain nonzero exit
+        def handler(_parsed, _body, _code=exitcode):
+            raise worker_process.RouteWorkerError(
+                f"route worker exited without a result (exit={_code})", exitcode=_code)
+
+        with pytest.raises(worker_process.RouteWorkerError):
+            daemon._execute_route(
+                "/get_map", handler, urlparse("/get_map?project=/tmp/x"), None,
+                deadline=time.monotonic() + 30)
+
+
+def test_signal_reading_separates_a_kill_from_a_clean_exit():
+    from codesextant import worker_process
+
+    assert worker_process.killed_by_signal(-9) == 9
+    assert worker_process.killed_by_signal(-11) == 11
+    assert worker_process.killed_by_signal(0) is None
+    assert worker_process.killed_by_signal(1) is None
+    assert worker_process.killed_by_signal(None) is None

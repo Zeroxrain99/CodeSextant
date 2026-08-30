@@ -32,10 +32,27 @@ class RouteWorkerError(RuntimeError):
     """
 
     def __init__(self, message: str, *, error_type: str = "",
-                 remote_message: str = ""):
+                 remote_message: str = "", exitcode: int | None = None):
         super().__init__(message)
         self.error_type = error_type
         self.remote_message = remote_message
+        # How the child ended, when it ended without answering. A negative value is the
+        # signal that killed it, and which signal is the difference between "something
+        # killed this process" and "this process crashed".
+        self.exitcode = exitcode
+
+
+def killed_by_signal(exitcode: int | None) -> int | None:
+    """The signal that killed a worker, or None if it was not killed by one.
+
+    multiprocessing reports a signal death as the negated signal number. Which signal
+    matters: SIGKILL means something outside the process ended it -- the containment
+    guardian, or a kernel short of memory -- while SIGSEGV or SIGABRT mean the work
+    itself crashed, and those must not be reported as if they were weather.
+    """
+    if exitcode is None or exitcode >= 0:
+        return None
+    return -exitcode
 
 
 class RemoteHttpError(RuntimeError):
@@ -400,7 +417,8 @@ def run_route(
                     except queue.Empty:
                         raise RouteWorkerError(
                             "route worker exited without a result "
-                            f"(exit={process.exitcode})") from None
+                            f"(exit={process.exitcode})",
+                            exitcode=process.exitcode) from None
                 else:
                     continue
             if not ok:

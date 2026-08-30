@@ -36,6 +36,7 @@ import math
 import os
 import secrets
 import shutil
+import signal
 import socket
 import sqlite3
 import stat
@@ -1042,15 +1043,19 @@ def _ep_health(parsed, body):
     }
 
 
-def _busy_index_http_error(message: str) -> _HttpError:
-    """Overload response for an index another writer is holding."""
+def _transient_http_error(message: str, reason: str) -> _HttpError:
+    """Overload response for a condition the caller can retry rather than fix."""
     retry_after = _overload_retry_after_sec()
     return _HttpError(
-        503,
-        f"the project index is busy: {message}",
+        503, message,
         headers={"Retry-After": str(retry_after)},
-        details={"retry_after_sec": retry_after, "reason": "index-busy"},
+        details={"retry_after_sec": retry_after, "reason": reason},
     )
+
+
+def _busy_index_http_error(message: str) -> _HttpError:
+    """Overload response for an index another writer is holding."""
+    return _transient_http_error(f"the project index is busy: {message}", "index-busy")
 
 
 def _engine_pkg_version():
@@ -1535,10 +1540,20 @@ def _execute_route(path: str, handler, parsed, body: dict | None,
         # Reported as 500 it looks like a defect and callers have no documented response;
         # as 503 with Retry-After it joins the other overload answers agents already
         # know to back off from.
-        if not storage.is_busy_index_error(
+        if storage.is_busy_index_error(
                 getattr(exc, "error_type", ""), getattr(exc, "remote_message", "")):
-            raise
-        raise _busy_index_http_error(str(exc)) from exc
+            raise _busy_index_http_error(str(exc)) from exc
+        # A worker killed by SIGKILL was ended by something outside the work: the
+        # containment guardian, or a kernel short of memory with several spawned
+        # interpreters running at once. The request did not finish, but nothing about it
+        # was wrong and retrying is the caller's move. A crash signal is a different
+        # claim entirely and still reaches them as an internal error.
+        if worker_process.killed_by_signal(
+                getattr(exc, "exitcode", None)) == signal.SIGKILL:
+            raise _transient_http_error(
+                f"the route worker was killed before answering: {exc}",
+                "worker-killed") from exc
+        raise
     except sqlite3.OperationalError as exc:
         if not storage.is_busy_index_error(type(exc).__name__, str(exc)):
             raise
