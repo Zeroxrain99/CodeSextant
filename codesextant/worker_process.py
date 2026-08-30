@@ -25,7 +25,17 @@ class WorkerDeadlineExceeded(TimeoutError):
 
 
 class RouteWorkerError(RuntimeError):
-    """A route worker exited without a successful endpoint result."""
+    """A route worker exited without a successful endpoint result.
+
+    ``error_type`` and ``remote_message`` carry the child's own classification, so the
+    caller can tell a busy index from a broken one without parsing the joined string.
+    """
+
+    def __init__(self, message: str, *, error_type: str = "",
+                 remote_message: str = ""):
+        super().__init__(message)
+        self.error_type = error_type
+        self.remote_message = remote_message
 
 
 class RemoteHttpError(RuntimeError):
@@ -297,7 +307,8 @@ def _validated_result(payload: Any) -> tuple[int, Any]:
         message = payload.get("message", "isolated route failed")
         if not isinstance(error_type, str) or not isinstance(message, str):
             raise RouteWorkerError("route worker returned an invalid error")
-        raise RouteWorkerError(f"{error_type}: {message}")
+        raise RouteWorkerError(f"{error_type}: {message}",
+                               error_type=error_type, remote_message=message)
     raise RouteWorkerError("route worker returned an unknown JSON message")
 
 

@@ -9,6 +9,9 @@ the methods, rather than on whether the file parses.
 """
 import ast
 import os
+import time
+
+import pytest
 
 from codesextant import daemon
 
@@ -59,3 +62,54 @@ def test_reindex_is_post_only():
     GET, this test is the reminder to update the docs alongside it."""
     assert "/reindex" in daemon._ROUTES_POST
     assert "/reindex" not in daemon._ROUTES_GET
+
+
+def test_a_busy_index_is_an_overload_answer_not_an_internal_error():
+    """A reindex holding the write lock must read as "retry", not as a defect.
+
+    Agents are told to back off on 503 and 504. Reported as 500 the same condition looks
+    like a bug in CodeSextant and has no documented response, so the caller cannot tell a
+    contended index from a broken one.
+    """
+    import sqlite3
+    from urllib.parse import urlparse
+
+    from codesextant import daemon, storage, worker_process
+
+    assert storage.is_busy_index_error("OperationalError", "database is locked")
+    assert not storage.is_busy_index_error("OperationalError", "no such table: symbols")
+
+    # Both shapes the condition arrives in: raised inside an isolated route worker and
+    # relayed back, or raised directly in the daemon process.
+    for failure in (
+        worker_process.RouteWorkerError(
+            "OperationalError: database is locked",
+            error_type="OperationalError", remote_message="database is locked"),
+        sqlite3.OperationalError("database is locked"),
+    ):
+        def handler(_parsed, _body, _failure=failure):
+            raise _failure
+
+        with pytest.raises(daemon._HttpError) as caught:
+            daemon._execute_route(
+                "/get_map", handler, urlparse("/get_map?project=/tmp/x"), None,
+                deadline=time.monotonic() + 30)
+        assert caught.value.code == 503
+        assert caught.value.headers.get("Retry-After")
+        assert caught.value.details.get("reason") == "index-busy"
+
+
+def test_a_real_engine_failure_is_still_an_internal_error():
+    """Only lock contention degrades; a genuine fault must not be dressed up as overload."""
+    import sqlite3
+    from urllib.parse import urlparse
+
+    from codesextant import daemon
+
+    def handler(_parsed, _body):
+        raise sqlite3.OperationalError("no such table: symbols")
+
+    with pytest.raises(sqlite3.OperationalError):
+        daemon._execute_route(
+            "/get_map", handler, urlparse("/get_map?project=/tmp/x"), None,
+            deadline=time.monotonic() + 30)

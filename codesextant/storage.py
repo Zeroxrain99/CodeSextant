@@ -82,6 +82,21 @@ def sqlite_wal_is_safe(version_info=None) -> bool:
     return False
 
 
+def is_busy_index_error(error_type: str, message: str) -> bool:
+    """Whether an error means "the index is busy right now" rather than "it is broken".
+
+    SQLite reports lock contention as OperationalError with a message naming a lock or a
+    busy database, after busy_timeout has already been waited out. On a daemon shared by
+    several agents, a reindex holding the write lock is an ordinary condition with an
+    ordinary remedy -- retry -- so it belongs with the other overload responses rather
+    than with internal failures.
+    """
+    if error_type != "OperationalError":
+        return False
+    text = message.lower()
+    return "locked" in text or "database is busy" in text
+
+
 def sqlite_runtime_status() -> dict:
     """Describe the SQLite version and the journal policy selected for it."""
     wal_safe = sqlite_wal_is_safe()

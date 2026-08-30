@@ -37,6 +37,7 @@ import os
 import secrets
 import shutil
 import socket
+import sqlite3
 import stat
 import subprocess
 import threading
@@ -1027,6 +1028,17 @@ def _ep_health(parsed, body):
     }
 
 
+def _busy_index_http_error(message: str) -> _HttpError:
+    """Overload response for an index another writer is holding."""
+    retry_after = _overload_retry_after_sec()
+    return _HttpError(
+        503,
+        f"the project index is busy: {message}",
+        headers={"Retry-After": str(retry_after)},
+        details={"retry_after_sec": retry_after, "reason": "index-busy"},
+    )
+
+
 def _engine_pkg_version():
     # Absolute import: when ensure spawns the daemon detached by file path, it runs as __main__
     # (no package context), so a relative import would fail. sys.path has already been patched
@@ -1486,6 +1498,19 @@ def _execute_route(path: str, handler, parsed, body: dict | None,
         )
     except work_coordinator.HeavyWorkDeadlineExceeded as exc:
         raise _HttpError(504, str(exc)) from exc
+    except worker_process.RouteWorkerError as exc:
+        # A busy index is an overload condition with a remedy, not an internal failure.
+        # Reported as 500 it looks like a defect and callers have no documented response;
+        # as 503 with Retry-After it joins the other overload answers agents already
+        # know to back off from.
+        if not storage.is_busy_index_error(
+                getattr(exc, "error_type", ""), getattr(exc, "remote_message", "")):
+            raise
+        raise _busy_index_http_error(str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        if not storage.is_busy_index_error(type(exc).__name__, str(exc)):
+            raise
+        raise _busy_index_http_error(str(exc)) from exc
     except work_coordinator.HeavyWorkQueueFull as exc:
         retry_after = _overload_retry_after_sec()
         heavy = _HEAVY_COORDINATOR.snapshot()
