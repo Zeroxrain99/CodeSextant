@@ -7,6 +7,7 @@ import threading
 import time
 
 import pytest
+from conftest import wait_until
 
 
 class _FakeTimer:
@@ -117,22 +118,6 @@ def test_recovery_follower_capacity_rejects_without_joining(
     monkeypatch.setattr(manager, "ensure_watch", lambda _repo: True)
     entered = threading.Event()
     release = threading.Event()
-    follower_waiting = threading.Event()
-    real_event = threading.Event
-
-    class TrackingEvent:
-        def __init__(self):
-            self._event = real_event()
-
-        def set(self):
-            return self._event.set()
-
-        def is_set(self):
-            return self._event.is_set()
-
-        def wait(self, timeout=None):
-            follower_waiting.set()
-            return self._event.wait(timeout)
 
     def recover(_repo, *, deadline=None):
         entered.set()
@@ -151,15 +136,20 @@ def test_recovery_follower_capacity_rejects_without_joining(
 
     leader = threading.Thread(target=call)
     follower = threading.Thread(target=call)
-    monkeypatch.setattr(watcher.threading, "Event", TrackingEvent)
     leader.start()
     assert entered.wait(1)
-    follower.start()
-    assert follower_waiting.wait(1)
-
     project_key = manager._normalize(str(repo))
     attempt = manager._recovery_attempts[project_key]
-    assert attempt.followers == 1
+
+    follower.start()
+    # ensure_ready counts the follower under the manager lock before it blocks, so the
+    # count is the state to wait for. The previous version watched a stand-in Event class
+    # patched over threading.Event -- which patches it for the whole process, so any wait
+    # anywhere could fire the signal, and on a slow runner one did before the follower had
+    # registered.
+    wait_until(lambda: attempt.followers == 1,
+               message="the follower never joined the in-flight recovery")
+
     with pytest.raises(work_coordinator.HeavyWorkQueueFull):
         manager.ensure_ready(
             str(repo), deadline=time.monotonic() + 0.05
