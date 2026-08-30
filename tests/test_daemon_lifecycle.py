@@ -450,23 +450,31 @@ def test_partial_unauthenticated_connections_are_timed_out_and_bounded(
         monkeypatch):
     from codesextant import daemon
 
+    preauth_timeout = 1.0
     monkeypatch.setenv("CODESEXTANT_IDLE_TIMEOUT_SEC", "0")
     monkeypatch.setenv("CODESEXTANT_MAX_HANDLER_THREADS", "1")
-    monkeypatch.setenv("CODESEXTANT_PREAUTH_TIMEOUT_SEC", "0.15")
+    monkeypatch.setenv("CODESEXTANT_PREAUTH_TIMEOUT_SEC", str(preauth_timeout))
     server = daemon._ExclusiveThreadingHTTPServer(
         (daemon.HOST, 0), daemon._Handler
     )
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
-    first = socket.create_connection((daemon.HOST, server.server_port), timeout=1)
+    first = socket.create_connection((daemon.HOST, server.server_port), timeout=5)
     second = None
     try:
+        # A header that never terminates: the handler stays parked in its pre-auth read.
         first.sendall(
             b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n"
         )
-        time.sleep(0.05)
+        # Wait for the accept loop to actually take the only handler slot. Sleeping here
+        # and assuming it had would make the next assert depend on machine speed: on a
+        # slow runner the connection can still be in the backlog, and the second request
+        # then gets a slot and answers 401 instead of 503.
+        assert server.wait_for_active_handlers(1, timeout=10.0), (
+            "the partial connection never occupied the only handler slot")
+
         second = socket.create_connection(
-            (daemon.HOST, server.server_port), timeout=1
+            (daemon.HOST, server.server_port), timeout=5
         )
         second.sendall(
             b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
@@ -474,9 +482,10 @@ def test_partial_unauthenticated_connections_are_timed_out_and_bounded(
         response = second.recv(2048)
         assert b"503 Service Unavailable" in response
 
-        first.settimeout(1)
-        time.sleep(0.2)
-        assert first.recv(1) == b""
+        # The pre-auth timeout must close the stalled connection. Observe the close as
+        # EOF rather than sleeping past a deadline and assuming it happened.
+        first.settimeout(preauth_timeout + 10.0)
+        assert first.recv(1) == b"", "the stalled connection was not timed out"
     finally:
         first.close()
         if second is not None:

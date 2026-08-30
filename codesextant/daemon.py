@@ -517,11 +517,44 @@ class _ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
         except ValueError:
             self._preauth_timeout_sec = 5.0
         self._handler_slots = threading.BoundedSemaphore(handler_limit)
+        # BoundedSemaphore publishes no count, so occupancy is tracked alongside it.
+        # This exists so a caller can wait for "a handler slot is held" instead of
+        # sleeping and assuming it: the accept loop takes the slot on its own thread,
+        # and nothing else offers a way to observe that it has.
+        self._handler_state = threading.Condition()
+        self._active_handlers = 0
         self._idle_shutdown = _IdleShutdownController(
             timeout_sec=timeout_sec,
             shutdown=self._shutdown_for_idle,
             busy=self._background_busy,
         )
+
+    def _note_handler_started(self) -> None:
+        with self._handler_state:
+            self._active_handlers += 1
+            self._handler_state.notify_all()
+
+    def _note_handler_finished(self) -> None:
+        with self._handler_state:
+            self._active_handlers -= 1
+            self._handler_state.notify_all()
+
+    @property
+    def active_handlers(self) -> int:
+        """How many handler slots are currently held."""
+        with self._handler_state:
+            return self._active_handlers
+
+    def wait_for_active_handlers(self, at_least: int, timeout: float = 5.0) -> bool:
+        """Block until at least ``at_least`` handler slots are held. True if reached."""
+        deadline = time.monotonic() + timeout
+        with self._handler_state:
+            while self._active_handlers < at_least:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._handler_state.wait(remaining)
+            return True
 
     def _shutdown_for_idle(self) -> None:
         get_logger().info(
@@ -581,9 +614,11 @@ class _ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
             )
             self.shutdown_request(request)
             return
+        self._note_handler_started()
         try:
             super().process_request(request, client_address)
         except BaseException:
+            self._note_handler_finished()
             self._idle_shutdown.end_request()
             self._handler_slots.release()
             raise
@@ -592,6 +627,7 @@ class _ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
         try:
             super().process_request_thread(request, client_address)
         finally:
+            self._note_handler_finished()
             self._idle_shutdown.end_request()
             self._handler_slots.release()
 

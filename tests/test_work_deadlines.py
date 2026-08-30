@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urlparse
 
 import pytest
+from conftest import wait_until
 
 
 def test_queued_owner_deadline_removes_it_from_lane():
@@ -91,10 +92,8 @@ def test_expired_queued_owner_finishes_for_a_longer_lived_follower():
             label="owner",
             deadline=time.monotonic() + 0.2,
         )
-        queued_deadline = time.monotonic() + 1.0
-        while coordinator.snapshot()["queued"] != 1:
-            assert time.monotonic() < queued_deadline
-            time.sleep(0.005)
+        wait_until(lambda: coordinator.snapshot()["queued"] == 1, timeout=1.0,
+                   message="the owner job never reached the queue")
         follower = pool.submit(
             coordinator.run,
             "same",
@@ -102,6 +101,12 @@ def test_expired_queued_owner_finishes_for_a_longer_lived_follower():
             label="follower",
             deadline=time.monotonic() + 1.0,
         )
+        # Two separate jobs, and only one of them is a sleep's to do. The follower
+        # joining is a state to observe; the owner's 0.2s deadline expiring while it
+        # is still queued is the subject of this test, so that one really is time
+        # that has to pass.
+        wait_until(lambda: coordinator.snapshot()["followers"] >= 1,
+                   message="the follower never joined the queued owner")
         time.sleep(0.25)
         release_blocker.set()
 

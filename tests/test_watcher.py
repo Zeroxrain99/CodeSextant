@@ -21,6 +21,8 @@ except ModuleNotFoundError:  # Python 3.10
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from conftest import wait_until  # noqa: E402
+
 from codesextant import engine, watcher  # noqa: E402
 
 _LOG = logging.getLogger("test_watcher")
@@ -157,10 +159,16 @@ class TestDebounceFlush:
         _write(tmp_path, "a.py",
                "def original():\n    return 1\n\n\ndef brand_new_sym():\n    return 2\n")
         w._enqueue(str(tmp_path / "a.py"))
-        time.sleep(watcher._debounce_sec() + 0.8)  # debounce window plus indexing time
-        r = engine.get_symbols(str(tmp_path), file=str(tmp_path / "a.py"))
-        names = {s["name"] for s in r["symbols"]}
-        assert "brand_new_sym" in names, names
+
+        def indexed_names():
+            return {s["name"] for s in engine.get_symbols(
+                str(tmp_path), file=str(tmp_path / "a.py"))["symbols"]}
+
+        # How long the debounce plus the reindex takes is a property of the machine,
+        # so wait for the symbol to appear instead of guessing a duration.
+        wait_until(lambda: "brand_new_sym" in indexed_names(), timeout=15.0,
+                   message="the debounced flush never reindexed the edited file")
+        assert "brand_new_sym" in indexed_names()
 
     def test_debounce_coalesces(self, tmp_path, db_home):
         # Several enqueues in a row collapse into a single flush, so a burst of edits
@@ -177,6 +185,9 @@ class TestDebounceFlush:
         w._flush = _counting_flush
         for _ in range(5):  # five rapid changes
             w._enqueue(str(tmp_path / "a.py"))
-            time.sleep(0.02)
-        time.sleep(watcher._debounce_sec() + 0.8)
+            time.sleep(0.02)  # spacing the edits is the point: real time has to pass
+        wait_until(lambda: flushes, timeout=15.0,
+                   message="the debounced flush never fired at all")
+        # Nothing is enqueued after the burst, so no further flush can be armed: one
+        # flush having happened is the whole claim.
         assert len(flushes) == 1, f"debounce should coalesce into 1 flush, got {len(flushes)}"

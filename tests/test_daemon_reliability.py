@@ -8,7 +8,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +17,8 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from conftest import thread_is_executing, wait_until  # noqa: E402
 
 from codesextant import client, daemon  # noqa: E402
 
@@ -742,7 +743,8 @@ def test_heavy_work_coordinator_single_flights_same_key():
         first = pool.submit(coordinator.run, ("map", "repo"), work, label="/get_map")
         assert started.wait(1)
         second = pool.submit(coordinator.run, ("map", "repo"), work, label="/get_map")
-        time.sleep(0.05)
+        wait_until(lambda: coordinator.snapshot()["followers"] >= 1,
+                   message="the second call never coalesced onto the in-flight job")
         release.set()
         assert first.result() == {"value": 7}
         assert second.result() == {"value": 7}
@@ -781,9 +783,11 @@ def test_heavy_work_coordinator_serializes_different_projects_fifo():
         a = pool.submit(coordinator.run, ("map", "a"), lambda: work("a"), label="map")
         assert first_started.wait(1)
         b = pool.submit(coordinator.run, ("map", "b"), lambda: work("b"), label="map")
-        time.sleep(0.02)
+        wait_until(lambda: coordinator.snapshot()["queued"] >= 1,
+                   message="job b never reached the queue")
         c = pool.submit(coordinator.run, ("reindex", "c"), lambda: work("c"), label="reindex")
-        time.sleep(0.05)
+        wait_until(lambda: coordinator.snapshot()["queued"] >= 2,
+                   message="job c never reached the queue")
         release_first.set()
         assert [a.result(), b.result(), c.result()] == ["a", "b", "c"]
 
@@ -810,7 +814,8 @@ def test_heavy_work_coordinator_releases_followers_after_error():
         leader = pool.submit(coordinator.run, ("impact", "repo"), broken, label="impact")
         assert started.wait(1)
         follower = pool.submit(coordinator.run, ("impact", "repo"), broken, label="impact")
-        time.sleep(0.05)
+        wait_until(lambda: coordinator.snapshot()["followers"] >= 1,
+                   message="the follower never joined the in-flight job")
         release.set()
         with pytest.raises(ValueError, match="boom"):
             leader.result()
@@ -894,7 +899,8 @@ def test_heavy_work_followers_receive_distinct_exception_objects():
             coordinator.run, ("impact", "repo"), broken, label="impact")
         follower_b = pool.submit(
             coordinator.run, ("impact", "repo"), broken, label="impact")
-        time.sleep(0.05)
+        wait_until(lambda: coordinator.snapshot()["followers"] >= 2,
+                   message="both followers never joined the in-flight job")
         release.set()
         caught = []
         for future in (leader, follower_a, follower_b):
@@ -924,7 +930,8 @@ def test_heavy_work_followers_preserve_custom_exception_contract():
         assert started.wait(1)
         follower = pool.submit(
             coordinator.run, ("impact", "repo"), broken, label="impact")
-        time.sleep(0.05)
+        wait_until(lambda: coordinator.snapshot()["followers"] >= 1,
+                   message="the follower never joined the in-flight job")
         release.set()
         caught = []
         for future in (leader, follower):
@@ -982,12 +989,14 @@ def test_heavy_work_coordinator_caps_queue_and_followers():
         assert started.wait(1)
         queued = pool.submit(
             coordinator.run, ("map", "b"), lambda: "b", label="map")
-        time.sleep(0.05)
+        wait_until(lambda: coordinator.snapshot()["queued"] >= 1,
+                   message="job b never reached the queue, so the queue is not full")
         with pytest.raises(HeavyWorkQueueFull, match="queue capacity"):
             coordinator.run(("map", "c"), lambda: "c", label="map")
         follower = pool.submit(
             coordinator.run, ("map", "a"), blocking, label="map")
-        time.sleep(0.05)
+        wait_until(lambda: coordinator.snapshot()["followers"] >= 1,
+                   message="the follower never joined, so follower capacity is not full")
         with pytest.raises(HeavyWorkQueueFull, match="follower capacity"):
             coordinator.run(("map", "a"), blocking, label="map")
         release.set()
@@ -1210,12 +1219,10 @@ def test_watcher_batch_during_inflight_reindex_is_not_swallowed_by_join(
 
     # Wait until the second batch reached the coordinator: a queued FIFO job
     # (fixed behaviour) or a follower join (the lost-update bug).
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        snap = coordinator.snapshot()
-        if snap["queued"] >= 1 or snap["followers"] >= 1:
-            break
-        time.sleep(0.01)
+    wait_until(
+        lambda: (coordinator.snapshot()["queued"] >= 1
+                 or coordinator.snapshot()["followers"] >= 1),
+        message="the second scan never reached the coordinator as queued or follower")
     release_first.set()
     old_scan.join(timeout=5)
     new_scan.join(timeout=5)
@@ -1308,7 +1315,11 @@ def test_stale_watcher_callback_cannot_clear_new_timer_reference(
         project_watch._generation += 1
         project_watch._arm_timer_locked()
         stale_timer = project_watch._timer
-        time.sleep(0.05)  # stale callback has started and is waiting on _lock
+        # The stale callback has to be inside _flush, blocked on the _lock this test
+        # holds, before the new timer is armed. Sleeping instead would let a slow
+        # machine arm the new timer first and test nothing.
+        wait_until(lambda: thread_is_executing(stale_timer, "_flush"),
+                   message="the stale debounce callback never entered _flush")
         project_watch._pending.add(str(tmp_path / "second.py"))
         project_watch._generation += 1
         stale_timer.cancel()

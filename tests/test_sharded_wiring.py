@@ -13,6 +13,7 @@ import threading
 import time
 
 import pytest
+from conftest import wait_until
 
 from codesextant import daemon, watcher
 from codesextant import work_coordinator as wc
@@ -117,7 +118,8 @@ def test_throttling_is_observable(monkeypatch):
     waiter = threading.Thread(target=lambda: sharded.run(
         ("k", "b", ""), lambda: True, label="/impact", shard="E:/b"))
     waiter.start()
-    time.sleep(0.2)
+    wait_until(lambda: sharded.snapshot()["global_waiting"] >= 1,
+               message="the second request never registered as waiting on the global cap")
 
     stats = sharded.snapshot()
     assert stats["global_waiting"] >= 1, (

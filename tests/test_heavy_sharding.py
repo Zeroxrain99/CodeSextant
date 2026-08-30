@@ -17,6 +17,7 @@ import threading
 import time
 
 import pytest
+from conftest import wait_until
 
 from codesextant import work_coordinator as wc
 
@@ -171,7 +172,13 @@ def test_snapshot_reports_the_longest_running_job():
         ("k", "big", ""), slow, label="/find_unwired", shard="E:/big"))
     t.start()
     assert started.wait(timeout=5)
-    time.sleep(0.05)
+    # started.set() fires inside the job, before the coordinator has finished recording
+    # it as active. Wait for the telemetry to say what the asserts below check, including
+    # a non-zero age: the clock has to advance for that, and waiting for the value is how
+    # a slow machine and a fast one both get there.
+    wait_until(lambda: (sharded.snapshot()["active"] == "/find_unwired"
+                        and sharded.snapshot()["active_for_sec"] > 0),
+               message="the running job never appeared as active with a measurable age")
 
     snap = sharded.snapshot()
     assert snap["active"] == "/find_unwired"
@@ -200,7 +207,8 @@ def test_queue_capacity_is_per_shard_and_rejects_overflow():
     queued = threading.Thread(target=lambda: sharded.run(
         ("k", "p", "b"), lambda: True, label="/get_map", shard="E:/p"))
     queued.start()
-    time.sleep(0.1)
+    wait_until(lambda: sharded.snapshot()["queued"] >= 1,
+               message="the second job never reached the shard queue, so it is not full")
 
     with pytest.raises(wc.HeavyWorkQueueFull):
         sharded.run(("k", "p", "c"), lambda: True, label="/get_map", shard="E:/p")

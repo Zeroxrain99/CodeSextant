@@ -32,6 +32,18 @@ fall back to low-confidence name matching.
   keyed on index revision and query parameters. If you add a cache, make sure
   it invalidates on both.
 - **No network calls or API keys.** Do not add external network dependencies.
+- **Never sleep to establish a precondition in a test.** `time.sleep` may only be
+  used to let time genuinely pass, such as letting a deadline you set on purpose
+  expire. It must not be used to wait for a background thread to reach some state,
+  because "long enough on my machine" is not a synchronization primitive: the test
+  passes locally and on most CI runners, then fails on whichever one is slower that
+  day and reads like a real defect. Wait for the state with `wait_until` from
+  `tests/conftest.py`, and if nothing observable exists, add the smallest possible
+  observation point rather than a longer sleep.
+
+  > If the assertion after a `time.sleep` could fail merely because the machine is
+  > slow, the sleep is doing a job it cannot do.
+
 - Add a test that fails before your change and passes after it.
 
 ## Reporting bugs
