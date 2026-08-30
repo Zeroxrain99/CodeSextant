@@ -24,7 +24,7 @@ from . import cache_lease
 SCHEMA_VERSION = 5
 _INDEX_GENERATION_KEY = "index_generation"
 _SYMBOL_SNAPSHOT_FORMAT = 1
-_MAP_SNAPSHOT_FORMAT = 1
+_MAP_SNAPSHOT_FORMAT = 2
 
 
 def project_key(repo_path: str) -> str:

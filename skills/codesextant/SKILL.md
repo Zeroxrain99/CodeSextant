@@ -41,9 +41,12 @@ same failed heavy query in the same task. A delayed graph is less useful than a 
 read, and CodeSextant must never become a modification gate.
 
 3. If `cs` is available, call `cs.get_map(budget=1500, focus_files=[...], focus_symbols=[...])`
-   once to identify the
-   small set of files and symbols worth reading. Interactive graph calls have a short deadline
-   and reserved daemon capacity.
+   once to identify the small set of files and symbols worth reading. Interactive graph calls
+   have a short deadline and reserved daemon capacity.
+
+   `budget` is the size of the response you will actually receive, envelope included, not a
+   count of symbols. Spend it deliberately: raise it when you want a wider map, and read
+   `truncated_by_budget` to learn whether more symbols were available than it paid for.
 4. Before changing a symbol, call `cs.find_references(symbol, def_path=...)` and
    `cs.impact(symbol, def_path=...)`.
 
@@ -51,6 +54,9 @@ read, and CodeSextant must never become a modification gate.
 
 - Auto-trust only `confidence="high"` references.
 - Treat low-confidence name matches as search leads and verify them in source.
+- Map ordering is mostly name-level evidence unless resolved edges exist, so read it as
+  "where to look first", not as a verified call graph. Several same-named definitions
+  (`close`, `run`) can share adjacent ranks; `def_path` tells them apart.
 - Pass `def_path` when names are ambiguous.
 - Use the correct `src_root` when a Python import root is below the repository root.
 - CodeSextant narrows what to read. It does not replace reading the selected code.

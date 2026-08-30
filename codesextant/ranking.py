@@ -34,6 +34,20 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def is_test_path(p: str) -> bool:
+    """Path heuristic for identifying test files.
+
+    Shared with engine's blast-radius classification so both agree on what a test is.
+    It lives here because ranking is the dependency-light module: it needs nothing but
+    ``os``, and engine already imports ranking.
+    """
+    pl = p.replace("\\", "/").lower()
+    base = os.path.basename(pl)
+    return (base.startswith("test_") or base.endswith("_test.py") or base.endswith("_test.go")
+            or ".test." in base or ".spec." in base or base == "conftest.py"
+            or "/__tests__/" in pl or "/tests/" in pl or "/test/" in pl or "/spec/" in pl)
+
+
 def _well_named(name: str) -> bool:
     """Well-formed public symbol (underscore-separated or mixed case = snake/camel/Pascal)."""
     if name.startswith("_"):
@@ -41,12 +55,20 @@ def _well_named(name: str) -> bool:
     return ("_" in name) or (name != name.lower() and name != name.upper())
 
 
-def _symbol_quality_mult(name: str, defines_count: int) -> float:
+def _symbol_quality_mult(name: str, defines_count: int, in_test: bool = False) -> float:
     """Weight public API names above private or widely repeated generic names.
 
     Well-named public symbols (len>=threshold) get ×WELLNAMED; private, underscore-prefixed
     symbols get ×PRIVATE; symbols redefined in >N files (overly generic names like
-    utils/handle/run) get ×COMMON. Environment variables configure each factor.
+    utils/handle/run) get ×COMMON. Definitions inside test files get ×TEST, because a
+    fixture or a helper class in a test module is not what "the most important symbols in
+    this project" means: name-level edges gave test helpers with common method names
+    (``set``, ``project``) more inflow than the production code under test.
+    Environment variables configure each factor.
+
+    The test factor is uniform across every test definition, and PageRank normalizes each
+    source's outgoing weight, so a project that is entirely tests ranks as it did before:
+    the demotion is relative, not absolute.
     """
     mult = 1.0
     if name.startswith("_"):
@@ -55,6 +77,8 @@ def _symbol_quality_mult(name: str, defines_count: int) -> float:
         mult *= _env_float("CODESEXTANT_RANK_WELLNAMED_MULT", 10.0)
     if defines_count > _env_int("CODESEXTANT_RANK_COMMON_THRESHOLD", 5):
         mult *= _env_float("CODESEXTANT_RANK_COMMON_MULT", 0.1)
+    if in_test:
+        mult *= _env_float("CODESEXTANT_RANK_TEST_MULT", 0.1)
     return mult
 
 
@@ -170,6 +194,7 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
     # reference graph is sparse.
     by_pos: dict[tuple, int] = {}
     target_name_of: dict[int, str] = {}
+    target_in_test: dict[int, bool] = {}
     file_rep: dict[str, int] = {}
     file_rep_line: dict[str, int] = {}
     by_body: dict[str, list] = {}
@@ -182,6 +207,7 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
         if (np, line) in target_positions:
             by_pos[(np, line)] = pos
             target_name_of[pos] = s["name"]
+            target_in_test[pos] = is_test_path(p)
         if np in source_paths:
             if np not in file_rep_line or line < file_rep_line[np]:
                 file_rep[np] = pos
@@ -240,7 +266,7 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
     # /get_map exceed the client's 30s timeout because of this).
     out_targets: dict[int, dict[int, float]] = {}
     external_inflow: dict[int, float] = {}
-    quality_cache: dict[tuple[str, int], float] = {}
+    quality_cache: dict[tuple[str, int, bool], float] = {}
 
     for (src_path, src_line, dp, dl, confidence), multiplicity in collapsed_refs.items():
         if dp is None or dl is None:
@@ -252,7 +278,7 @@ def _compute_pagerank_scores(symbols: list[dict], refs: list[dict],
         # Multiply in the referenced symbol's quality factor (well-named public
         # ×10 / private ×0.1 / overly generic ×0.1)
         tname = target_name_of.get(j, "")
-        quality_key = (tname, defines.get(tname, 1))
+        quality_key = (tname, defines.get(tname, 1), target_in_test.get(j, False))
         try:
             quality = quality_cache[quality_key]
         except KeyError:

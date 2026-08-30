@@ -15,6 +15,7 @@ only when requested.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from . import (
     symbols,
     work_coordinator,
 )
+from .ranking import is_test_path as ranking_is_test_path
 from .ranking import rank_symbols
 from .symbols import SUPPORTED_EXTENSIONS
 
@@ -55,6 +57,7 @@ _MAP_CACHE_ENV = (
     "CODESEXTANT_NAMEGRAPH_MAX_UNIQUE_EDGES", "CODESEXTANT_RANK_PRIVATE_MULT",
     "CODESEXTANT_RANK_WELLNAMED_MINLEN", "CODESEXTANT_RANK_WELLNAMED_MULT",
     "CODESEXTANT_RANK_COMMON_THRESHOLD", "CODESEXTANT_RANK_COMMON_MULT",
+    "CODESEXTANT_RANK_TEST_MULT", "CODESEXTANT_NAMEGRAPH_MIN_NAME_LEN",
     "CODESEXTANT_PAGERANK_FOCUS_BOOST",
 )
 
@@ -829,14 +832,9 @@ def call_hierarchy(path: str, symbol: str, *, direction: str = "both",
     return result
 
 
-def _is_test_path(p: str) -> bool:
-    """Path heuristic for identifying test files (used by blast radius to split test from
-    prod; costs nothing)."""
-    pl = p.replace("\\", "/").lower()
-    base = os.path.basename(pl)
-    return (base.startswith("test_") or base.endswith("_test.py") or base.endswith("_test.go")
-            or ".test." in base or ".spec." in base or base == "conftest.py"
-            or "/__tests__/" in pl or "/tests/" in pl or "/test/" in pl or "/spec/" in pl)
+# Blast radius splits test from prod, and ranking demotes test definitions. One
+# heuristic, defined in the dependency-light module, so the two cannot disagree.
+_is_test_path = ranking_is_test_path
 
 
 def _mark_high_importance(path: str, callers: list[dict]) -> list[dict]:
@@ -927,6 +925,61 @@ def impact(path: str, symbol: str, *, max_hops: int | None = None,
     }
 
 
+# Budget accounting measures the JSON the caller actually receives. Four characters
+# per token is the usual approximation for this kind of payload, and erring toward
+# over-estimating is deliberate: the caller pays for what the serializer emits, not
+# for an idealized "kind name @file:line" summary line.
+_CHARS_PER_TOKEN = 4
+# A full float repr costs about 29 bytes per entry and tells the caller nothing it can
+# use, because the symbol list is already ordered by rank.
+_RANK_DIGITS = 6
+
+
+def _json_tokens(value) -> int:
+    """Approximate tokens for a value as the daemon will serialize it."""
+    encoded = json.dumps(value, ensure_ascii=False, default=str)
+    return max(1, -(-len(encoded) // _CHARS_PER_TOKEN))
+
+
+def _fit_symbols_to_budget(result: dict, ranked: list[dict], token_budget: int) -> None:
+    """Fill result["symbols"] with as many ranked entries as token_budget really pays for.
+
+    The envelope (note, edge_sources, project_key) is charged first, because the caller
+    receives it whether it wanted it or not. At least one symbol is always returned, so
+    even a tiny budget still answers "what is the most important symbol here".
+    """
+    # get_map annotates the delivered result with cache provenance after this runs, and
+    # count/approx_tokens grow from their placeholder zeros. Charge the envelope at its
+    # delivered size, or the payload overshoots the budget the caller asked for.
+    result["truncated_by_budget"] = False
+    probe = dict(result)
+    probe["edge_sources"] = dict(result.get("edge_sources") or {})
+    probe["edge_sources"]["map_cache_hit"] = False
+    probe["edge_sources"]["map_cache_source"] = "compute"
+    probe["count"] = len(ranked)
+    probe["approx_tokens"] = token_budget
+    # Count characters and convert once at the end. Rounding every entry to whole tokens
+    # instead drifts by tens of tokens over a hundred entries, in both directions.
+    budget_chars = max(1, token_budget) * _CHARS_PER_TOKEN
+    used_chars = len(json.dumps(probe, ensure_ascii=False, default=str))
+    fitted: list[dict] = []
+    for symbol in ranked:
+        entry = dict(symbol)
+        rank = entry.get("rank")
+        if isinstance(rank, float):
+            entry["rank"] = round(rank, _RANK_DIGITS)
+        # every entry after the first also pays for the ", " the array serializer inserts
+        cost = len(json.dumps(entry, ensure_ascii=False, default=str)) + 2
+        if fitted and used_chars + cost > budget_chars:
+            break
+        fitted.append(entry)
+        used_chars += cost
+    result["symbols"] = fitted
+    result["count"] = len(fitted)
+    result["approx_tokens"] = -(-used_chars // _CHARS_PER_TOKEN)
+    result["truncated_by_budget"] = len(fitted) < len(ranked)
+
+
 def _get_map_uncached(path: str, token_budget: int = 2000, *, damping: float = 0.85,
                       focus_symbols=None, focus_files=None,
                       with_name_edges: bool = True) -> dict:
@@ -962,9 +1015,10 @@ def _get_map_uncached(path: str, token_budget: int = 2000, *, damping: float = 0
             f"get_map: project has not been indexed yet (no {db_file}); call index_project first."
         )
 
-    # Rough conversion: one symbol summary (kind name @file:line) is about 12 tokens.
-    tokens_per_symbol = 12
-    top_n = max(1, token_budget // tokens_per_symbol)
+    # Rank a generous candidate pool, then fit entries to the measured budget. The pool
+    # only has to over-supply: _fit_symbols_to_budget does the real accounting, and
+    # nlargest over the pool is cheap next to building the graph.
+    top_n = max(1, token_budget // 6)
 
     with storage.ProjectStore.open_readonly(abs_path) as store:
         # Keep revision, symbols, references, and indexed-file membership on
@@ -1000,33 +1054,29 @@ def _get_map_uncached(path: str, token_budget: int = 2000, *, damping: float = 0
                               focus_symbols=focus_symbols, focus_files=focus_files)
         # When the scan is truncated, report sampled coverage instead of project-wide coverage.
         truncated = bool((ng_meta or {}).get("truncated"))
-        coverage = (f"stratified sample of {(ng_meta or {}).get('scanned_files')} of "
-                    f"{(ng_meta or {}).get('total_files')} files (truncated, reason="
-                    f"{','.join((ng_meta or {}).get('truncation_reasons') or [])}; adjustable via "
-                    "env CODESEXTANT_NAMEGRAPH_MAX_FILES), so the ordering covers only part of "
-                    "the project and later symbols may be underrated"
-                    if truncated else "covers the whole project")
+        # The note is charged to the caller's token budget on every call, so it states
+        # what changes a decision and leaves the diagnostics to edge_sources.
+        coverage = (f"sampled {(ng_meta or {}).get('scanned_files')}/"
+                    f"{(ng_meta or {}).get('total_files')} files, later symbols underrated"
+                    if truncated else "whole project")
         if not refs:
-            note = ("No reference edges at all (refs=0 and no name-level edges either), so "
-                    "PageRank degrades to a uniform distribution. This usually means the "
-                    "project has no internal cross-references, or namegraph is disabled.")
+            note = ("No reference edges, so PageRank fell back to a uniform distribution and "
+                    "this ordering is not meaningful. Either the project has no internal "
+                    "cross-references, or namegraph is disabled.")
         elif not db_refs:
-            note = (f"PageRank ordered by name-level whole-graph edges ({name_edge_count} "
-                    f"low-confidence references folded into {name_unique_count} unique edges, "
-                    f"{coverage}). The ordering has escaped the uniform distribution and "
-                    "surfaces structurally central symbols. For more precision, run "
-                    "find_references(persist=True) on hot symbols to accumulate "
-                    "high-confidence edges.")
+            note = (f"Ordered by {name_edge_count} name-level low-confidence references "
+                    f"({name_unique_count} unique edges, {coverage}). Run "
+                    "find_references(persist=True) on hot symbols to add resolved edges.")
         else:
-            note = (f"PageRank ordered by a mix of {len(db_refs)} high-confidence edges (real "
-                    f"resolution, dominant) and {name_edge_count} name-level low-confidence "
-                    f"references (folded into {name_unique_count} unique edges, {coverage}).")
+            note = (f"Ordered by {len(db_refs)} high-confidence and {name_edge_count} "
+                    f"name-level low-confidence references ({name_unique_count} unique edges, "
+                    f"{coverage}).")
         result = {
             "project_key": store.project_key,
             "token_budget": token_budget,
-            "approx_tokens": len(ranked) * tokens_per_symbol,
-            "count": len(ranked),
-            "symbols": ranked,
+            "approx_tokens": 0,
+            "count": 0,
+            "symbols": [],
             "edge_sources": {
                 "db_high_edges": len(db_refs),
                 "name_low_edges": name_edge_count,
@@ -1036,6 +1086,7 @@ def _get_map_uncached(path: str, token_budget: int = 2000, *, damping: float = 0
             },
             "note": note,
         }
+        _fit_symbols_to_budget(result, ranked, token_budget)
         if not symbol_snapshot_hit:
             _schedule_symbol_snapshot(store.db_file, symbol_revision, symbols)
         return result
@@ -1046,10 +1097,16 @@ def _map_cache_key(path: str, token_budget: int, damping: float,
     db_file = storage.db_path_for(path)
     stat = db_file.stat()
     env_signature = tuple((name, os.environ.get(name)) for name in _MAP_CACHE_ENV)
+    # The package version is part of the key because a map snapshot outlives the code
+    # that produced it. Without it, upgrading CodeSextant kept serving maps built by the
+    # previous ranking from the on-disk snapshot: every ranking fix would reach a new
+    # project and never an existing one.
+    from . import __version__ as engine_version
     return (
         os.path.normcase(os.path.abspath(path)), stat.st_mtime_ns, stat.st_size,
         int(token_budget), float(damping), tuple(focus_symbols or ()),
         tuple(focus_files or ()), bool(with_name_edges), env_signature,
+        engine_version,
     )
 
 

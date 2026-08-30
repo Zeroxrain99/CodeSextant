@@ -213,8 +213,9 @@ def test_namegraph_unique_edge_budget_stops_growth(project, monkeypatch):
     """Pathological generated code must not let one map request grow its edge
     dict without bound and eat all available memory."""
     monkeypatch.setenv("CODESEXTANT_NAMEGRAPH_MAX_UNIQUE_EDGES", "2")
-    _write(project, "core.py", "def a():\n    return 1\ndef b():\n    return 2\ndef c():\n    return 3\n")
-    _write(project, "use.py", "def caller():\n    a()\n    b()\n    c()\n")
+    _write(project, "core.py",
+           "def alpha():\n    return 1\ndef beta():\n    return 2\ndef gamma():\n    return 3\n")
+    _write(project, "use.py", "def caller():\n    alpha()\n    beta()\n    gamma()\n")
     engine.index_project(project, force=True)
     with storage.ProjectStore.open(project) as st:
         syms = st.get_symbols()
@@ -530,3 +531,175 @@ def test_find_unwired_fastapi_decorator_exempt(project):
     r = engine.find_unwired(project)
     names = {c["name"] for c in r["candidates"]}
     assert "get_x" not in names and "ws_handler" not in names and "on_start" not in names
+
+
+# The token budget is a promise, not an estimate.
+
+def test_get_map_payload_stays_within_the_requested_budget(project):
+    """approx_tokens used to report the budget while the JSON was about four times it."""
+    for i in range(40):
+        _write(project, f"mod{i}.py",
+               f"def handler_number_{i}():\n    return {i}\n\n"
+               f"class ServiceNumber{i}:\n    def run_service(self):\n        return handler_number_{i}()\n")
+    engine.index_project(project, force=True)
+
+    for budget in (400, 900, 2500):
+        m = engine.get_map(project, token_budget=budget)
+        served = len(json.dumps(m, ensure_ascii=False, default=str)) // 4
+        assert served <= budget, (
+            f"budget={budget} but the caller received about {served} tokens")
+        # the reported figure has to describe the same payload, within rounding
+        assert abs(m["approx_tokens"] - served) <= 2
+        assert m["count"] == len(m["symbols"])
+
+
+def test_get_map_reports_when_the_budget_truncated_the_list(project):
+    for i in range(30):
+        _write(project, f"m{i}.py", f"def named_function_{i}():\n    return {i}\n")
+    engine.index_project(project, force=True)
+    small = engine.get_map(project, token_budget=300)
+    large = engine.get_map(project, token_budget=20000)
+    assert small["truncated_by_budget"] is True
+    assert small["count"] < large["count"]
+    assert large["truncated_by_budget"] is False
+
+
+def test_get_map_returns_a_symbol_even_when_the_envelope_exceeds_the_budget(project):
+    _write(project, "only.py", "def the_only_function():\n    return 1\n")
+    engine.index_project(project, force=True)
+    m = engine.get_map(project, token_budget=1)
+    assert m["count"] == 1, "a tiny budget still has to answer what matters most"
+
+
+# Which definitions may be name-match targets.
+
+def test_short_names_are_not_name_match_targets(project):
+    _write(project, "core.py", "def ab():\n    return 1\n\ndef abc():\n    return 2\n")
+    _write(project, "use.py", "def caller():\n    return ab() + abc()\n")
+    engine.index_project(project, force=True)
+    with storage.ProjectStore.open(project) as st:
+        edges, _meta = namegraph.build_name_edges(
+            st.get_symbols(), indexed_files=st.all_indexed_files())
+    named = {e["symbol_name"] for e in edges}
+    assert "ab" not in named, "a two-character name carries no reference signal"
+    assert "abc" in named
+
+
+def test_function_local_definitions_are_not_name_match_targets(project):
+    """A helper nested in a function cannot be referenced by name from anywhere else."""
+    _write(project, "helpers.py", """
+        def build_tracker():
+            class TrackingEvent:
+                def notify(self):
+                    return 1
+            return TrackingEvent()
+        """)
+    _write(project, "caller.py", """
+        def use_it(event):
+            return event.notify()
+        """)
+    engine.index_project(project, force=True)
+    with storage.ProjectStore.open(project) as st:
+        edges, meta = namegraph.build_name_edges(
+            st.get_symbols(), indexed_files=st.all_indexed_files())
+    assert "notify" not in {e["symbol_name"] for e in edges}
+    assert meta["skipped_target_defs"] >= 1
+
+
+def test_plain_variables_are_not_targets_but_constants_are(project):
+    _write(project, "conf.py", "SHARED_LIMIT = 5\nscratchvalue = 7\n")
+    _write(project, "use.py", """
+        from conf import SHARED_LIMIT, scratchvalue
+
+        def consume():
+            return SHARED_LIMIT + scratchvalue
+        """)
+    engine.index_project(project, force=True)
+    with storage.ProjectStore.open(project) as st:
+        edges, _meta = namegraph.build_name_edges(
+            st.get_symbols(), indexed_files=st.all_indexed_files())
+    named = {e["symbol_name"] for e in edges}
+    assert "SHARED_LIMIT" in named, "a screaming-snake constant is meant to be referenced"
+    assert "scratchvalue" not in named
+
+
+def test_unwired_detection_keeps_the_definitions_ranking_drops(project):
+    """The ranking filter must not narrow what find_unwired analyses."""
+    _write(project, "conf.py", "scratchvalue = 1\n")
+    engine.index_project(project, force=True)
+    with storage.ProjectStore.open(project) as st:
+        symbols = st.get_symbols()
+        edges, _meta = namegraph.build_name_edges(
+            symbols, indexed_files=st.all_indexed_files())
+        usage, _over, _usage_meta = namegraph.compute_external_usage(symbols)
+    assert "scratchvalue" not in {e["symbol_name"] for e in edges}, "ranking drops it"
+    assert any(name == "scratchvalue" for (_dp, _dl, name) in usage), (
+        "but unwired detection still has to analyse it")
+
+
+# Test files are not the project's API surface.
+
+def test_test_definitions_do_not_outrank_the_code_under_test(project):
+    _write(project, "service.py", """
+        def compute_total(rows):
+            return sum(rows)
+        """)
+    _write(project, "runner.py", """
+        from service import compute_total
+
+        def report(rows):
+            return compute_total(rows)
+        """)
+    _write(project, "tests/test_service.py", """
+        from service import compute_total
+
+        def compute_total_fixture():
+            return [1, 2, 3]
+
+        def test_one():
+            return compute_total(compute_total_fixture())
+
+        def test_two():
+            return compute_total(compute_total_fixture())
+
+        def test_three():
+            return compute_total(compute_total_fixture())
+        """)
+    engine.index_project(project, force=True)
+    m = engine.get_map(project, token_budget=20000)
+    ranks = {}
+    for s in m["symbols"]:
+        ranks.setdefault(s["name"], s["rank"])
+    assert ranks["compute_total"] > ranks["compute_total_fixture"], (
+        "a test fixture must not outrank the production symbol it exercises")
+
+
+def test_a_test_only_project_is_not_uniformly_demoted(project):
+    """The test factor is relative: with nothing but tests, ordering is unchanged."""
+    _write(project, "tests/test_a.py", """
+        def shared_helper():
+            return 1
+
+        def test_alpha():
+            return shared_helper()
+
+        def test_beta():
+            return shared_helper()
+        """)
+    engine.index_project(project, force=True)
+    m = engine.get_map(project, token_budget=20000)
+    ranks = {s["name"]: s["rank"] for s in m["symbols"]}
+    assert ranks["shared_helper"] > ranks["test_alpha"]
+
+
+# A cached map must not outlive the code that produced it.
+
+def test_map_cache_key_changes_with_the_engine_version(project, monkeypatch):
+    _write(project, "core.py", "def hub_function():\n    return 1\n")
+    engine.index_project(project, force=True)
+    first = engine._map_cache_key(project, 2000, 0.85, None, None, True)
+    monkeypatch.setattr(engine.storage, "db_path_for", engine.storage.db_path_for)
+    import codesextant
+    monkeypatch.setattr(codesextant, "__version__", "999.0.0")
+    second = engine._map_cache_key(project, 2000, 0.85, None, None, True)
+    assert first != second, "an upgrade must not serve a map built by the old ranking"

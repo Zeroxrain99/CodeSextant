@@ -96,6 +96,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def min_target_name_len() -> int:
+    """Shortest identifier still usable as a name-match target.
+
+    A bare textual occurrence of ``a`` or ``c`` says nothing about which definition it
+    means, so one-and-two character names are collision noise rather than references:
+    every ``a`` anywhere in the repository used to fan an edge into a local ``a`` in
+    some test file, which is how single-letter test locals came to outrank the code
+    they were testing. Longer names carry enough signal to be worth an edge.
+    """
+    return _env_int("CODESEXTANT_NAMEGRAPH_MIN_NAME_LEN", 3)
+
+
 def namegraph_enabled() -> bool:
     """Whether name-level edges are enabled (on by default; CODESEXTANT_NAMEGRAPH_DISABLED turns them off)."""
     return not _env_on("CODESEXTANT_NAMEGRAPH_DISABLED")
@@ -141,6 +153,41 @@ def _normp(path: str) -> str:
     real dead code went unreported. The whole module now uses normcase.
     """
     return os.path.normcase(os.path.abspath(path))
+
+
+# Kinds that introduce a local scope: anything defined inside one of these is
+# unreachable by name from another file.
+_FUNCTION_KINDS = frozenset({"function", "method", "constructor"})
+
+
+def _rank_target_filter(name: str, kind: str, function_local: bool) -> bool:
+    """Whether a definition is worth an edge in the ranking name graph.
+
+    Name-level matching has no resolver: it links every textual occurrence of an
+    identifier to every definition of that name. A definition is only a sensible target
+    when a bare occurrence elsewhere plausibly refers to it.
+
+    * Names shorter than the minimum are collision noise, not references. Every ``a`` in
+      the repository used to fan an edge into a local ``a`` in some test file.
+    * ``variable`` definitions are overwhelmingly locals and module scratch (``out``,
+      ``total``, ``project``, ``tsconfig``) that nothing outside can reach by name, and
+      they crowded out the functions and classes a code map exists to surface. Constants
+      in screaming snake case are the exception: that convention exists precisely to mark
+      a value meant to be referenced from other modules, so they stay eligible.
+    * A definition nested inside a function is unreachable by name from anywhere else, so
+      every name-level edge into it is wrong by construction. A helper class declared
+      inside one test function, with a method named ``set``, was collecting an edge from
+      every ``.set()`` call in the repository and ranking first in the project map.
+
+    Otherwise functions, classes, methods, interfaces and types are eligible.
+    """
+    if len(name) < min_target_name_len():
+        return False
+    if function_local:
+        return False
+    if kind == "variable":
+        return name.upper() == name and any(ch.isalpha() for ch in name)
+    return True
 
 
 def _defs_by_name(symbols: list[dict]) -> dict[str, list[tuple[str, int, int]]]:
@@ -201,7 +248,7 @@ def _select_indexed_files(indexed_files, max_files, preferred_files=None):
 
 
 def _scan_cross_refs(symbols, indexed_files, read_text, max_fanout, max_files,
-                     preferred_files=None):
+                     preferred_files=None, target_filter=None):
     """The body-aware whole-repo scan (shared by build_name_edges and
     compute_external_usage, so the logic lives in one place).
 
@@ -215,6 +262,11 @@ def _scan_cross_refs(symbols, indexed_files, read_text, max_fanout, max_files,
       defs = the result of _defs_by_name. over_fanout = names whose same-name definition
              count exceeds the cap. meta = scan statistics.
 
+    ``target_filter(name, kind) -> bool`` optionally rejects definitions that make poor
+    name-match targets. Map ranking supplies one; unwired detection does not, because
+    dropping a name there would silently remove it from the usage analysis rather than
+    just from an ordering.
+
     Body-aware: a token falling inside a definition's own [line, end_line] is not
     counted as a reference to it (this excludes self-tokens on the definition line and
     recursion); occurrences inside other symbols in the same file and in other files all
@@ -222,11 +274,44 @@ def _scan_cross_refs(symbols, indexed_files, read_text, max_fanout, max_files,
     entirely. ``max_files`` bounds work on very large repositories.
     """
     defs = _defs_by_name(symbols)
+    kind_at: dict[tuple[str, int], tuple[str, bool]] = {}
+    if target_filter is not None:
+        # A definition is function-local when any component of its scope chain names a
+        # function defined in the same file. Class scopes do not hide their members, so
+        # a method on a module-level class stays reachable.
+        funcs_per_file: dict[str, set[str]] = defaultdict(set)
+        for s in symbols:
+            if s.get("path") is not None and (s.get("kind") or "") in _FUNCTION_KINDS:
+                funcs_per_file[_normp(s["path"])].add(s["name"])
+        for s in symbols:
+            if s.get("path") is None:
+                continue
+            np = _normp(s["path"])
+            enclosing = funcs_per_file.get(np, ())
+            function_local = any(
+                part in enclosing for part in (s.get("scope") or "").split(".") if part)
+            kind_at[(np, s["line"])] = (s.get("kind") or "", function_local)
     over_fanout = {n for n, lst in defs.items() if len(lst) > max_fanout}
     target_names = set(defs) - over_fanout
+    # Eligibility is a property of one definition, not of a name: ``project`` is a test
+    # fixture function in one file and a local const in another, and only the first is
+    # something an occurrence elsewhere could mean. ``defs`` stays complete so body-aware
+    # self-token exclusion still sees every definition; only edge creation is filtered.
+    eligible: set[tuple[str, str, int]] | None = None
+    skipped_defs = 0
+    if target_filter is not None:
+        eligible = set()
+        for name in target_names:
+            for (dp, dl, _el) in defs[name]:
+                if target_filter(name, *kind_at.get((dp, dl), ("", False))):
+                    eligible.add((name, dp, dl))
+                else:
+                    skipped_defs += 1
+        target_names = {name for (name, _dp, _dl) in eligible}
     meta = {"defined_names": len(defs), "scanned_files": 0, "total_files": 0,
             "truncated": False, "over_fanout_names": len(over_fanout),
             "skipped_fanout_names": len(over_fanout), "sampling": "all",
+            "skipped_target_defs": skipped_defs,
             "truncation_reasons": []}
     if not target_names:
         return {}, defs, over_fanout, meta
@@ -259,6 +344,8 @@ def _scan_cross_refs(symbols, indexed_files, read_text, max_fanout, max_files,
                 for (dp, dl, el) in defs[name]:
                     if fp == dp and dl <= occ_line <= el:
                         continue  # inside its own body → a self-token, not a reference
+                    if eligible is not None and (name, dp, dl) not in eligible:
+                        continue  # a definition nothing outside could mean by name
                     key = (fp, occ_line, name, dp, dl)
                     if key not in refs and len(refs) >= max_unique_edges:
                         edge_budget_hit = True
@@ -306,7 +393,8 @@ def build_name_edges(symbols: list[dict], *, indexed_files: list[str] | None = N
     if max_files is None:
         max_files = _env_int("CODESEXTANT_NAMEGRAPH_MAX_FILES", 5000)
     refs, _defs, _over, meta = _scan_cross_refs(
-        symbols, indexed_files, read_text, max_fanout, max_files, preferred_files)
+        symbols, indexed_files, read_text, max_fanout, max_files, preferred_files,
+        target_filter=_rank_target_filter)
     edges = [{
         "src_path": sp, "src_line": sl, "symbol_name": name,
         "def_path": dp, "def_line": dl, "confidence": "low",

@@ -288,7 +288,7 @@ async function onAction(act, key, btn) {
   } else if (act === "map") {
     showDetail(key, `<span class="muted">Loading map <span class="spin"></span></span>`);
     try {
-      const r = await api(`/get_map?project=${encodeURIComponent(p.repo_path)}&budget=1500`);
+      const r = await api(`/get_map?project=${encodeURIComponent(p.repo_path)}&budget=8000`);
       const note = r.note ? `<div class="hint">${esc(r.note)}</div>` : "";
       const rows = (r.symbols||[]).map(s =>
         `<div class="row"><span class="rk">${esc(s.kind)} ${esc(s.name)}</span><span class="muted">${esc(shortPath(s.path, p.repo_path))}:${s.line}</span></div>`).join("");
