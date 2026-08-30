@@ -1473,3 +1473,40 @@ def test_supervisor_tolerates_health_payload_without_heavy_telemetry(monkeypatch
         lambda **_kwargs: pytest.fail("bad telemetry must not trigger recycling"))
 
     assert supervisor.supervise_once(port=18814)["action"] == "healthy"
+
+
+def test_lock_seeding_that_loses_a_race_waits_instead_of_failing(tmp_path, monkeypatch):
+    """Two processes calling ensure() at once must queue, not crash one of them.
+
+    Windows locks a byte range, so the lock file needs a byte to lock, and creating it
+    is a write to the very byte a rival may already hold. Windows answers that write
+    with PermissionError. Raising it told the caller the daemon could not start, when
+    the truth was that someone else was starting it -- the state the caller wanted.
+    """
+    lock_path = tmp_path / "seeded.lock"
+    attempts = []
+    real_flush = daemon._InterprocessFileLock._seed_lock_byte
+
+    def flaky_seed(self):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise PermissionError(13, "Permission denied")
+        return real_flush(self)
+
+    monkeypatch.setattr(daemon._InterprocessFileLock, "_seed_lock_byte", flaky_seed)
+
+    with daemon._InterprocessFileLock(lock_path, timeout=5.0, poll_sec=0.01) as lock:
+        assert lock._acquired is True
+    assert len(attempts) >= 3, "the losing writer has to retry rather than give up"
+
+
+def test_lock_seeding_that_never_succeeds_still_times_out(tmp_path, monkeypatch):
+    """Retrying is not the same as hanging: a real permission problem must surface."""
+    def always_denied(self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(daemon._InterprocessFileLock, "_seed_lock_byte", always_denied)
+
+    with pytest.raises(TimeoutError, match="lock busy"):
+        daemon._InterprocessFileLock(
+            tmp_path / "denied.lock", timeout=0.1, poll_sec=0.01).acquire()

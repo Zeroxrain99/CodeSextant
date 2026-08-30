@@ -260,14 +260,11 @@ class _InterprocessFileLock:
         # immediately, and multiple daemons could then race to grab the same port.
         # The linter's SIM115 warning is a false positive in this situation.
         self._fh = open(self.path, "a+b")  # noqa: SIM115
-        self._fh.seek(0, os.SEEK_END)
-        if self._fh.tell() == 0:
-            self._fh.write(b"\0")
-            self._fh.flush()
 
         deadline = time.monotonic() + self.timeout
         while True:
             try:
+                self._seed_lock_byte()
                 self._fh.seek(0)
                 if os.name == "nt":
                     import msvcrt
@@ -286,6 +283,22 @@ class _InterprocessFileLock:
                     # only "lock busy" would throw away that diagnostic clue.
                     raise TimeoutError(f"lock busy: {self.path}") from exc
                 time.sleep(self.poll_sec)
+
+    def _seed_lock_byte(self) -> None:
+        """Ensure byte 0 exists to lock, treating a rival's hold as contention.
+
+        Windows locks a byte range, so the file needs a byte to lock. Creating it is a
+        write to the exact byte another process may already hold, and Windows answers
+        that with PermissionError. That is not a failure to report: it means someone
+        else won the race and already seeded the byte, which is precisely the state the
+        caller was trying to reach. Running inside the retry loop turns it into one more
+        wait, so two agents calling ensure() at the same moment queue instead of one of
+        them crashing.
+        """
+        self._fh.seek(0, os.SEEK_END)
+        if self._fh.tell() == 0:
+            self._fh.write(b"\0")
+            self._fh.flush()
 
     def release(self):
         if self._fh is None:
