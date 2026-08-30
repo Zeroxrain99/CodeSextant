@@ -9,7 +9,6 @@ import pickle
 import struct
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -162,30 +161,41 @@ def test_deadline_terminates_and_reaps_worker() -> None:
 
 
 def test_dynamic_shared_deadline_keeps_worker_for_longer_lived_follower() -> None:
+    """A follower with a longer deadline keeps a worker its own owner would have killed.
+
+    The claim is that run_route re-reads the deadline through deadline_provider instead
+    of fixing it once, so the extension is applied through the provider itself, on the
+    consultation that happens after the worker has started. Extending from a thread that
+    sleeps first cannot work: the sleeper needs the GIL to do it, and the main thread is
+    inside process.start(), which on a loaded runner holds the GIL well past the 0.15s
+    the original deadline allowed.
+    """
     from codesextant import worker_process
 
-    shared_deadline = [time.monotonic() + 0.15]
+    original_deadline = time.monotonic() + 0.15
+    shared_deadline = [original_deadline]
+    consulted: list[float] = []
 
-    def extend_deadline() -> None:
-        time.sleep(0.05)
-        shared_deadline[0] = time.monotonic() + 10.0
+    def provider() -> float:
+        consulted.append(time.monotonic())
+        if len(consulted) == 2:  # the first consultation after the worker started
+            shared_deadline[0] = time.monotonic() + 10.0
+        return shared_deadline[0]
 
-    extender = threading.Thread(target=extend_deadline)
-    extender.start()
-    try:
-        result = worker_process.run_route(
-            "GET",
-            "/get_map",
-            None,
-            deadline=shared_deadline[0],
-            deadline_provider=lambda: shared_deadline[0],
-            child_deadline=time.monotonic() + 12.0,
-            child_target=_return_after_delay,
-        )
-    finally:
-        extender.join(timeout=1)
+    result = worker_process.run_route(
+        "GET",
+        "/get_map",
+        None,
+        deadline=original_deadline,
+        deadline_provider=provider,
+        child_deadline=time.monotonic() + 12.0,
+        child_target=_return_after_delay,
+    )
 
     assert result == (200, {"ok": True})
+    assert len(consulted) > 2, (
+        "the deadline has to be consulted repeatedly, or extending it could not help")
+    assert shared_deadline[0] > original_deadline
 
 
 def test_worker_rejects_oversized_result_without_blocking(monkeypatch) -> None:
