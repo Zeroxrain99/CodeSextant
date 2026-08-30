@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -788,16 +789,36 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
                 "confidence": "high",
             })
         if edges_by_src:
-            with storage.ProjectStore.open(abs_path) as store:
-                for sp, edges in edges_by_src.items():
-                    if not store.replace_refs_for_symbol(
-                            sp,
-                            symbol,
-                            edges,
-                            expected_generation=reference_generation):
-                        break
+            result["references_persisted"] = _persist_reference_edges(
+                abs_path, symbol, edges_by_src, reference_generation)
 
     return result
+
+
+def _persist_reference_edges(abs_path: str, symbol: str, edges_by_src: dict,
+                             expected_generation: int | None) -> bool:
+    """Store resolved edges, best effort. False when they were not stored.
+
+    Persistence is a cache for PageRank and later queries; it is never part of the
+    answer, because the references have already been resolved by the time this runs.
+    The generation fence already skips the write when a reindex moved the index
+    underneath, and a concurrent reindex simply holding the write lock is the same
+    routine condition on a shared daemon. Letting that turn a computed result into a
+    500 charged the caller their whole query to save a lookup it can redo.
+    """
+    try:
+        with storage.ProjectStore.open(abs_path) as store:
+            for src_path, edges in edges_by_src.items():
+                if not store.replace_refs_for_symbol(
+                        src_path, symbol, edges,
+                        expected_generation=expected_generation):
+                    return False
+        return True
+    except sqlite3.OperationalError as exc:
+        # "database is locked" and friends: the index is busy, not broken.
+        print(f"  Warning: reference edges for {symbol!r} were not persisted "
+              f"({type(exc).__name__}: {exc})", file=sys.stderr)
+        return False
 
 
 def call_hierarchy(path: str, symbol: str, *, direction: str = "both",

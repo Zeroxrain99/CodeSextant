@@ -157,3 +157,58 @@ def test_failed_index_transaction_does_not_advance_generation(
     with storage.ProjectStore.open_readonly(str(repo)) as store:
         assert store.index_generation() == generation + 1
         assert [row["name"] for row in store.get_symbols(source)] == ["replacement"]
+
+
+def test_a_locked_index_does_not_discard_a_resolved_answer(tmp_path, monkeypatch):
+    """A busy index costs the caller its cached edges, never its result.
+
+    A concurrent reindex holding the write lock is routine on a shared daemon. The
+    references are fully resolved before persistence is attempted, so failing the whole
+    query -- as a 500, over an optimization -- charged the caller everything to save a
+    lookup they can simply redo.
+    """
+    import sqlite3
+
+    from codesextant import engine, storage
+
+    monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "state"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    definition = _write(repo / "alpha.py", "def alpha():\n    return 1\n")
+    caller = _write(repo / "caller.py", "from alpha import alpha\nalpha()\n")
+    engine.index_project(str(repo))
+
+    monkeypatch.setattr(
+        engine.references, "find_references",
+        lambda _root, symbol, def_path=None, **_kw: _resolved(
+            symbol, str(def_path), caller))
+
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(storage.ProjectStore, "replace_refs_for_symbol", locked)
+
+    result = engine.find_references(str(repo), "alpha", def_path=definition)
+
+    assert result["high_confidence"], "the resolved references must survive"
+    assert result["references_persisted"] is False, "and say they were not cached"
+
+
+def test_successful_persistence_is_reported(tmp_path, monkeypatch):
+    from codesextant import engine
+
+    monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "state"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    definition = _write(repo / "alpha.py", "def alpha():\n    return 1\n")
+    caller = _write(repo / "caller.py", "from alpha import alpha\nalpha()\n")
+    engine.index_project(str(repo))
+
+    monkeypatch.setattr(
+        engine.references, "find_references",
+        lambda _root, symbol, def_path=None, **_kw: _resolved(
+            symbol, str(def_path), caller))
+
+    result = engine.find_references(str(repo), "alpha", def_path=definition)
+
+    assert result["references_persisted"] is True
