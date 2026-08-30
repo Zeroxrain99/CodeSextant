@@ -74,6 +74,32 @@ The overview groups symbols by their reference edges. Tightly connected code for
 
 The prototype supports source inspection, rotation, semantic zoom, and navigation from the repository overview to an individual symbol. It does not yet normalize layouts across machines or aggregate modules for very large repositories.
 
+## Before you change a file
+
+Three mistakes repeat no matter how careful the author is, because all three turn on knowing something that is not in the file being edited: writing a second copy of something that already exists, missing a companion change nothing in the source mentions, and changing something whose callers live elsewhere.
+
+`preflight` answers all three in one call, in a few milliseconds:
+
+```bash
+python -m codesextant preflight . codesextant/storage.py --symbol project_key
+```
+
+```
+  ALREADY EXISTS   4 similar definition(s)
+    1.00  [function] project_key                  codesextant/storage.py:31  (this file)
+    1.00  [function] projectKey                   ts/src/storage.ts:171
+    1.00  [function] _project_key                 codesextant/cache_lease.py:91
+
+  CO-CHANGE        2 file(s) usually change with this one
+     80%  (4/5 commits)  codesextant/engine.py
+     60%  (3/5 commits)  codesextant/daemon.py
+
+  BLAST RADIUS     10 file(s) with resolved references
+    ...
+```
+
+The middle section is mined from version-control history rather than written by hand. Some obligations are not in the code at all: bumping a version constant means editing the packaging file, adding a route means adding it to the allowlist and to the routing test. Files that keep appearing in the same commit are coupled whether or not anything imports anything, so the rule can be recovered instead of remembered. Sweeping commits are excluded, a pair needs several shared commits before it counts, and every rule shows the commit counts behind it, because history records what people did rather than what they should have done.
+
 ## Why use an index
 
 Name matching cannot distinguish same-named symbols in different scopes. In collision-heavy repositories, searches for names such as `handle`, `run`, and `Config` can return many false positives. For Python and TypeScript/JavaScript, CodeSextant resolves imports and stores the graph in a shared local service.
@@ -133,6 +159,7 @@ you need ts-morph resolution.
 python -m codesextant index      <repo>                     # build or incrementally update the index
 python -m codesextant gui        <repo>                     # index, start the daemon, and open the GUI
 python -m codesextant map        <repo> [--budget N]        # most important symbols, within a token budget
+python -m codesextant preflight  <repo> <file> [--symbol S]  # before editing: reuse, co-change, blast radius
 python -m codesextant references <repo> <symbol> [--src-root R] [--def-path D]
 python -m codesextant symbols    <repo> [--file F]
 python -m codesextant status     <repo>
@@ -196,6 +223,12 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 | `CODESEXTANT_MAP_TIMEOUT_SEC` | unset | optional client deadline override for cold `map` queries |
 | `CODESEXTANT_MAP_CACHE_SIZE` | `4` | trimmed map results retained by direct in-process callers |
 | `CODESEXTANT_NAMEGRAPH_MAX_FILES` | adaptive | override the file-scan cap; adapts 12 to 5000 by symbol count when unset |
+| `CODESEXTANT_COCHANGE_DISABLED` | unset | turn off co-change mining; `preflight` then reports two sections |
+| `CODESEXTANT_COCHANGE_MAX_COMMIT_FILES` | `25` | largest commit still counted; above this a sweeping change would couple every file it touched |
+| `CODESEXTANT_COCHANGE_MAX_COMMITS` | `2000` | how far back history is read |
+| `CODESEXTANT_COCHANGE_MIN_SUPPORT` | `3` | commits a pair must share before it is reported as a rule |
+| `CODESEXTANT_COCHANGE_MIN_CONFIDENCE` | `0.5` | how often the companion must follow before the rule is worth showing |
+| `CODESEXTANT_PREFLIGHT_NAME_SIMILARITY` | `0.5` | word overlap at which an existing definition counts as a reuse candidate |
 | `CODESEXTANT_NAMEGRAPH_MAX_UNIQUE_EDGES` | `250000` | hard cap so generated code cannot exhaust memory |
 | `CODESEXTANT_WATCH_ENABLED` | on | filesystem watcher for proactive incremental indexing |
 | `CODESEXTANT_WATCH_IDLE_TTL_SEC` | `10800` | idle seconds before a quiescent project watcher is detached |

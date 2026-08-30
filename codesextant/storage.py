@@ -21,8 +21,9 @@ from . import cache_lease
 # ``open()`` creates missing tables and ``_ensure_columns()`` adds missing columns.
 # The reported schema version does not gate migrations. Type changes and removals
 # still require a dedicated migration.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _INDEX_GENERATION_KEY = "index_generation"
+_COCHANGE_HEAD_KEY = "cochange_head"
 _SYMBOL_SNAPSHOT_FORMAT = 1
 _MAP_SNAPSHOT_FORMAT = 2
 
@@ -340,6 +341,21 @@ CREATE TABLE IF NOT EXISTS comments (
     text       TEXT NOT NULL,
     FOREIGN KEY(path) REFERENCES files(path)
 );
+-- Co-change rules mined from version-control history: "commits that changed path
+-- also changed companion, this often". Paths are repository-relative, as Git reports
+-- them, because these rules describe the repository rather than one machine's checkout.
+-- Mined on demand and rebuilt when HEAD moves; _COCHANGE_HEAD_KEY records which commit
+-- the current rows describe.
+CREATE TABLE IF NOT EXISTS cochange (
+    path       TEXT NOT NULL,
+    companion  TEXT NOT NULL,
+    support    INTEGER NOT NULL,   -- commits that changed both
+    changes    INTEGER NOT NULL,   -- commits that changed path at all
+    confidence REAL NOT NULL,      -- support / changes
+    PRIMARY KEY (path, companion)
+);
+CREATE INDEX IF NOT EXISTS idx_cochange_path ON cochange(path);
+
 -- Which optional analyses have been computed for a file, and for what content.
 -- Clone fingerprints and comment extraction are not needed to navigate code, so they
 -- are materialized when something asks for them rather than for every file at index
@@ -664,6 +680,43 @@ class ProjectStore:
         if content_hash is not None:
             self._mark_derived(path, "comments", content_hash)
         cur.commit()
+
+    def cochange_head(self) -> str | None:
+        """The commit the stored co-change rules describe, or None if never mined."""
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key=?", (_COCHANGE_HEAD_KEY,)).fetchone()
+        return row["value"] if row else None
+
+    def store_cochange_rules(self, rules: list[dict], head_sha: str | None) -> None:
+        """Replace the co-change rules wholesale and record the commit they describe.
+
+        Whole-table replacement rather than a merge: the rules are a function of the
+        history up to one commit, and a half-updated mixture would describe no commit at
+        all. An empty result is still stored, so a repository with too little history is
+        recorded as mined rather than re-mined on every query.
+        """
+        with self.conn:
+            self.conn.execute("DELETE FROM cochange")
+            self.conn.executemany(
+                "INSERT INTO cochange(path,companion,support,changes,confidence) "
+                "VALUES(?,?,?,?,?)",
+                [(r["path"], r["companion"], int(r["support"]), int(r["changes"]),
+                  float(r["confidence"])) for r in rules],
+            )
+            self.conn.execute(
+                "INSERT INTO meta(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (_COCHANGE_HEAD_KEY, head_sha or ""),
+            )
+
+    def cochange_for(self, path: str, *, limit: int = 20) -> list[dict]:
+        """Companions of one repository-relative path, most reliable first."""
+        rows = self.conn.execute(
+            "SELECT companion,support,changes,confidence FROM cochange WHERE path=? "
+            "ORDER BY confidence DESC, support DESC, companion LIMIT ?",
+            (path, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def _mark_derived(self, path: str, kind: str, content_hash: str) -> None:
         """Record that ``kind`` is materialized for this file at this content hash."""

@@ -1005,6 +1005,7 @@ def _ep_health(parsed, body):
             "GET /comment_tags?project=&tags=&file=",
             "GET /get_comments?project=&file=&scope=&doc_only=&tag=",
             "GET /find_duplicates?project=&file=&near_global=&min_similarity=&calls=",
+            "GET /preflight?project=&file=&symbol=&budget=",
             "POST /call_hierarchy {project,symbol,direction?,max_hops?}",
             "POST /impact {project,symbol,max_hops?}",
         ],
@@ -1217,6 +1218,21 @@ def _ep_get_health(parsed, body):
     return 200, engine.get_health(project)
 
 
+def _ep_preflight(parsed, body):
+    # What to know before editing a file: reuse, co-change obligations, blast radius.
+    project = _require_project(_q(parsed, "project"))
+    target = _q(parsed, "file")
+    if not target:
+        raise _HttpError(400, "preflight requires file=<the file you are about to change>")
+    raw_budget = _q(parsed, "budget")
+    try:
+        budget = int(raw_budget) if raw_budget else 1200
+    except (TypeError, ValueError):
+        raise _HttpError(400, f"budget must be an integer, got '{raw_budget}'") from None
+    return 200, engine.preflight(project, target, symbol=_q(parsed, "symbol"),
+                                 token_budget=budget)
+
+
 def _ep_comment_overview(parsed, body):
     # Summarize docstring coverage, tags, and comment density.
     project = _require_project(_q(parsed, "project"))
@@ -1360,6 +1376,7 @@ _ROUTES_GET = {
     "/comment_tags": _ep_comment_tags,
     "/get_comments": _ep_get_comments,
     "/find_duplicates": _ep_find_duplicates,
+    "/preflight": _ep_preflight,
     "/graph_data": _ep_graph_data,
     "/links": _ep_links,
 }
@@ -1373,6 +1390,7 @@ _ROUTES_POST = {
 
 
 _HEAVY_PATHS = frozenset({
+    "/preflight",
     "/get_symbols",
     "/get_map",
     "/deadcode",
@@ -1392,6 +1410,7 @@ _HEAVY_PATHS = frozenset({
 })
 
 _INTERACTIVE_HEAVY_PATHS = frozenset({
+    "/preflight",
     "/get_symbols",
     "/get_map",
     "/find_references",

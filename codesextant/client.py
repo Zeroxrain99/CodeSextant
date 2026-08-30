@@ -255,6 +255,14 @@ class CodesextantClient:
             "focus_files": ",".join(focus_files) if focus_files else None},
             timeout=map_timeout)
 
+    def preflight(self, file: str, *, symbol: str | None = None, budget: int = 1200,
+                  project: str | None = None) -> dict:
+        """Before editing ``file``: what already exists, what changes with it, who breaks."""
+        return self._get("/preflight", {
+            "project": self._proj(project), "file": file, "symbol": symbol,
+            "budget": budget},
+            timeout=self._interactive_timeout())
+
     def find_references(self, symbol: str, *, def_path: str | None = None,
                         src_root: str | None = None, project: str | None = None,
                         include_low_confidence: bool = True,

@@ -47,8 +47,43 @@ read, and CodeSextant must never become a modification gate.
    `budget` is the size of the response you will actually receive, envelope included, not a
    count of symbols. Spend it deliberately: raise it when you want a wider map, and read
    `truncated_by_budget` to learn whether more symbols were available than it paid for.
-4. Before changing a symbol, call `cs.find_references(symbol, def_path=...)` and
-   `cs.impact(symbol, def_path=...)`.
+4. **Before you write or change anything in a file, call
+   `cs.preflight(file, symbol=...)`.** One call, a few milliseconds, and it answers the
+   three questions that are otherwise answered too late:
+
+   - `already_exists` — definitions that resemble the `symbol` you are about to add.
+     Check this before writing a second implementation of something the repository
+     already has. Pass the name you intend to use; without `symbol` this section is
+     skipped and you lose the only check that has to happen *before* the code exists.
+   - `co_change` — files that history says change together with this one, with the
+     confidence and the commit counts behind each. This is where the obligations no
+     one wrote down live: the version constant that goes with the packaging file, the
+     route that goes with the allowlist and the routing test, the language that goes
+     with its fixture. A high-confidence companion you are not touching is the single
+     most likely thing you are about to forget.
+   - `blast_radius` — files with resolved references into this one.
+
+   Every section states its own evidence, and a claim with weak evidence says so.
+   Treat co-change as advice, not law: history records what people did, and a rule at
+   100% over three commits is still three commits.
+
+5. Before changing a symbol in particular, call `cs.find_references(symbol, def_path=...)`
+   and `cs.impact(symbol, def_path=...)`. preflight's blast radius reads only edges
+   already resolved, so it under-reports until find_references has run; these two do the
+   real resolution.
+
+## Why preflight rather than remembering
+
+Three failures repeat regardless of how careful the author is, because all three depend
+on knowing something that is not in the file being edited:
+
+- building a second copy of something that already exists,
+- missing a companion change that nothing in the source mentions,
+- changing something whose callers are elsewhere.
+
+Each already had a query, and each query was one more thing to remember, so under time
+pressure all three were skipped. preflight is one call, cheap enough that calling it
+every time costs nothing, which is the only property that makes it actually get called.
 
 ## Use confidence labels
 

@@ -28,6 +28,7 @@ _ENGINE_EXPORTS = {
     "find_unwired", "find_duplicates", "get_comment_overview",
     "find_comment_tags", "get_comments", "call_hierarchy", "impact",
     "get_health", "get_map", "status", "list_projects", "find_ai_usage",
+    "preflight",
 }
 _DAEMON_EXPORTS = {
     "ensure_daemon": "ensure_running",
@@ -75,6 +76,7 @@ __all__ = [
     "impact",  # change impact built on the caller hierarchy
     "get_health",  # per-symbol health and unwired evidence
     "get_map",
+    "preflight",  # reuse, co-change obligations and blast radius, before an edit
     "status",
     "list_projects",  # projects indexed on this machine
     "find_ai_usage",  # ai-usage: which AI/LLM the repo uses + dispatch_policy cli/direct/local channels

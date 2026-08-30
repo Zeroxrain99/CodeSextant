@@ -26,6 +26,7 @@ from copy import deepcopy
 from threading import RLock, Thread
 
 from . import (
+    cochange,
     namegraph,
     project_state,
     storage,
@@ -1249,6 +1250,229 @@ def get_map(path: str, token_budget: int = 2000, *, damping: float = 0.85,
     except (OSError, TypeError, ValueError) as exc:
         print(f"  Warning: failed to write map snapshot: {type(exc).__name__}: {exc}",
               file=sys.stderr)
+    return result
+
+
+# ── preflight: what to know before changing something ──
+#
+# Three questions get asked after the damage instead of before it: does this already
+# exist, what else has to change with it, and who breaks. Each already had a tool, and
+# each tool was one more optional call to remember, so in practice all three were
+# skipped. preflight answers them together, cheaply enough that always asking costs
+# nothing, which is the only version of this that survives contact with a real task.
+
+
+def _identifier_tokens(name: str) -> set[str]:
+    """Words inside an identifier: parse_duration, parseDuration, ParseDuration alike."""
+    words: list[str] = []
+    for chunk in name.replace("-", "_").split("_"):
+        if not chunk:
+            continue
+        start = 0
+        for index in range(1, len(chunk) + 1):
+            at_end = index == len(chunk)
+            boundary = not at_end and chunk[index].isupper() and not chunk[index - 1].isupper()
+            if at_end or boundary:
+                if index - start > 0:
+                    words.append(chunk[start:index].lower())
+                start = index
+    return {w for w in words if w}
+
+
+def _name_similarity(left: str, right: str) -> float:
+    """Jaccard overlap of the words in two identifiers; 1.0 for the same name.
+
+    Two names must share at least two words to count as similar at all, because one
+    shared word is usually just a common verb: release_version against release, or
+    get_user against get. Names of a single word are therefore only ever matched
+    exactly, which is the correct standard for them -- run and runner are not the
+    same function, and offering them as reuse candidates trains the reader to skim
+    past the section that matters.
+    """
+    if left == right:
+        return 1.0
+    a, b = _identifier_tokens(left), _identifier_tokens(right)
+    if not a or not b:
+        return 0.0
+    shared = a & b
+    if len(shared) < 2:
+        return 0.0
+    return len(shared) / len(a | b)
+
+
+def _reuse_candidates(store, symbol: str, target: str, limit: int) -> list[dict]:
+    """Existing definitions that may already be what ``symbol`` is about to become.
+
+    Name-based on purpose. This runs before the code exists, so there is no body to
+    fingerprint; what the caller has is an intent with a name, and a name is enough to
+    catch the common case of writing a second parse_duration next to the first.
+    """
+    threshold = cochange._env_float(
+        "CODESEXTANT_PREFLIGHT_NAME_SIMILARITY", 0.5)
+    referenceable = _REFERENCEABLE_KINDS
+    scored: list[tuple[float, int, dict]] = []
+    for row in store.get_symbols():
+        if row["kind"] not in referenceable:
+            continue
+        score = _name_similarity(symbol, row["name"])
+        if score < threshold:
+            continue
+        same_file = os.path.normcase(row["path"]) == os.path.normcase(target)
+        # A match in the very file being edited is the one most likely to be an
+        # accidental second implementation, so it outranks a distant one; a test
+        # helper is the least likely thing to reuse, so it sinks.
+        rank = (score + (0.25 if same_file else 0.0)
+                - (0.3 if ranking_is_test_path(row["path"]) else 0.0))
+        scored.append((rank, -row["line"], {
+            "name": row["name"], "kind": row["kind"], "path": row["path"],
+            "line": row["line"], "similarity": round(score, 2),
+            "same_file": same_file,
+        }))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [entry for _rank, _line, entry in scored[:limit]]
+
+
+def _repo_relative(root: str, target: str) -> str | None:
+    """Git-style relative path, or None when target is outside the repository."""
+    try:
+        relative = os.path.relpath(target, root)
+    except ValueError:
+        return None
+    if relative.startswith(os.pardir):
+        return None
+    return relative.replace(os.sep, "/")
+
+
+def _ensure_cochange(abs_path: str) -> dict:
+    """Bring co-change rules up to date with HEAD. Returns the mining stats.
+
+    Re-mined when HEAD moves, which is cheap (reading `git log --name-only` costs about
+    a tenth of a millisecond per commit and the read is capped), and stored even when it
+    finds nothing so a thin history is not re-mined on every call.
+    """
+    if not cochange.enabled():
+        return {"available": False, "reason": "disabled by CODESEXTANT_COCHANGE_DISABLED"}
+    try:
+        head = _git_head_sha(abs_path)
+        with storage.ProjectStore.open(abs_path) as store:
+            if store.cochange_head() == (head or ""):
+                return {"available": True, "cached": True, "head": head}
+            mined = cochange.mine(abs_path)
+            if not mined["stats"].get("available"):
+                return mined["stats"]
+            store.store_cochange_rules(mined["rules"], head)
+            stats = dict(mined["stats"])
+            stats["cached"] = False
+            stats["head"] = head
+            return stats
+    except Exception as exc:
+        # One of three sections, and the only one that shells out. A slow Git, a busy
+        # index or a repository shape nobody anticipated must cost this section, not the
+        # answer: preflight is only useful if calling it is never a risk.
+        return {"available": False,
+                "reason": f"mining failed ({type(exc).__name__}: {exc})"}
+
+
+def preflight(path: str, target: str, *, symbol: str | None = None,
+              token_budget: int = 1200) -> dict:
+    """Everything worth knowing before editing ``target``, in one answer.
+
+    Parameters
+    ----------
+    path   : the project root.
+    target : the file about to be changed.
+    symbol : the name about to be added or changed. Supplying it turns on the reuse
+             check, which is the half that has to happen before the code is written.
+
+    Returns {target, symbol, already_exists, co_change, blast_radius, notes,
+    approx_tokens}. Each section states its own evidence, because all three are
+    heuristics and a caller that cannot see the strength of a claim cannot weigh it.
+    """
+    abs_path = os.path.abspath(path)
+    db_file = storage.db_path_for(abs_path)
+    if not db_file.exists():
+        raise RuntimeError(
+            f"preflight: project has not been indexed yet (no {db_file}); "
+            "call index_project first.")
+    abs_target = target if os.path.isabs(target) else os.path.join(abs_path, target)
+    abs_target = os.path.abspath(abs_target)
+    relative = _repo_relative(abs_path, abs_target)
+
+    cochange_stats = _ensure_cochange(abs_path)
+    notes: list[str] = []
+
+    with storage.ProjectStore.open_readonly(abs_path) as store:
+        already = (_reuse_candidates(store, symbol, abs_target, limit=8)
+                   if symbol else [])
+        companions = (store.cochange_for(relative) if relative else [])
+        if symbol:
+            rows = store.conn.execute(
+                "SELECT DISTINCT src_path FROM refs WHERE def_path=? AND symbol_name=? "
+                "AND confidence='high' ORDER BY src_path", (abs_target, symbol)).fetchall()
+        else:
+            rows = store.conn.execute(
+                "SELECT DISTINCT src_path FROM refs WHERE def_path=? AND confidence='high' "
+                "ORDER BY src_path", (abs_target,)).fetchall()
+        dependents = [r["src_path"] for r in rows]
+        total_edges = store.conn.execute(
+            "SELECT COUNT(*) AS n FROM refs WHERE confidence='high'").fetchone()["n"]
+
+    if symbol and not already:
+        notes.append(f"No existing definition resembles {symbol!r}; it looks new.")
+    elif not symbol:
+        notes.append("Pass symbol= to check whether the thing you are adding already exists.")
+    if not cochange_stats.get("available"):
+        notes.append("Co-change is unavailable: " + str(cochange_stats.get("reason", "unknown")))
+    elif not companions:
+        notes.append("History shows nothing that reliably changes with this file.")
+    if not dependents:
+        notes.append(
+            "No resolved callers are recorded. That is not the same as none existing: "
+            "the refs table only fills in as find_references runs, and it currently holds "
+            f"{total_edges} resolved edges for the whole project. Run find_references on "
+            "the symbol for a real blast radius."
+            if total_edges == 0 else
+            "No resolved caller reaches this file, out of "
+            f"{total_edges} resolved edges project-wide.")
+
+    result = {
+        "project_key": storage.project_key(abs_path),
+        "target": abs_target,
+        "symbol": symbol,
+        "already_exists": already,
+        "co_change": [
+            {"path": c["companion"], "confidence": round(c["confidence"], 3),
+             "support": c["support"], "changes": c["changes"]}
+            for c in companions
+        ],
+        "blast_radius": {
+            "dependent_files": dependents,
+            "dependent_count": len(dependents),
+            "resolved_edges_project_wide": total_edges,
+        },
+        "cochange_stats": cochange_stats,
+        "notes": notes,
+        "approx_tokens": 0,
+    }
+    result["approx_tokens"] = _json_tokens(result)
+    if result["approx_tokens"] > token_budget:
+        # Trim the longest lists rather than the explanations: a caller who is told
+        # nothing about why a section is short cannot tell it from an empty section.
+        while result["approx_tokens"] > token_budget and (
+                result["already_exists"] or result["co_change"]
+                or result["blast_radius"]["dependent_files"]):
+            if len(result["blast_radius"]["dependent_files"]) > 3:
+                result["blast_radius"]["dependent_files"].pop()
+            elif len(result["co_change"]) > 3:
+                result["co_change"].pop()
+            elif result["already_exists"]:
+                result["already_exists"].pop()
+            else:
+                break
+            result["approx_tokens"] = _json_tokens(result)
+        result["truncated_by_budget"] = True
+    else:
+        result["truncated_by_budget"] = False
     return result
 
 
