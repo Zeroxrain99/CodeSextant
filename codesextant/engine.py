@@ -25,18 +25,23 @@ from copy import deepcopy
 from threading import RLock, Thread
 
 from . import (
-    clones,
-    comments,
     namegraph,
     project_state,
-    references,
     storage,
-    symbols,
     work_coordinator,
 )
+from .lazy_import import LazyModule
 from .ranking import is_test_path as ranking_is_test_path
 from .ranking import rank_symbols
-from .symbols import SUPPORTED_EXTENSIONS
+
+# Deferred because a spawned route worker imports this module from cold on every heavy
+# request. jedi (references) and the tree-sitter language pack (symbols) together cost
+# about 85ms, and a cached get_map -- which resolves nothing and parses nothing -- was
+# paying all of it. Each still resolves on first attribute access.
+clones = LazyModule(f"{__package__}.clones")
+comments = LazyModule(f"{__package__}.comments")
+references = LazyModule(f"{__package__}.references")
+symbols = LazyModule(f"{__package__}.symbols")
 
 # Directories skipped while scanning source files during indexing (target = Rust build output).
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
@@ -139,7 +144,7 @@ def _iter_source_files(root: str):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
         for fn in filenames:
-            if os.path.splitext(fn)[1].lower() in SUPPORTED_EXTENSIONS:
+            if os.path.splitext(fn)[1].lower() in symbols.SUPPORTED_EXTENSIONS:
                 yield os.path.join(dirpath, fn)
 
 
@@ -180,7 +185,7 @@ def _git_visible_files(root: str) -> list[str] | None:
         candidate = os.path.abspath(os.path.join(root, relative))
         if (
             os.path.isfile(candidate)
-            and os.path.splitext(candidate)[1].lower() in SUPPORTED_EXTENSIONS
+            and os.path.splitext(candidate)[1].lower() in symbols.SUPPORTED_EXTENSIONS
             and not any(part in _SKIP_DIRS for part in relative.replace("\\", "/").split("/"))
         ):
             files.append(candidate)
@@ -446,7 +451,7 @@ def index_paths(path: str, changed_paths) -> dict:
                 continue
             if os.path.isfile(target):
                 if (_path_is_skipped(abs_path, target)
-                        or os.path.splitext(target)[1].lower() not in SUPPORTED_EXTENSIONS):
+                        or os.path.splitext(target)[1].lower() not in symbols.SUPPORTED_EXTENSIONS):
                     continue
                 candidates.add(target)
                 continue

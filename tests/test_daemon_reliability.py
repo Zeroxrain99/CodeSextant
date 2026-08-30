@@ -86,6 +86,42 @@ def test_thin_client_import_does_not_load_heavy_engine():
     assert probe.stdout.strip() == "False"
 
 
+def test_engine_import_does_not_load_the_resolvers_it_may_never_use():
+    """A spawned route worker imports the engine from cold on every heavy request.
+
+    jedi and the tree-sitter language pack are about 85ms of that import, and a cached
+    get_map resolves no references and parses no source. Both must stay deferred until
+    something actually reaches for them.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    probe = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; import codesextant.engine; "
+         "print('jedi' in sys.modules, 'tree_sitter_language_pack' in sys.modules)"],
+        cwd=root, capture_output=True, text=True, timeout=60,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == "False False", (
+        "importing the engine must not pull in the reference resolver or the parsers")
+
+
+def test_lazy_module_patching_reaches_the_real_module():
+    """Patching through the stand-in must not leave the original live for direct importers."""
+    from codesextant import references as real_references
+    from codesextant.lazy_import import LazyModule, loaded_module
+
+    stand_in = LazyModule("codesextant.references")
+    assert loaded_module(stand_in) is None, "attribute-free inspection must not import"
+
+    original = real_references.find_references
+    try:
+        stand_in.find_references = "replaced"
+        assert real_references.find_references == "replaced"
+        assert loaded_module(stand_in) is real_references
+    finally:
+        real_references.find_references = original
+
+
 def test_http_server_disables_windows_address_reuse():
     """HTTPServer sets allow_reuse_address=1 by default, which on Windows lets
     several PIDs bind port 8790 at once."""

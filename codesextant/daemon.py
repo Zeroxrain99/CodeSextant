@@ -58,24 +58,15 @@ storage = importlib.import_module(f"{_PACKAGE}.storage")
 project_state = importlib.import_module(f"{_PACKAGE}.project_state")
 work_coordinator = importlib.import_module(f"{_PACKAGE}.work_coordinator")
 local_auth = importlib.import_module(f"{_PACKAGE}.local_auth")
+_lazy_import = importlib.import_module(f"{_PACKAGE}.lazy_import")
+LazyModule = _lazy_import.LazyModule
 
 
-class _LazyModule:
-    def __init__(self, module_name: str):
-        self.module_name = module_name
-        self.loaded = None
-
-    def __getattr__(self, name: str):
-        if self.loaded is None:
-            self.loaded = importlib.import_module(self.module_name)
-        return getattr(self.loaded, name)
-
-
-engine = _LazyModule(f"{_PACKAGE}.engine")
-panel = _LazyModule(f"{_PACKAGE}.panel")
-watcher = _LazyModule(f"{_PACKAGE}.watcher")
-cache_gc = _LazyModule(f"{_PACKAGE}.cache_gc")
-worker_process = _LazyModule(f"{_PACKAGE}.worker_process")
+engine = LazyModule(f"{_PACKAGE}.engine")
+panel = LazyModule(f"{_PACKAGE}.panel")
+watcher = LazyModule(f"{_PACKAGE}.watcher")
+cache_gc = LazyModule(f"{_PACKAGE}.cache_gc")
+worker_process = LazyModule(f"{_PACKAGE}.worker_process")
 _HEAVY_COORDINATOR = work_coordinator.SHARED_SHARDED
 
 # File-watcher manager, built lazily and shared across projects.
@@ -2050,9 +2041,7 @@ def serve(port: int | None = None):
                         manager.stop_all()
                     except Exception:
                         pass
-                engine_module = (
-                    engine.loaded if isinstance(engine, _LazyModule) else None
-                )
+                engine_module = _lazy_import.loaded_module(engine)
                 snapshots_drained = (
                     engine_module is None
                     or engine_module.wait_for_snapshot_writers(timeout=30.0)
