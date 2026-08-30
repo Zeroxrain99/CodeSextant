@@ -436,3 +436,37 @@ def test_symbol_mining_reads_only_the_file_it_was_asked_about(repo, monkeypatch)
     engine.preflight(str(repo), "mod.py", symbol="alpha")
 
     assert seen == ["mod.py"]
+
+
+def test_a_file_with_no_definitions_produces_no_symbol_rules(repo):
+    """Markdown and config files have nothing to attribute to, and inventing one lies."""
+    _commit(repo, "seed", {"notes.md": "# start\n", "pair.py": "P = 0\n"})
+    for n in range(3):
+        _commit(repo, f"docs {n}",
+                {"notes.md": f"# start\n\nsection {n}\n", "pair.py": f"P = {n + 1}\n"})
+    engine.index_project(str(repo), force=True)
+
+    mined = cochange.mine_symbols(str(repo), "notes.md")
+
+    assert mined["stats"]["symbols_seen"] == 0
+    assert mined["rules"] == []
+    # The file-level rule still holds; only the finer claim is absent.
+    assert any(c["path"] == "pair.py"
+               for c in engine.preflight(str(repo), "notes.md")["co_change"])
+
+
+def test_a_language_git_has_no_driver_for_still_attributes(repo):
+    """TypeScript has no built-in Git driver; the default heuristic still finds exports."""
+    def module(body: str) -> str:
+        return ("export function buildIndex(paths: string[]): number {\n"
+                f"  return {body};\n}}\n")
+
+    _commit(repo, "seed", {"index.ts": module("0"), "pair.py": "P = 0\n"})
+    for n in range(3):
+        _commit(repo, f"work {n}",
+                {"index.ts": module(str(n + 1)), "pair.py": f"P = {n + 1}\n"})
+    engine.index_project(str(repo), force=True)
+
+    mined = cochange.mine_symbols(str(repo), "index.ts")
+
+    assert "buildIndex" in {rule["symbol"] for rule in mined["rules"]}
