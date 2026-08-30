@@ -86,6 +86,8 @@ Interactive graph requests use a short deadline and reserved capacity. Treat Cod
 
 CodeSextant stores one SQLite database per absolute project path. The database contains paths, symbols, references, hashes, and extracted comments or docstrings. It does not store full source files and is not encrypted. Access follows the permissions on `~/.codesextant`, so processes running as the same OS user or identities allowed by that directory ACL can read it.
 
+Indexing extracts what navigation needs: symbols and references. The analyses layered on top of them — clone fingerprints for `duplicates`, comment extraction for `comments` and `health` — are computed the first time you ask for them, then kept up to date per file as source changes. This keeps the index small and quick to build for the common case of navigating code; the trade is that the first `codesextant duplicates` run on a project does the fingerprinting work, and later runs are immediate.
+
 Run `codesextant cache` to inspect managed index usage without exposing repository paths. At a quiescent daemon shutdown, caches for repositories missing beyond 30 days are removed. If managed indexes exceed 10 GiB, older inactive cache groups are removed until usage reaches 90 percent of that quota. Projects used by the current daemon are excluded. OS-locked project leases also make cleanup skip a group that is open in another CLI or process. Credentials, logs, locks, and unknown files are never deletion candidates. These limits can be changed with the `CODESEXTANT_CACHE_*` environment variables documented in the README.
 
 To remove all indexes, browser sessions, and the local API token, stop the daemon and delete `~/.codesextant`. CodeSextant does not upload the index or send telemetry.

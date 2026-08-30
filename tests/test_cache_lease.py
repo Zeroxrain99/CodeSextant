@@ -32,15 +32,7 @@ def _create_index(home: Path, repo: Path, monkeypatch) -> None:
     from codesextant import storage
 
     with storage.ProjectStore.open(str(repo)) as store:
-        store.store_file_index(
-            "sample.py",
-            "digest",
-            [],
-            time.time(),
-            comments=[],
-            fingerprints=[],
-            winnow_index=[],
-        )
+        store.store_file_index("sample.py", "digest", [], time.time())
 
 
 def _quota_forces_prune(home: Path, monkeypatch) -> None:

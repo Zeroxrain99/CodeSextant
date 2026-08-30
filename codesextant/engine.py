@@ -272,57 +272,108 @@ def _index_source_file(store: storage.ProjectStore, fp: str, *, force: bool = Fa
             symbols.extract_symbols_from_source(source, lang, file_path=fp, tree=tree)
             if lang else []
         )
-        indexed_comments: list[dict] = []
-        if lang and comments.comments_enabled():
-            try:
-                indexed_comments = comments.extract_comments_from_source(
-                    source, lang, file_path=fp, tree=tree
-                )
-            except Exception as exc:
-                print(
-                    f"  Warning: comment extraction failed ({fp}): {type(exc).__name__}: {exc}",
-                    file=sys.stderr,
-                )
-        fingerprints: list[dict] = []
-        winnow_index: list[dict] = []
-        if lang and clones.dedup_enabled():
-            try:
-                fingerprints = clones.extract_fingerprints_from_source(
-                    source, lang, file_path=fp, tree=tree
-                )
-                winnow_index = [
-                    {"line": fingerprint["line"], "fp_value": value}
-                    for fingerprint in fingerprints
-                    for value in fingerprint.get("winnow", [])
-                ]
-            except Exception as exc:
-                fingerprints = []
-                winnow_index = []
-                print(
-                    f"  Warning: fingerprint/complexity extraction failed ({fp}): "
-                    f"{type(exc).__name__}: {exc}",
-                    file=sys.stderr,
-                )
+        # Clone fingerprints and comments are deliberately not computed here. Together
+        # they cost more than twice the CPU and seven times the storage of the symbol
+        # index itself, and nothing on the navigation path -- get_map, find_references,
+        # impact -- reads either one. find_duplicates and the comment queries materialize
+        # what they need on first use; see _materialize_derived.
 
         # No cancellation point belongs inside the SQLite transaction. Once
         # replacement starts, every derived table must advance or roll back as
         # one file revision.
         work_coordinator.cancellation_point()
-        store.store_file_index(
-            fp,
-            content_hash,
-            extracted,
-            indexed_at=time.time(),
-            comments=indexed_comments,
-            fingerprints=fingerprints,
-            winnow_index=winnow_index,
-        )
+        store.store_file_index(fp, content_hash, extracted, indexed_at=time.time())
         work_coordinator.cancellation_point()
         return "indexed", None
     except work_coordinator.HeavyWorkDeadlineExceeded:
         raise
     except Exception as exc:
         return "error", {"path": fp, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _derive_one_file(store: storage.ProjectStore, path: str, content_hash: str,
+                     kind: str) -> bool:
+    """Compute and store one optional analysis for one file. True when it was stored.
+
+    Reads and parses the source once for whichever kind is asked for. A file that cannot
+    be read or parsed is skipped rather than raised: a single unreadable file must not
+    fail a whole find_duplicates run.
+    """
+    try:
+        with open(path, "rb") as source_file:
+            source = source_file.read()
+    except OSError:
+        return False
+    if hashlib.sha256(source).hexdigest() != content_hash:
+        # The file changed since it was indexed. The watcher or the next index pass owns
+        # reconciling it; deriving from content the index does not describe would store
+        # fingerprints that disagree with the symbols beside them.
+        return False
+    lang = symbols.language_for_file(path)
+    if not lang:
+        return False
+    try:
+        tree = symbols.parse_source(source, lang)
+        if kind == "comments":
+            store.store_file_comments(
+                path,
+                comments.extract_comments_from_source(
+                    source, lang, file_path=path, tree=tree),
+                content_hash=content_hash)
+        else:
+            fingerprints = clones.extract_fingerprints_from_source(
+                source, lang, file_path=path, tree=tree)
+            store.store_file_fingerprints(
+                path, fingerprints,
+                [{"line": fingerprint["line"], "fp_value": value}
+                 for fingerprint in fingerprints
+                 for value in fingerprint.get("winnow", [])],
+                content_hash=content_hash)
+    except Exception as exc:
+        print(f"  Warning: {kind} extraction failed ({path}): {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return False
+    return True
+
+
+def _materialize_derived(abs_path: str, kind: str, *,
+                         paths: list[str] | None = None) -> dict:
+    """Bring one optional analysis up to date before a query that reads it.
+
+    Indexing extracts symbols only. Clone fingerprints and comments are computed here, on
+    the first query that needs them and again only for files whose content changed since,
+    so a project that never asks for duplicates never pays for them.
+
+    ``paths`` narrows the work to specific files. Leave it None for the project-wide
+    queries: duplicate detection and the comment overview read every row in their table,
+    so materializing a subset would quietly answer from partial data.
+
+    Only the non-interactive heavy routes call this -- find_duplicates, get_health and
+    the comment queries -- which share a daemon lane with /reindex. The interactive
+    routes an agent uses to navigate (get_map, find_references, impact, call_hierarchy,
+    get_symbols) never derive anything, so first use of a rarely-used analysis cannot
+    slow down the path that is on the critical line of a coding task.
+
+    Returns {"kind", "computed", "pending"}; ``pending`` counts files that could not be
+    derived this pass (unreadable, unsupported language, or changed under us).
+    """
+    if kind == "comments" and not comments.comments_enabled():
+        return {"kind": kind, "computed": 0, "pending": 0}
+    if kind == "fingerprints" and not clones.dedup_enabled():
+        return {"kind": kind, "computed": 0, "pending": 0}
+    if not storage.db_path_for(abs_path).exists():
+        return {"kind": kind, "computed": 0, "pending": 0}
+
+    with storage.ProjectStore.open(abs_path) as store:
+        stale = store.paths_missing_derived(kind, paths)
+        if not stale:
+            return {"kind": kind, "computed": 0, "pending": 0}
+        computed = 0
+        for path, content_hash in stale:
+            work_coordinator.cancellation_point()
+            if _derive_one_file(store, path, content_hash, kind):
+                computed += 1
+        return {"kind": kind, "computed": computed, "pending": len(stale) - computed}
 
 
 def _target_path(root: str, raw_path: str) -> str | None:
@@ -1573,6 +1624,8 @@ def get_comment_overview(path: str, *, scope_file: str | None = None) -> dict:
     target = os.path.abspath(scope_file) if scope_file else None
     kinds = _comment_coverage_kinds()
     skip_private = _comment_skip_private()
+    # Coverage joins docstring owners across the project, so a subset would under-report.
+    _materialize_derived(abs_path, "comments")
 
     with storage.ProjectStore.open_readonly(abs_path) as store:
         conn = store.conn
@@ -1677,6 +1730,8 @@ def find_comment_tags(path: str, *, tags: list[str] | None = None,
     target = os.path.abspath(scope_file) if scope_file else None
     want = {t.upper() for t in tags} if tags else None
     marker_re = comments._marker_re()
+    _materialize_derived(abs_path, "comments",
+                         paths=[target] if target else None)
 
     with storage.ProjectStore.open_readonly(abs_path) as store:
         q = "SELECT path,line,scope,text FROM comments WHERE tag IS NOT NULL"
@@ -1714,6 +1769,7 @@ def get_comments(path: str, file: str | None = None, *, scope: str | None = None
         return {"project_key": storage.project_key(abs_path), "count": 0, "comments": [],
                 "note": f"project has not been indexed yet (no {db_file}); call index_project first."}
     target = os.path.abspath(file) if file else None
+    _materialize_derived(abs_path, "comments", paths=[target] if target else None)
     with storage.ProjectStore.open_readonly(abs_path) as store:
         q = ("SELECT path,line,end_line,kind,is_doc,tag,scope,owner_line,text "
              "FROM comments WHERE 1=1")
@@ -1778,6 +1834,8 @@ def get_health(path: str) -> dict:
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
         raise RuntimeError(f"get_health: project has not been indexed yet (no {db_file}); call index_project first.")
+
+    _materialize_derived(abs_path, "fingerprints")
 
     with storage.ProjectStore.open_readonly(abs_path) as store:
         syms = store.get_symbols()
@@ -2083,6 +2141,10 @@ def find_duplicates(path: str, *, scope_file: str | None = None, near_global: bo
     if not db_file.exists():
         raise RuntimeError(
             f"find_duplicates: project has not been indexed yet (no {db_file}); call index_project first.")
+
+    # Detection spans the whole repository even when scope_file limits what is reported,
+    # so every file's fingerprints have to exist before the first query runs.
+    _materialize_derived(abs_path, "fingerprints")
 
     min_node = clones._env_int("CODESEXTANT_DEDUP_MIN_NODE_COUNT", 15)
     sim_thresh = (min_similarity if min_similarity is not None

@@ -49,11 +49,13 @@ def _fingerprint(name: str, line: int, shape_hash: str) -> dict:
 
 def _seed_old_revision(store, path: str) -> None:
     store.store_file_symbols(path, "old-hash", [_symbol("old", 1)], indexed_at=1.0)
-    store.store_file_comments(path, [_comment("old comment", 2)])
+    store.store_file_comments(path, [_comment("old comment", 2)],
+                              content_hash="old-hash")
     store.store_file_fingerprints(
         path,
         [_fingerprint("old", 1, "old-shape")],
         [{"line": 1, "fp_value": 101}],
+        content_hash="old-hash",
     )
     store.replace_refs_for(
         path,
@@ -103,6 +105,7 @@ def _file_revision(store, path: str) -> dict:
             "path=?",
         ),
         "fingerprint_index": ("path,line,fp_value", "path=?"),
+        "derived_state": ("path,kind,content_hash", "path=?"),
     }
     result = {}
     for table, (columns, predicate) in tables.items():
@@ -122,15 +125,7 @@ def _file_revision(store, path: str) -> dict:
 
 
 def _replace_with_new_revision(store, path: str) -> None:
-    store.store_file_index(
-        path,
-        "new-hash",
-        [_symbol("new", 10)],
-        indexed_at=2.0,
-        comments=[_comment("new comment", 11)],
-        fingerprints=[_fingerprint("new", 10, "new-shape")],
-        winnow_index=[{"line": 10, "fp_value": 202}],
-    )
+    store.store_file_index(path, "new-hash", [_symbol("new", 10)], indexed_at=2.0)
 
 
 def test_atomic_file_index_rolls_back_every_table_on_mid_write_failure(
@@ -143,8 +138,8 @@ def test_atomic_file_index_rolls_back_every_table_on_mid_write_failure(
         _seed_old_revision(store, path)
         before = _file_revision(store, path)
         store.conn.execute(
-            "CREATE TRIGGER fail_new_comment BEFORE INSERT ON comments "
-            "WHEN NEW.text='new comment' BEGIN "
+            "CREATE TRIGGER fail_new_symbol BEFORE INSERT ON symbols "
+            "WHEN NEW.name='new' BEGIN "
             "SELECT RAISE(ABORT, 'injected mid-write failure'); END"
         )
         store.conn.commit()
@@ -171,9 +166,14 @@ def test_atomic_file_index_replaces_all_auxiliary_rows_together(
         revision = _file_revision(store, path)
         assert revision["files"] == [(path, "new-hash", 2.0)]
         assert [row[2] for row in revision["symbols"]] == ["new"]
-        assert [row[-1] for row in revision["comments"]] == ["new comment"]
-        assert [row[6] for row in revision["fingerprints"]] == ["new-shape"]
-        assert revision["fingerprint_index"] == [(path, 10, 202)]
+        # The optional analyses are materialized on demand, so a new revision drops
+        # whatever was derived from the previous content instead of carrying it
+        # forward. Leaving one row behind would let find_duplicates answer from a
+        # fingerprint of source that no longer exists.
+        assert revision["comments"] == []
+        assert revision["fingerprints"] == []
+        assert revision["fingerprint_index"] == []
+        assert revision["derived_state"] == []
         assert revision["refs"] == [
             ("caller.py", 4, "unrelated", "other.py", 1, "low")
         ]
@@ -182,34 +182,37 @@ def test_atomic_file_index_replaces_all_auxiliary_rows_together(
 
 def test_auxiliary_extraction_failure_keeps_core_index_tolerant(
         tmp_path, monkeypatch):
+    """A broken optional extractor degrades its own query, not the index or the caller."""
     from codesextant import engine, storage
 
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "state"))
     repo = tmp_path / "repo"
     repo.mkdir()
-    source_path = repo / "module.py"
-    source_path.write_text("def current():\n    return True\n", encoding="utf-8")
-    path = str(source_path)
-    with storage.ProjectStore.open(str(repo)) as store:
-        _seed_old_revision(store, path)
+    (repo / "module.py").write_text(
+        "def current():\n    # a comment\n    return True\n", encoding="utf-8")
+
+    result = engine.index_project(str(repo), force=True)
+    assert result["indexed"] == 1
+    assert result["errors"] == 0
 
     def fail_extraction(*_args, **_kwargs):
         raise RuntimeError("optional extractor failed")
 
-    monkeypatch.setattr(engine.comments, "comments_enabled", lambda: True)
     monkeypatch.setattr(
         engine.comments, "extract_comments_from_source", fail_extraction)
-    monkeypatch.setattr(engine.clones, "dedup_enabled", lambda: True)
     monkeypatch.setattr(
         engine.clones, "extract_fingerprints_from_source", fail_extraction)
 
-    result = engine.index_project(str(repo), force=True)
+    # Both queries have to answer rather than propagate the extractor's exception.
+    assert engine.get_comments(str(repo))["count"] == 0
+    assert engine.find_duplicates(str(repo))["groups"] == []
 
-    assert result["indexed"] == 1
-    assert result["errors"] == 0
     with storage.ProjectStore.open(str(repo)) as store:
+        path = str(repo / "module.py")
         revision = _file_revision(store, path)
         assert [row[2] for row in revision["symbols"]] == ["current"]
         assert revision["comments"] == []
         assert revision["fingerprints"] == []
-        assert revision["fingerprint_index"] == []
+        # A failed derivation must not be recorded as done, or the next call would
+        # trust an empty result instead of retrying.
+        assert revision["derived_state"] == []

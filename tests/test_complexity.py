@@ -618,6 +618,9 @@ def test_p4_cognitive_persisted_end_to_end(tmp_path, monkeypatch):
         "          t += b;\n        }\n      }\n    }\n    return t;\n  }\n}\n",
         encoding="utf-8")
     engine.index_project(str(repo), force=True)
+    # Fingerprints (and the cognitive score on them) are materialized by the first query
+    # that reads them rather than at index time; get_health is that query.
+    engine.get_health(str(repo))
     with storage.ProjectStore.open(str(repo)) as store:
         rows = dict(store.conn.execute("SELECT name, cognitive FROM fingerprints").fetchall())
     # all four score 6 and land as real values rather than NULL, which means the
@@ -739,6 +742,9 @@ def test_p5_cognitive_persisted_end_to_end(tmp_path, monkeypatch):
         "func complexSwift(_ n:Int)->Int{var t=0\n  for i in 0...n{for j in 0...i{if j>0{t+=j}}}\n  return t}\n",
         encoding="utf-8")
     engine.index_project(str(repo), force=True)
+    # Fingerprints (and the cognitive score on them) are materialized by the first query
+    # that reads them rather than at index time; get_health is that query.
+    engine.get_health(str(repo))
     with storage.ProjectStore.open(str(repo)) as store:
         rows = dict(store.conn.execute("SELECT name, cognitive FROM fingerprints").fetchall())
     # all five score 6 and land as real values rather than NULL, which means the

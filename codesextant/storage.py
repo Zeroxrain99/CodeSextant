@@ -21,7 +21,7 @@ from . import cache_lease
 # ``open()`` creates missing tables and ``_ensure_columns()`` adds missing columns.
 # The reported schema version does not gate migrations. Type changes and removals
 # still require a dedicated migration.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _INDEX_GENERATION_KEY = "index_generation"
 _SYMBOL_SNAPSHOT_FORMAT = 1
 _MAP_SNAPSHOT_FORMAT = 2
@@ -325,6 +325,20 @@ CREATE TABLE IF NOT EXISTS comments (
     text       TEXT NOT NULL,
     FOREIGN KEY(path) REFERENCES files(path)
 );
+-- Which optional analyses have been computed for a file, and for what content.
+-- Clone fingerprints and comment extraction are not needed to navigate code, so they
+-- are materialized when something asks for them rather than for every file at index
+-- time. A row here means "this kind is up to date for this exact content hash"; no row
+-- means it has to be computed. Absence of derived rows cannot say this on its own,
+-- because a file with no comments and a file whose comments were never extracted both
+-- have zero rows.
+CREATE TABLE IF NOT EXISTS derived_state (
+    path         TEXT NOT NULL,
+    kind         TEXT NOT NULL,   -- 'fingerprints' | 'comments'
+    content_hash TEXT NOT NULL,
+    PRIMARY KEY (path, kind)
+);
+
 CREATE INDEX IF NOT EXISTS idx_comments_path ON comments(path);
 CREATE INDEX IF NOT EXISTS idx_comments_tag  ON comments(tag);
 CREATE INDEX IF NOT EXISTS idx_comments_doc  ON comments(is_doc);
@@ -555,14 +569,17 @@ class ProjectStore:
             self._bump_index_generation()
 
     def store_file_index(self, path: str, content_hash: str, symbols: list[dict],
-                         indexed_at: float, *, comments: list[dict],
-                         fingerprints: list[dict],
-                         winnow_index: list[dict]) -> None:
-        """Replace every derived row for one source file atomically.
+                         indexed_at: float) -> None:
+        """Replace the navigation rows for one source file atomically.
 
         Extraction happens before this method is called. If any statement fails,
         SQLite rolls the entire replacement back, including the files-table hash,
         so the next incremental pass still sees that the source needs indexing.
+
+        Clone fingerprints and comments are dropped rather than rewritten: they are
+        materialized on demand, and this file's content just changed, so whatever was
+        computed for the previous content is stale. Clearing derived_state is what makes
+        the next reader recompute them.
         """
         cur = self.conn
         with cur:
@@ -573,6 +590,7 @@ class ProjectStore:
             cur.execute("DELETE FROM comments WHERE path=?", (path,))
             cur.execute("DELETE FROM fingerprints WHERE path=?", (path,))
             cur.execute("DELETE FROM fingerprint_index WHERE path=?", (path,))
+            cur.execute("DELETE FROM derived_state WHERE path=?", (path,))
             cur.execute(
                 "INSERT INTO files(path,content_hash,indexed_at) VALUES(?,?,?) "
                 "ON CONFLICT(path) DO UPDATE SET "
@@ -585,39 +603,16 @@ class ProjectStore:
                 [(path, s["kind"], s["name"], s["line"], s["end_line"],
                   s.get("scope", "")) for s in symbols],
             )
-            cur.executemany(
-                "INSERT INTO comments(path,line,end_line,kind,is_doc,tag,scope,owner_line,text) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
-                [(path, c.get("line"), c.get("end_line", c.get("line")),
-                  c.get("kind", "line"), 1 if c.get("is_doc") else 0,
-                  c.get("tag"), c.get("scope", ""), c.get("owner_line"),
-                  c.get("text", "")) for c in comments],
-            )
-            cur.executemany(
-                "INSERT INTO fingerprints(path,name,kind,line,end_line,scope,shape_hash,"
-                "raw_token_hash,call_hash,node_count,nstmts,has_control_flow,cognitive) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                [(path, f.get("name"), f.get("kind"), f.get("line"),
-                  f.get("end_line"), f.get("scope", ""), f.get("shape_hash"),
-                  f.get("raw_token_hash"), f.get("call_hash"),
-                  f.get("node_count"), f.get("nstmts"),
-                  1 if f.get("has_control_flow") else 0,
-                  f.get("cognitive")) for f in fingerprints],
-            )
-            cur.executemany(
-                "INSERT INTO fingerprint_index(path,line,fp_value) VALUES(?,?,?)",
-                [(path, w.get("line"), w.get("fp_value")) for w in winnow_index],
-            )
             self._bump_index_generation()
 
     def store_file_fingerprints(self, path: str, fingerprints: list[dict],
-                                winnow_index: list[dict]) -> None:
+                                winnow_index: list[dict],
+                                *, content_hash: str | None = None) -> None:
         """Replace a file's structural fingerprints and winnowing index.
 
-        content_hash is owned by store_file_symbols (symbols are extracted first within the same
-        per-file loop in index_project); this method does not touch the files table. Incremental
-        updates naturally reuse needs_reindex (unchanged content hash skips the whole file, so
-        fingerprints aren't recomputed either).
+        This method does not touch the files table; content_hash is owned by the indexer.
+        Pass ``content_hash`` to record in derived_state that fingerprints are current for
+        that exact content, which is what lets a later reader skip the work.
         """
         cur = self.conn
         cur.execute("DELETE FROM fingerprints WHERE path=?", (path,))
@@ -635,10 +630,13 @@ class ProjectStore:
             "INSERT INTO fingerprint_index(path,line,fp_value) VALUES(?,?,?)",
             [(path, w.get("line"), w.get("fp_value")) for w in winnow_index],
         )
+        if content_hash is not None:
+            self._mark_derived(path, "fingerprints", content_hash)
         cur.commit()
 
-    def store_file_comments(self, path: str, comments: list[dict]) -> None:
-        """Replace a file's indexed comments."""
+    def store_file_comments(self, path: str, comments: list[dict],
+                            *, content_hash: str | None = None) -> None:
+        """Replace a file's indexed comments; see store_file_fingerprints on content_hash."""
         cur = self.conn
         cur.execute("DELETE FROM comments WHERE path=?", (path,))
         cur.executemany(
@@ -648,7 +646,38 @@ class ProjectStore:
               1 if c.get("is_doc") else 0, c.get("tag"), c.get("scope", ""),
               c.get("owner_line"), c.get("text", "")) for c in comments],
         )
+        if content_hash is not None:
+            self._mark_derived(path, "comments", content_hash)
         cur.commit()
+
+    def _mark_derived(self, path: str, kind: str, content_hash: str) -> None:
+        """Record that ``kind`` is materialized for this file at this content hash."""
+        self.conn.execute(
+            "INSERT INTO derived_state(path,kind,content_hash) VALUES(?,?,?) "
+            "ON CONFLICT(path,kind) DO UPDATE SET content_hash=excluded.content_hash",
+            (path, kind, content_hash),
+        )
+
+    def paths_missing_derived(self, kind: str,
+                              paths: list[str] | None = None) -> list[tuple[str, str]]:
+        """Indexed files whose ``kind`` has not been materialized for their current content.
+
+        Returns [(path, content_hash), ...]. A file counts as missing when it has no
+        derived_state row for the kind, or when that row records a different content hash
+        than the file's current one.
+        """
+        query = ("SELECT f.path AS path, f.content_hash AS content_hash FROM files f "
+                 "LEFT JOIN derived_state d ON d.path = f.path AND d.kind = ? "
+                 "WHERE (d.content_hash IS NULL OR d.content_hash <> f.content_hash)")
+        params: list = [kind]
+        if paths is not None:
+            if not paths:
+                return []
+            placeholders = ",".join("?" for _ in paths)
+            query += f" AND f.path IN ({placeholders})"
+            params.extend(paths)
+        return [(r["path"], r["content_hash"])
+                for r in self.conn.execute(query, params).fetchall()]
 
     def remove_file(self, path: str) -> None:
         """A file was deleted -> remove it from the index: symbols + the file record + reference
@@ -669,6 +698,7 @@ class ProjectStore:
                 "DELETE FROM fingerprint_index WHERE path=?", (path,)).rowcount
             changed += self.conn.execute(
                 "DELETE FROM comments WHERE path=?", (path,)).rowcount
+            self.conn.execute("DELETE FROM derived_state WHERE path=?", (path,))
             if changed:
                 self._bump_index_generation()
 
