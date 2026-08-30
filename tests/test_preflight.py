@@ -235,11 +235,21 @@ def test_preflight_respects_its_token_budget(repo):
     engine.index_project(str(repo), force=True)
 
     import json
-    result = engine.preflight(str(repo), "mod0.py", symbol="function_number_0",
-                              token_budget=200)
-    served = len(json.dumps(result, ensure_ascii=False, default=str)) // 4
-    assert served <= 260, f"budget 200 served about {served} tokens"
-    assert result["truncated_by_budget"] is True
+
+    def served(result):
+        return len(json.dumps(result, ensure_ascii=False, default=str)) // 4
+
+    generous = engine.preflight(str(repo), "mod0.py", symbol="function_number_0",
+                                token_budget=20000)
+    tight = engine.preflight(str(repo), "mod0.py", symbol="function_number_0",
+                             token_budget=200)
+
+    assert tight["truncated_by_budget"] is True
+    assert served(tight) < served(generous), "a tight budget has to buy less"
+    # What it reports having spent must describe what it actually sent, whether or not
+    # the envelope alone already exceeds a budget this small.
+    assert abs(tight["approx_tokens"] - served(tight)) <= 2
+    assert served(generous) <= 20000
 
 
 def test_preflight_requires_an_index(tmp_path, monkeypatch):
@@ -296,3 +306,133 @@ def test_preflight_is_reachable_over_http_and_is_interactive():
     assert "/preflight" in daemon._HEAVY_PATHS
     assert "/preflight" in daemon._INTERACTIVE_HEAVY_PATHS
     assert os.path.basename(__file__) == "test_preflight.py"
+
+
+# Coupling keyed to the symbol rather than the whole file.
+
+def _module(alpha_body: str, beta_body: str) -> str:
+    return (f"def alpha():\n    return {alpha_body}\n\n\n"
+            f"def beta():\n    return {beta_body}\n")
+
+
+def test_symbol_scope_is_sharper_than_the_file_it_lives_in(repo):
+    """The whole file couples weakly; the function inside it couples every time."""
+    _commit(repo, "seed", {"mod.py": _module(0, 0), "README.md": "start\n"})
+    for n in range(4):
+        _commit(repo, f"alpha work {n}", {
+            "mod.py": _module(n + 1, 0),
+            "alpha_helper.py": f"ALPHA_SUPPORT = {n}\n",
+        })
+    for n in range(2):
+        _commit(repo, f"beta work {n}", {
+            "mod.py": _module(4, n + 1),
+            "notes.md": f"beta {n}\n",
+        })
+    engine.index_project(str(repo), force=True)
+
+    by_file = {c["path"]: c for c in engine.preflight(str(repo), "mod.py")["co_change"]}
+    by_symbol = {c["path"]: c
+                 for c in engine.preflight(str(repo), "mod.py", symbol="alpha")["co_change"]}
+
+    assert by_symbol["alpha_helper.py"]["scope"] == "symbol"
+    assert by_symbol["alpha_helper.py"]["confidence"] > by_file["alpha_helper.py"]["confidence"], (
+        "narrowing the question to one function has to sharpen the answer")
+    assert by_symbol["alpha_helper.py"]["confidence"] == 1.0
+
+
+def test_a_symbol_rule_supersedes_the_file_rule_for_the_same_companion(repo):
+    _commit(repo, "seed", {"mod.py": _module(0, 0), "README.md": "start\n"})
+    for n in range(3):
+        _commit(repo, f"work {n}",
+                {"mod.py": _module(n + 1, 0), "pair.py": f"P = {n}\n"})
+    engine.index_project(str(repo), force=True)
+
+    entries = engine.preflight(str(repo), "mod.py", symbol="alpha")["co_change"]
+
+    for_pair = [e for e in entries if e["path"] == "pair.py"]
+    assert len(for_pair) == 1, "the same companion must not be claimed at two scopes"
+    assert for_pair[0]["scope"] == "symbol"
+    assert for_pair[0]["symbol"] == "alpha"
+
+
+def test_without_a_symbol_nothing_is_mined_per_file(repo):
+    for n in range(3):
+        _commit(repo, f"work {n}", {"mod.py": _module(n, 0), "pair.py": f"P = {n}\n"})
+    engine.index_project(str(repo), force=True)
+
+    result = engine.preflight(str(repo), "mod.py")
+
+    assert all(entry["scope"] == "file" for entry in result["co_change"])
+    assert result["cochange_stats"]["symbol"]["available"] is False
+
+
+def test_symbol_mining_is_cached_per_file_until_head_moves(repo):
+    for n in range(3):
+        _commit(repo, f"work {n}", {"mod.py": _module(n, 0), "pair.py": f"P = {n}\n"})
+    engine.index_project(str(repo), force=True)
+
+    first = engine.preflight(str(repo), "mod.py", symbol="alpha")
+    second = engine.preflight(str(repo), "mod.py", symbol="alpha")
+    assert first["cochange_stats"]["symbol"]["cached"] is False
+    assert second["cochange_stats"]["symbol"]["cached"] is True
+
+    _commit(repo, "work 3", {"mod.py": _module(3, 0), "pair.py": "P = 3\n"})
+    third = engine.preflight(str(repo), "mod.py", symbol="alpha")
+    assert third["cochange_stats"]["symbol"]["cached"] is False
+
+
+def test_broken_symbol_mining_keeps_the_file_level_answer(repo, monkeypatch):
+    for n in range(3):
+        _commit(repo, f"work {n}", {"mod.py": _module(n, 0), "pair.py": f"P = {n}\n"})
+    engine.index_project(str(repo), force=True)
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("diff went sideways")
+
+    monkeypatch.setattr(engine.cochange, "mine_symbols", explode)
+
+    result = engine.preflight(str(repo), "mod.py", symbol="alpha")
+
+    assert result["cochange_stats"]["symbol"]["available"] is False
+    assert [e["path"] for e in result["co_change"]] == ["pair.py"]
+    assert result["co_change"][0]["scope"] == "file", "the coarser answer must survive"
+
+
+def test_only_definition_shaped_contexts_are_attributed():
+    """A hunk outside every definition belongs to no symbol, and saying otherwise lies."""
+    assert cochange._context_symbol("def parse_duration(text):") == "parse_duration"
+    assert cochange._context_symbol("    def store_file(self, path):") == "store_file"
+    assert cochange._context_symbol("class ProjectStore:") == "ProjectStore"
+    assert cochange._context_symbol("export function buildMap(x) {") == "buildMap"
+    assert cochange._context_symbol("async def fetch(url):") == "fetch"
+    assert cochange._context_symbol("from . import storage") is None
+    assert cochange._context_symbol("_INDEX_GENERATION_KEY = 'index_generation'") is None
+    assert cochange._context_symbol("") is None
+
+
+def test_the_generated_attributes_file_names_a_driver_per_language():
+    """Without it Git reports the enclosing class, not the method actually edited."""
+    path = cochange._diff_attributes_file()
+    with open(path, encoding="utf-8") as handle:
+        body = handle.read()
+    assert "*.py diff=python" in body
+    assert "*.go diff=golang" in body
+
+
+def test_symbol_mining_reads_only_the_file_it_was_asked_about(repo, monkeypatch):
+    """Reading full diffs for a whole repository is what makes this unaffordable."""
+    for n in range(3):
+        _commit(repo, f"work {n}", {"mod.py": _module(n, 0), "pair.py": f"P = {n}\n"})
+    engine.index_project(str(repo), force=True)
+
+    seen = []
+    real = cochange.read_symbol_commits
+
+    def watched(repo_path, rel_path, **kwargs):
+        seen.append(rel_path)
+        return real(repo_path, rel_path, **kwargs)
+
+    monkeypatch.setattr(cochange, "read_symbol_commits", watched)
+    engine.preflight(str(repo), "mod.py", symbol="alpha")
+
+    assert seen == ["mod.py"]

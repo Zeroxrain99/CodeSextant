@@ -90,6 +90,8 @@ codesextant preflight . path/to/file.py --symbol name_you_are_about_to_add
 
 Three sections, one call. `ALREADY EXISTS` compares the name you intend to use against every indexed definition, so a second implementation is caught before it is written; omit `--symbol` and this section is skipped, since it is the only check that has to happen before the code exists. `CO-CHANGE` reports what version-control history says changes together with this file, which is where obligations that appear nowhere in the source live. `BLAST RADIUS` lists files with resolved references into the target, and under-reports until `references` has run against the symbols involved.
 
+With `--symbol`, co-change also narrows to that one definition where history supports it: changing `daemon.py` anywhere brings its reliability test 70% of the time, while changing `serve` has brought it every time. Those rules are mined from the diffs of the one file you asked about, not the whole repository, which is the difference between twenty milliseconds and a minute. Attribution comes from the definition name Git puts in each hunk header, so a change that falls outside every definition — a module-level constant, an import block — is left to file scope rather than credited to the function above it.
+
 Co-change needs a Git worktree; without one that section is empty and the other two still answer. Rules are re-mined when HEAD moves and cached in between. The thresholds are tunable with `CODESEXTANT_COCHANGE_MIN_SUPPORT`, `CODESEXTANT_COCHANGE_MIN_CONFIDENCE` and `CODESEXTANT_COCHANGE_MAX_COMMIT_FILES`; the last one decides how large a commit may be before it is discarded as a sweeping change that would couple everything to everything.
 
 ## Local data and cleanup

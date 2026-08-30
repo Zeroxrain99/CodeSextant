@@ -148,10 +148,15 @@ def cmd_preflight(args) -> int:
         print("\n  ALREADY EXISTS   nothing resembles it; it looks new")
 
     if r["co_change"]:
-        print(f"\n  CO-CHANGE        {len(r['co_change'])} file(s) usually change with this one")
+        scoped = sum(1 for e in r["co_change"] if e["scope"] == "symbol")
+        headline = f"{len(r['co_change'])} file(s) usually change with this one"
+        if scoped:
+            headline += f"; {scoped} keyed to {r['symbol']} rather than the whole file"
+        print(f"\n  CO-CHANGE        {headline}")
         for entry in r["co_change"]:
+            marker = f"{r['symbol']}  " if entry["scope"] == "symbol" else ""
             print(f"    {entry['confidence'] * 100:3.0f}%  ({entry['support']}/{entry['changes']} commits)"
-                  f"  {entry['path']}")
+                  f"  {marker}-> {entry['path']}")
 
     blast = r["blast_radius"]
     if blast["dependent_files"]:

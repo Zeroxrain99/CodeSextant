@@ -21,7 +21,7 @@ from . import cache_lease
 # ``open()`` creates missing tables and ``_ensure_columns()`` adds missing columns.
 # The reported schema version does not gate migrations. Type changes and removals
 # still require a dedicated migration.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _INDEX_GENERATION_KEY = "index_generation"
 _COCHANGE_HEAD_KEY = "cochange_head"
 _SYMBOL_SNAPSHOT_FORMAT = 1
@@ -355,6 +355,27 @@ CREATE TABLE IF NOT EXISTS cochange (
     PRIMARY KEY (path, companion)
 );
 CREATE INDEX IF NOT EXISTS idx_cochange_path ON cochange(path);
+
+-- The same coupling keyed by a symbol rather than a whole file. "engine.py changes
+-- with storage.py" is true and nearly useless on two thousand lines; the coupling of
+-- the function actually being edited is what a caller can act on. Mined per file, on
+-- demand, because reading full diffs for a whole repository does not scale.
+-- cochange_symbol_state records which commit each file's rows describe.
+CREATE TABLE IF NOT EXISTS cochange_symbol (
+    path       TEXT NOT NULL,
+    symbol     TEXT NOT NULL,
+    companion  TEXT NOT NULL,
+    support    INTEGER NOT NULL,
+    changes    INTEGER NOT NULL,
+    confidence REAL NOT NULL,
+    PRIMARY KEY (path, symbol, companion)
+);
+CREATE INDEX IF NOT EXISTS idx_cochange_symbol ON cochange_symbol(path, symbol);
+
+CREATE TABLE IF NOT EXISTS cochange_symbol_state (
+    path TEXT PRIMARY KEY,
+    head TEXT NOT NULL
+);
 
 -- Which optional analyses have been computed for a file, and for what content.
 -- Clone fingerprints and comment extraction are not needed to navigate code, so they
@@ -708,6 +729,45 @@ class ProjectStore:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (_COCHANGE_HEAD_KEY, head_sha or ""),
             )
+
+    def symbol_cochange_head(self, path: str) -> str | None:
+        """The commit this file's symbol-level rules describe, or None if never mined."""
+        row = self.conn.execute(
+            "SELECT head FROM cochange_symbol_state WHERE path=?", (path,)).fetchone()
+        return row["head"] if row else None
+
+    def store_symbol_cochange(self, path: str, rules: list[dict],
+                              head_sha: str | None) -> None:
+        """Replace one file's symbol-level rules and record the commit they describe.
+
+        Scoped to the file rather than the whole table: each file is mined separately,
+        so clearing more than the file being replaced would discard work another query
+        already paid for.
+        """
+        with self.conn:
+            self.conn.execute("DELETE FROM cochange_symbol WHERE path=?", (path,))
+            self.conn.executemany(
+                "INSERT INTO cochange_symbol(path,symbol,companion,support,changes,"
+                "confidence) VALUES(?,?,?,?,?,?)",
+                [(path, r["symbol"], r["companion"], int(r["support"]),
+                  int(r["changes"]), float(r["confidence"])) for r in rules],
+            )
+            self.conn.execute(
+                "INSERT INTO cochange_symbol_state(path,head) VALUES(?,?) "
+                "ON CONFLICT(path) DO UPDATE SET head=excluded.head",
+                (path, head_sha or ""),
+            )
+
+    def symbol_cochange_for(self, path: str, symbol: str,
+                            *, limit: int = 20) -> list[dict]:
+        """Companions of one symbol in one file, most reliable first."""
+        rows = self.conn.execute(
+            "SELECT companion,support,changes,confidence FROM cochange_symbol "
+            "WHERE path=? AND symbol=? "
+            "ORDER BY confidence DESC, support DESC, companion LIMIT ?",
+            (path, symbol, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def cochange_for(self, path: str, *, limit: int = 20) -> list[dict]:
         """Companions of one repository-relative path, most reliable first."""

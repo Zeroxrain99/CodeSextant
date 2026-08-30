@@ -61,6 +61,14 @@ read, and CodeSextant must never become a modification gate.
      route that goes with the allowlist and the routing test, the language that goes
      with its fixture. A high-confidence companion you are not touching is the single
      most likely thing you are about to forget.
+
+     Each entry carries a `scope`. With `symbol` given, entries scoped `symbol` are
+     keyed to that one definition rather than the whole file, which matters on a large
+     module: changing `daemon.py` anywhere brings its reliability test 70% of the time,
+     while changing `serve` has brought it every time. A `symbol` entry supersedes the
+     `file` entry for the same companion. Symbol scope needs a definition that has been
+     edited a few times, so a new or rarely touched one falls back to file scope, which
+     is never worse than having asked nothing.
    - `blast_radius` — files with resolved references into this one.
 
    Every section states its own evidence, and a claim with weak evidence says so.

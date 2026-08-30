@@ -1309,11 +1309,22 @@ def _reuse_candidates(store, symbol: str, target: str, limit: int) -> list[dict]
     """
     threshold = cochange._env_float(
         "CODESEXTANT_PREFLIGHT_NAME_SIMILARITY", 0.5)
-    referenceable = _REFERENCEABLE_KINDS
+    # Let SQLite discard the rows that cannot match. A candidate has to share a whole
+    # word with the query, or be the same name, so anything else is not worth turning
+    # into a Python dict -- and on a repository with half a million symbols, turning
+    # them all into dicts to score and throw away is the entire cost of the call.
+    tokens = _identifier_tokens(symbol)
+    kinds = sorted(_REFERENCEABLE_KINDS)
+    clauses = ["name = ?"]
+    params: list = list(kinds) + [symbol]
+    for token in sorted(tokens):
+        clauses.append("name LIKE ? COLLATE NOCASE")
+        params.append(f"%{token}%")
+    query = (f"SELECT path,kind,name,line FROM symbols "
+             f"WHERE kind IN ({','.join('?' for _ in kinds)}) "
+             f"AND ({' OR '.join(clauses)})")
     scored: list[tuple[float, int, dict]] = []
-    for row in store.get_symbols():
-        if row["kind"] not in referenceable:
-            continue
+    for row in store.conn.execute(query, params).fetchall():
         score = _name_similarity(symbol, row["name"])
         if score < threshold:
             continue
@@ -1354,9 +1365,14 @@ def _ensure_cochange(abs_path: str) -> dict:
         return {"available": False, "reason": "disabled by CODESEXTANT_COCHANGE_DISABLED"}
     try:
         head = _git_head_sha(abs_path)
-        with storage.ProjectStore.open(abs_path) as store:
+        # Probe read-only first. ProjectStore.open writes on every call -- schema
+        # script, migrations, two meta rows, a commit -- and the common case here is
+        # that nothing needs mining, so paying for a write connection to discover that
+        # is most of the cost of a call meant to be too cheap to think about.
+        with storage.ProjectStore.open_readonly(abs_path) as store:
             if store.cochange_head() == (head or ""):
                 return {"available": True, "cached": True, "head": head}
+        with storage.ProjectStore.open(abs_path) as store:
             mined = cochange.mine(abs_path)
             if not mined["stats"].get("available"):
                 return mined["stats"]
@@ -1371,6 +1387,53 @@ def _ensure_cochange(abs_path: str) -> dict:
         # answer: preflight is only useful if calling it is never a risk.
         return {"available": False,
                 "reason": f"mining failed ({type(exc).__name__}: {exc})"}
+
+
+def _merge_cochange(symbol_rules: list[dict], file_rules: list[dict],
+                    symbol: str | None) -> list[dict]:
+    """Symbol-scoped rules first, then file-scoped ones they do not already cover."""
+    merged = [
+        {"path": rule["companion"], "scope": "symbol", "symbol": symbol,
+         "confidence": round(rule["confidence"], 3), "support": rule["support"],
+         "changes": rule["changes"]}
+        for rule in symbol_rules
+    ]
+    covered = {rule["companion"] for rule in symbol_rules}
+    merged.extend(
+        {"path": rule["companion"], "scope": "file",
+         "confidence": round(rule["confidence"], 3), "support": rule["support"],
+         "changes": rule["changes"]}
+        for rule in file_rules if rule["companion"] not in covered
+    )
+    return merged
+
+
+def _ensure_symbol_cochange(abs_path: str, relative: str) -> dict:
+    """Bring one file's symbol-level rules up to date with HEAD.
+
+    Per file rather than per repository: reading full diffs for a whole project costs
+    tens of megabytes and seconds, while reading them for the one file preflight was
+    asked about costs a hundredth of that. The caller already named the file, so there
+    is no reason to mine the rest.
+    """
+    if not cochange.enabled():
+        return {"available": False, "reason": "disabled by CODESEXTANT_COCHANGE_DISABLED"}
+    try:
+        head = _git_head_sha(abs_path)
+        with storage.ProjectStore.open_readonly(abs_path) as store:
+            if store.symbol_cochange_head(relative) == (head or ""):
+                return {"available": True, "cached": True}
+        with storage.ProjectStore.open(abs_path) as store:
+            mined = cochange.mine_symbols(abs_path, relative)
+            if not mined["stats"].get("available"):
+                return mined["stats"]
+            store.store_symbol_cochange(relative, mined["rules"], head)
+            stats = dict(mined["stats"])
+            stats["cached"] = False
+            return stats
+    except Exception as exc:
+        return {"available": False,
+                "reason": f"symbol mining failed ({type(exc).__name__}: {exc})"}
 
 
 def preflight(path: str, target: str, *, symbol: str | None = None,
@@ -1399,12 +1462,18 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     relative = _repo_relative(abs_path, abs_target)
 
     cochange_stats = _ensure_cochange(abs_path)
+    symbol_stats: dict = {"available": False, "reason": "no symbol given"}
+    if symbol and relative and cochange_stats.get("available"):
+        symbol_stats = _ensure_symbol_cochange(abs_path, relative)
     notes: list[str] = []
 
     with storage.ProjectStore.open_readonly(abs_path) as store:
         already = (_reuse_candidates(store, symbol, abs_target, limit=8)
                    if symbol else [])
         companions = (store.cochange_for(relative) if relative else [])
+        symbol_companions = (
+            store.symbol_cochange_for(relative, symbol)
+            if symbol and relative and symbol_stats.get("available") else [])
         if symbol:
             rows = store.conn.execute(
                 "SELECT DISTINCT src_path FROM refs WHERE def_path=? AND symbol_name=? "
@@ -1440,39 +1509,37 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
         "target": abs_target,
         "symbol": symbol,
         "already_exists": already,
-        "co_change": [
-            {"path": c["companion"], "confidence": round(c["confidence"], 3),
-             "support": c["support"], "changes": c["changes"]}
-            for c in companions
-        ],
+        # Symbol-scoped rules come first and supersede the file-scoped rule for the
+        # same companion: both are true, but "changing this function" is the question
+        # the caller actually asked, and showing the coarser claim beside it only
+        # invites reading the weaker number.
+        "co_change": _merge_cochange(symbol_companions, companions, symbol),
         "blast_radius": {
             "dependent_files": dependents,
             "dependent_count": len(dependents),
             "resolved_edges_project_wide": total_edges,
         },
-        "cochange_stats": cochange_stats,
+        "cochange_stats": dict(cochange_stats, symbol=symbol_stats),
         "notes": notes,
         "approx_tokens": 0,
     }
+    # Every key the caller receives must exist before anything is measured, or the
+    # reported figure describes a payload that was never sent.
+    result["truncated_by_budget"] = False
     result["approx_tokens"] = _json_tokens(result)
-    if result["approx_tokens"] > token_budget:
-        # Trim the longest lists rather than the explanations: a caller who is told
-        # nothing about why a section is short cannot tell it from an empty section.
-        while result["approx_tokens"] > token_budget and (
-                result["already_exists"] or result["co_change"]
-                or result["blast_radius"]["dependent_files"]):
-            if len(result["blast_radius"]["dependent_files"]) > 3:
-                result["blast_radius"]["dependent_files"].pop()
-            elif len(result["co_change"]) > 3:
-                result["co_change"].pop()
-            elif result["already_exists"]:
-                result["already_exists"].pop()
-            else:
-                break
-            result["approx_tokens"] = _json_tokens(result)
+    # Trim the longest lists rather than the explanations: a caller told nothing about
+    # why a section is short cannot tell it from a section that was genuinely empty.
+    while result["approx_tokens"] > token_budget:
+        if len(result["blast_radius"]["dependent_files"]) > 3:
+            result["blast_radius"]["dependent_files"].pop()
+        elif len(result["co_change"]) > 3:
+            result["co_change"].pop()
+        elif result["already_exists"]:
+            result["already_exists"].pop()
+        else:
+            break  # the envelope alone exceeds the budget; say so rather than lie
         result["truncated_by_budget"] = True
-    else:
-        result["truncated_by_budget"] = False
+        result["approx_tokens"] = _json_tokens(result)
     return result
 
 

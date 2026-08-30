@@ -32,7 +32,9 @@ commits.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
+import tempfile
 from collections import Counter
 
 _HEX = frozenset("0123456789abcdef")
@@ -86,8 +88,12 @@ def _git_kwargs(timeout: float = 30.0) -> dict:
     return kwargs
 
 
-def read_commits(repo_path: str, *, limit: int | None = None) -> list[set[str]] | None:
-    """Each commit's changed paths, newest first. None outside a Git worktree.
+def read_commits(repo_path: str,
+                 *, limit: int | None = None) -> list[tuple[str, set[str]]] | None:
+    """Each commit as (sha, changed paths), newest first. None outside a Git worktree.
+
+    The sha is carried so the per-file symbol pass can join back onto the same commits
+    and learn what else changed alongside a symbol.
 
     Merges are excluded: a merge commit lists every path both sides touched, which is the
     same false coupling a sweeping commit creates.
@@ -103,20 +109,21 @@ def read_commits(repo_path: str, *, limit: int | None = None) -> list[set[str]] 
     if result.returncode != 0:
         return None
 
-    commits: list[set[str]] = []
+    commits: list[tuple[str, set[str]]] = []
+    sha: str | None = None
     current: set[str] | None = None
     for line in result.stdout.splitlines():
         line = line.strip()
         if not line:
             continue
         if len(line) == 40 and all(ch in _HEX for ch in line):
-            if current is not None:
-                commits.append(current)
-            current = set()
+            if current is not None and sha is not None:
+                commits.append((sha, current))
+            sha, current = line, set()
         elif current is not None:
             current.add(line)
-    if current is not None:
-        commits.append(current)
+    if current is not None and sha is not None:
+        commits.append((sha, current))
     return commits
 
 
@@ -134,7 +141,7 @@ def mine(repo_path: str, *, commits: list[set[str]] | None = None) -> dict:
                                        "reason": "not a Git worktree, or Git is unavailable"}}
 
     cap = max_commit_files()
-    usable = [c for c in commits if 2 <= len(c) <= cap]
+    usable = [files for _sha, files in commits if 2 <= len(files) <= cap]
     changes: Counter[str] = Counter()
     pairs: Counter[tuple[str, str]] = Counter()
     for files in usable:
@@ -168,10 +175,193 @@ def mine(repo_path: str, *, commits: list[set[str]] | None = None) -> dict:
             "available": True,
             "commits_read": len(commits),
             "commits_used": len(usable),
-            "commits_skipped_as_sweeping": sum(1 for c in commits if len(c) > cap),
+            "commits_skipped_as_sweeping": sum(
+                1 for _sha, files in commits if len(files) > cap),
             "max_commit_files": cap,
             "min_support": floor_support,
             "min_confidence": floor_confidence,
             "rules": len(rules),
         },
+    }
+
+
+# ── symbol-level coupling ──
+#
+# "engine.py changes with storage.py" is true and nearly useless on a file of two
+# thousand lines. What a caller needs is the coupling of the thing they are about to
+# touch. Reading full diffs for a whole repository costs about 50MB and two seconds per
+# sixty commits here, so it is not something to do up front -- but preflight always asks
+# about one file, so the diff is read for that file alone, which is a hundred times
+# cheaper, and joined against the file-level pass to learn what changed alongside.
+#
+# Attribution comes from the name Git already puts in each hunk header. Git only writes
+# a useful one when a diff driver is configured for the language, which most repositories
+# have not done, so a generated attributes file supplies the mapping for the languages
+# Git has built-in drivers for. It is passed as core.attributesFile, the lowest-priority
+# source, so a repository that configures its own driver keeps it and nothing on disk is
+# modified.
+#
+# The heuristic reports the nearest preceding definition, which mis-attributes a change
+# that falls outside every definition -- a module-level constant is credited to the
+# function above it. The definition-shaped filter below rejects the clearest cases
+# (imports, plain assignments); the rest is why symbol-level rules supplement the
+# file-level ones rather than replacing them.
+
+_GIT_DIFF_DRIVERS = {
+    ".py": "python", ".rb": "ruby", ".php": "php", ".java": "java", ".cs": "csharp",
+    ".go": "golang", ".rs": "rust", ".kt": "kotlin", ".kts": "kotlin", ".sh": "bash",
+    ".c": "cpp", ".h": "cpp", ".cc": "cpp", ".cpp": "cpp", ".hpp": "cpp",
+    ".m": "objc", ".pl": "perl", ".pm": "perl", ".ex": "elixir", ".exs": "elixir",
+}
+
+# A hunk header: @@ -a,b +c,d @@ trailing context
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$")
+# Contexts that introduce a definition. Anything else -- an import block, a bare
+# assignment -- means the hunk fell outside every definition and is left unattributed.
+_DEFINITION_RE = re.compile(
+    r"^\s*(?:@|export\s+|public\s+|private\s+|protected\s+|internal\s+|static\s+"
+    r"|final\s+|abstract\s+|open\s+|suspend\s+|async\s+|pub\s+|const\s+)*"
+    r"(?:def|class|func|function|fn|sub|struct|impl|interface|trait|type|module|object)\b")
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_DEFINITION_KEYWORDS = frozenset({
+    "def", "class", "func", "function", "fn", "sub", "struct", "impl", "interface",
+    "trait", "type", "module", "object", "async", "export", "public", "private",
+    "protected", "internal", "static", "final", "abstract", "open", "suspend", "pub",
+    "const", "var", "let",
+})
+
+_ATTRIBUTES_PATH: str | None = None
+
+
+def _diff_attributes_file() -> str:
+    """A generated attributes file naming Git's built-in diff driver per extension.
+
+    Written once per process into a temporary directory. Git reads core.attributesFile
+    only after the repository's own .gitattributes, so a project that already configures
+    a driver is left alone.
+    """
+    global _ATTRIBUTES_PATH
+    if _ATTRIBUTES_PATH and os.path.exists(_ATTRIBUTES_PATH):
+        return _ATTRIBUTES_PATH
+    directory = tempfile.mkdtemp(prefix="codesextant-attrs-")
+    path = os.path.join(directory, "attributes")
+    with open(path, "w", encoding="utf-8") as handle:
+        for extension, driver in sorted(_GIT_DIFF_DRIVERS.items()):
+            handle.write(f"*{extension} diff={driver}\n")
+    _ATTRIBUTES_PATH = path
+    return path
+
+
+def _context_symbol(context: str) -> str | None:
+    """The defined name in a hunk's trailing context, or None if it names no definition."""
+    context = context.strip()
+    if not context or not _DEFINITION_RE.match(context):
+        return None
+    for token in _IDENT_RE.findall(context):
+        if token not in _DEFINITION_KEYWORDS:
+            return token
+    return None
+
+
+def read_symbol_commits(repo_path: str, rel_path: str,
+                        *, limit: int | None = None) -> dict[str, set[str]] | None:
+    """{commit sha: symbols of ``rel_path`` it touched}. None outside a Git worktree.
+
+    Output is consumed as it streams. One file's history is small, but a generated or
+    vendored file can be enormous, and holding a diff in memory to count its hunk
+    headers would be the kind of waste this tool exists to find.
+    """
+    count = max_commits() if limit is None else limit
+    command = [
+        "git", "-c", f"core.attributesFile={_diff_attributes_file()}",
+        "-C", repo_path, "log", f"--max-count={int(count)}",
+        "--format=%x00%H", "--unified=0", "--no-merges", "--no-renames",
+        "--no-color", "--", rel_path,
+    ]
+    creationflags = {"creationflags": 0x08000000} if os.name == "nt" else {}
+    try:
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, errors="replace", **creationflags)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    touched: dict[str, set[str]] = {}
+    sha: str | None = None
+    try:
+        for line in process.stdout:
+            if line.startswith("\x00"):
+                sha = line[1:].strip() or None
+                if sha:
+                    touched.setdefault(sha, set())
+            elif sha and line.startswith("@@"):
+                match = _HUNK_RE.match(line.rstrip("\n"))
+                if match:
+                    name = _context_symbol(match.group(2))
+                    if name:
+                        touched[sha].add(name)
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        process.wait()
+    if process.returncode != 0:
+        return None
+    return touched
+
+
+def mine_symbols(repo_path: str, rel_path: str,
+                 commits: list[tuple[str, set[str]]] | None = None) -> dict:
+    """Co-change rules keyed by a symbol of ``rel_path`` rather than the whole file.
+
+    The companion side stays a file. Narrowing the question is what matters -- "changing
+    this function" instead of "changing this two-thousand-line module" -- and keeping the
+    answer a file gives the rule enough support to clear the thresholds, which
+    symbol-to-symbol pairs almost never do outside a long history.
+
+    Returns {"rules": [...], "stats": {...}}; rules are {symbol, companion, support,
+    changes, confidence}.
+    """
+    if commits is None:
+        commits = read_commits(repo_path)
+    if commits is None:
+        return {"rules": [], "stats": {"available": False,
+                                       "reason": "not a Git worktree, or Git is unavailable"}}
+    touched = read_symbol_commits(repo_path, rel_path)
+    if touched is None:
+        return {"rules": [], "stats": {"available": False,
+                                       "reason": f"no diff history for {rel_path}"}}
+
+    cap = max_commit_files()
+    files_by_sha = {sha: files for sha, files in commits if 2 <= len(files) <= cap}
+    changes: Counter[str] = Counter()
+    pairs: Counter[tuple[str, str]] = Counter()
+    used = 0
+    for sha, symbols in touched.items():
+        files = files_by_sha.get(sha)
+        if not files or not symbols:
+            continue
+        used += 1
+        companions = files - {rel_path}
+        for symbol in symbols:
+            changes[symbol] += 1
+            for companion in companions:
+                pairs[(symbol, companion)] += 1
+
+    floor_support = min_support()
+    floor_confidence = min_confidence()
+    rules = []
+    for (symbol, companion), support in pairs.items():
+        if support < floor_support:
+            continue
+        total = changes[symbol]
+        confidence = support / total if total else 0.0
+        if confidence >= floor_confidence:
+            rules.append({"symbol": symbol, "companion": companion,
+                          "support": support, "changes": total,
+                          "confidence": round(confidence, 4)})
+    rules.sort(key=lambda r: (-r["confidence"], -r["support"], r["symbol"], r["companion"]))
+    return {
+        "rules": rules,
+        "stats": {"available": True, "path": rel_path, "commits_used": used,
+                  "symbols_seen": len(changes), "rules": len(rules)},
     }

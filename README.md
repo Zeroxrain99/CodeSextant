@@ -98,6 +98,8 @@ python -m codesextant preflight . codesextant/storage.py --symbol project_key
     ...
 ```
 
+With `--symbol`, the middle section narrows to that one definition where history supports it. On a two-thousand-line module the file-level claim is too coarse to act on: changing `daemon.py` anywhere brings its reliability test 70% of the time, while changing `serve` has brought it every time.
+
 The middle section is mined from version-control history rather than written by hand. Some obligations are not in the code at all: bumping a version constant means editing the packaging file, adding a route means adding it to the allowlist and to the routing test. Files that keep appearing in the same commit are coupled whether or not anything imports anything, so the rule can be recovered instead of remembered. Sweeping commits are excluded, a pair needs several shared commits before it counts, and every rule shows the commit counts behind it, because history records what people did rather than what they should have done.
 
 ## Why use an index
