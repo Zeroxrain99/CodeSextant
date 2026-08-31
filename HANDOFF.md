@@ -21,6 +21,7 @@ the machine.
 | tests | `python -m pytest -q` → 739 passed, 6 skipped |
 | lint | `python -m ruff check codesextant tests experiments` → **clean**, and a CI job enforces it. The baseline used to be "12 pre-existing", written here and checked by nobody; a number you have to remember is a guard with a memory requirement. |
 | experiments | `experiments/README.md` — protocol, results, and what they do not establish |
+| **plan** | **`docs/roadmap.md`** — the two demands this serves, what "done" means for each, and the ordered steps. Read it before choosing what to work on, and update its status line in the same commit as the work. |
 
 **The two things that matter most.**
 
@@ -390,6 +391,10 @@ these numbers hold for the code you actually work on.
 ---
 
 # Next steps, in order
+
+**These are now the detail under `docs/roadmap.md`.** That file carries the two demands
+this project serves, what finishing each one means, and the phase ordering. This section
+is the near-term view; the roadmap is the reason any of it is next.
 
 **1. Score symbol-level co-change.** It ships and is asserted and has never been
 measured. An exp1 variant, cheap, and it either justifies the per-file diff mining or
