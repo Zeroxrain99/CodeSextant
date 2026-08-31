@@ -61,7 +61,9 @@ CANDIDATES = ("check", "callers", "callers_unbudgeted", "check_unbudgeted",
               "names@k", "names_imports", "names_cochange", "test_names",
               "check+dependents@2", "check+importers@2/cut10",
               "check+importers@2/cut20", "check+importers@2/cut40",
-              "check+importers@2/cut80", "shipped", "check+shipped")
+              "check+importers@2/cut80", "shipped", "check+shipped",
+              "ships", "ships+declined@2", "ships+declined@4",
+              "ships+declined_imports@2")
 
 
 def _git(root: str, *args: str) -> tuple[int, str]:
@@ -148,28 +150,52 @@ def _is_test(relative: str) -> bool:
             or "tests/" in relative or relative.startswith("test/"))
 
 
-def _changed_names(tree: str, applied: list[str]) -> list[str]:
-    """The names check would resolve, in the order check would resolve them.
+def _changed_names(tree: str, applied: list[str]) -> list[tuple[str, str]]:
+    """The (file, name) pairs check would resolve, in the order check would resolve them.
 
     Order matters and is the reason this mirrors check rather than collecting a set:
     only the first ``CODESEXTANT_CHECK_MAX_SYMBOLS`` are ever resolved, so a file whose
     only mention is of the twelfth changed symbol is unreachable for a reason that has
     nothing to do with resolution being conservative.
     """
-    names: list[str] = []
+    pairs: list[tuple[str, str]] = []
     with storage.ProjectStore.open_readonly(tree) as store:
         for relative in sorted(applied):
             abs_file = os.path.abspath(os.path.join(tree, relative))
             if not os.path.isfile(abs_file):
                 continue
             ranges = diffscan.changed_ranges(tree, relative)
-            names.extend(item["name"] for item
-                         in engine._changed_definitions(store, abs_file, ranges["added"]))
-    return [name for name in names if name]
+            pairs.extend((relative, item["name"]) for item
+                         in engine._changed_definitions(store, abs_file, ranges["added"])
+                         if item["name"])
+    return pairs
+
+
+def _declined_names(tree: str, pairs: list[tuple[str, str]]) -> set[str]:
+    """The symbols the cost gate refused to resolve, which check then says nothing about.
+
+    exp5 makes this the largest single mechanism behind a thin caller section: 32.5% of
+    the cases where a held-out file names a symbol the change touched and check does not
+    name the file. preflight, asked the same thing, hands back the sweep as leads marked
+    "?"; check drops the symbol entirely. Whether those leads are worth printing is what
+    the candidates below ask, and the reason to suspect not is that the gate declines
+    exactly the widely-named symbols, whose leads are 26 files or more.
+
+    Only symbols inside check's own queue are asked, because the gate is never reached
+    for the ones past it.
+    """
+    declined: set[str] = set()
+    for relative, name in pairs[:engine._check_max_symbols()]:
+        abs_file = os.path.abspath(os.path.join(tree, relative))
+        outcome = engine._ensure_blast_radius(
+            tree, abs_file, name, resolve="auto", defined_here=True)
+        if outcome["status"] == "declined":
+            declined.add(name)
+    return declined
 
 
 def _features(tree: str, applied: list[str], result: dict,
-              names_in_order: list[str]) -> dict[str, dict]:
+              names_in_order: list[str], declined: set[str]) -> dict[str, dict]:
     """One row per outside Python file that any caller-side signal could reach."""
     changed = set(applied)
     modules = {module for relative in applied for module in _module_targets(tree, relative)}
@@ -192,9 +218,13 @@ def _features(tree: str, applied: list[str], result: dict,
         confidence = companions.get(relative, 0.0)
         if not (hit or imports or confidence or relative in resolved):
             continue
-        rows[relative] = {"names": len(set(names_in_order[index] for index in hit)),
+        named = {names_in_order[index] for index in hit}
+        rows[relative] = {"names": len(named),
                           # Where in check's queue this file first becomes reachable.
                           "first": hit[0] if hit else -1,
+                          # How many of the symbols the cost gate refused it mentions:
+                          # the leads check throws away and preflight would have shown.
+                          "declined": len(named & declined),
                           "imports": imports,
                           "resolved": int(relative in resolved),
                           "cochange": confidence, "test": int(_is_test(relative))}
@@ -222,7 +252,9 @@ def _collect(repo: str, home: str, sha: str, files: set[str], cases: list) -> in
             return 0
         engine.index_project(tree, force=True)
         result = engine.check(tree, token_budget=100_000)
-        names_in_order = _changed_names(tree, applied)
+        pairs = _changed_names(tree, applied)
+        names_in_order = [name for _relative, name in pairs]
+        declined = _declined_names(tree, pairs)
 
         # The same question asked with the queue removed. "Only the first ten symbols
         # are resolved" is the cheapest explanation for a thin caller section and the
@@ -245,7 +277,8 @@ def _collect(repo: str, home: str, sha: str, files: set[str], cases: list) -> in
         cases.append({
             "sha": sha, "held_out": held_out, "applied": applied,
             "definitions": len(names_in_order),
-            "features": _features(tree, applied, result, names_in_order),
+            "features": _features(tree, applied, result, names_in_order, declined),
+            "declined": sorted(declined),
             "companions": [entry["path"] for entry in result.get("companions") or []],
             "callers": sorted({path for entry in result.get("callers") or []
                                for path in entry.get("callers") or []}),
@@ -337,7 +370,40 @@ def _predict(case: dict, name: str) -> set[str]:
         return _predict(case, "check") | set(case.get("dependents") or ())
     if name == "shipped":
         return set(case.get("dependents") or ())
+    if name.startswith("ships"):
+        # The baseline for anything asked from here on is what 0.26.0 prints, not the
+        # three sections it printed before. A candidate has to add to the answer as it
+        # now stands, or it is not adding anything.
+        ships = _predict(case, "check") | set(case.get("dependents") or ())
+        if name == "ships":
+            return ships
+        if name == "ships+declined@2":
+            return ships | _declined_leads(case, 2, ships, require_import=False)
+        if name == "ships+declined@4":
+            return ships | _declined_leads(case, 4, ships, require_import=False)
+        if name == "ships+declined_imports@2":
+            return ships | _declined_leads(case, 2, ships, require_import=True)
+        raise KeyError(name)
     raise KeyError(name)
+
+
+def _declined_leads(case: dict, cap: int, already: set[str], *,
+                    require_import: bool) -> set[str]:
+    """Leads for the symbols the cost gate refused, ranked and cut to ``cap``.
+
+    This is what preflight would have shown and check throws away. Two forms are scored,
+    because the gate declines a symbol precisely when many files name it, so the raw
+    leads are a long and noisy list: on its own, and narrowed to files that also import
+    a module the change touched. Files another section already names are passed over --
+    a slot spent repeating a stronger claim is a slot wasted.
+    """
+    features = case["features"]
+    candidates = [path for path, row in features.items()
+                  if row.get("declined") and path not in already
+                  and (row["imports"] if require_import else True)]
+    ranked = sorted(candidates, key=lambda path: (-features[path]["declined"],
+                                                  -features[path]["imports"], path))
+    return set(ranked[:cap])
 
 
 def _shipped_dependents(case: dict, cap: int) -> set[str]:

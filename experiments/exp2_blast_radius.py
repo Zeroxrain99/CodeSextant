@@ -14,7 +14,16 @@ diff's hunk ranges. For each of them:
     resolved    files with import-resolved references to the symbol (engine)
     leads_only  files that name the symbol but do not resolve to it -- the `?` tier
     name_match  every file that names it, undifferentiated  (references.name_sweep)
+    dependents  files importing the module the symbol lives in, at any length
+    dependents@2  the same, cut to what a printed tier could afford
     truth       the other files that commit changed
+
+The last two are a file-level question asked among symbol-level ones. check gained that
+tier in 0.26.0 on measured grounds; preflight has not, and the two do not automatically
+transfer, because preflight is asked before the edit about a file whose symbol may not
+exist yet. They are scored here rather than assumed, on the protocol that already asks
+preflight's question. Being file-level they give the same answer for both symbols
+sampled from one file, which is not a defect: it is what the predictor is.
 
 The first two are the two tiers preflight prints, and the third is what you get
 without resolution. Their union is by definition the third row -- a caller has to name
@@ -50,6 +59,18 @@ from experiments import corpus  # noqa: E402
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+")
 MAX_FILES_PER_COMMIT = 3
 MAX_SYMBOLS_PER_FILE = 2
+# What the leads tier amounts to once preflight's token budget has trimmed it. The
+# budget pops leads first and stops at three, so three is what a reader usually sees --
+# and the sweep is unordered, so those three are an arbitrary three. Scoring the full
+# tier as if all of it were printed would flatter it.
+LEADS_SHOWN = 3
+
+PREDICTORS = ("resolved", "leads_only", "leads@3", "name_match",
+              "dependents", "dependents@2",
+              # The three whole answers, which is what a ship decision is actually
+              # between: what preflight prints today, the same with the leads tier
+              # swapped for module dependents, and the same with both.
+              "now", "swap", "both")
 
 
 def _git(repo: str, *args: str) -> str:
@@ -138,6 +159,44 @@ class Score:
                 "cases": self.cases}
 
 
+def paired_precision_difference(left: Score, right: Score, *, seed: int = 0,
+                                rounds: int = 4000) -> dict:
+    """Bootstrap the difference in precision, resampling commits jointly.
+
+    Both predictors answered the same queries in the same commits, so comparing their
+    separate intervals understates the evidence -- two intervals can overlap while every
+    commit moves the same way. exp4 found that once already, where it turned a
+    conclusion from "not established" to established in all three repositories.
+
+    Commits are the resampled unit because queries inside one commit share its ground
+    truth. Commits where neither predictor said anything carry no information about
+    precision and drop out.
+    """
+    pairs = [(a, b) for a, b in zip(left.by_commit, right.by_commit)  # noqa: B905
+             if a[0] + a[1] or b[0] + b[1]]
+    if not pairs:
+        return {}
+    rng = random.Random(seed)
+    size = len(pairs)
+    values = []
+    for _ in range(rounds):
+        ltp = lfp = rtp = rfp = 0
+        for _i in range(size):
+            (atp, afp), (btp, bfp) = pairs[rng.randrange(size)]
+            ltp += atp
+            lfp += afp
+            rtp += btp
+            rfp += bfp
+        values.append((ltp / (ltp + lfp) if ltp + lfp else 0.0)
+                      - (rtp / (rtp + rfp) if rtp + rfp else 0.0))
+    values.sort()
+    low, high = values[int(rounds * 0.025)], values[int(rounds * 0.975)]
+    observed = ((left.tp / (left.tp + left.fp) if left.tp + left.fp else 0.0)
+                - (right.tp / (right.tp + right.fp) if right.tp + right.fp else 0.0))
+    return {"mean": observed, "low": low, "high": high,
+            "excludes_zero": low > 0 or high < 0}
+
+
 def _eligible(repo: str, limit: int, seed: int) -> list[tuple[str, list[str]]]:
     raw = _git(repo, "log", "--no-merges", "--format=%H%x00", "--name-only")
     commits, sha, files = [], None, []
@@ -155,7 +214,7 @@ def _eligible(repo: str, limit: int, seed: int) -> list[tuple[str, list[str]]]:
 
 
 def evaluate(repo: str, *, limit: int = 120, seed: int = 0) -> dict:
-    scores = {"resolved": Score(), "leads_only": Score(), "name_match": Score()}
+    scores = {name: Score() for name in PREDICTORS}
     used_commits = 0
     with tempfile.TemporaryDirectory() as home:
         os.environ["CODESEXTANT_HOME"] = home
@@ -183,6 +242,15 @@ def evaluate(repo: str, *, limit: int = 120, seed: int = 0) -> dict:
                         symbols = _touched_symbols(store, abs_file, spans)
                         truth = {os.path.abspath(os.path.join(tree, f))
                                  for f in files if f != path}
+                        # Computed once per file: importers depend on the module, not
+                        # on which symbol inside it the author is about to touch.
+                        importers = references.module_dependents(
+                            tree, [path], skip={path}, limit=200)
+                        dependents = {os.path.abspath(os.path.join(tree, rel))
+                                      for rel in importers}
+                        top = sorted(importers, key=lambda rel: (-importers[rel], rel))[:2]
+                        dependents_cut = {os.path.abspath(os.path.join(tree, rel))
+                                          for rel in top}
                         for symbol in symbols[:MAX_SYMBOLS_PER_FILE]:
                             result = engine.find_references(
                                 tree, symbol, def_path=abs_file,
@@ -194,6 +262,15 @@ def evaluate(repo: str, *, limit: int = 120, seed: int = 0) -> dict:
                             scores["resolved"].add(resolved, truth)
                             scores["leads_only"].add(named - resolved, truth)
                             scores["name_match"].add(named, truth)
+                            scores["dependents"].add(dependents, truth)
+                            scores["dependents@2"].add(dependents_cut, truth)
+                            leads = named - resolved
+                            leads_cut = set(sorted(leads)[:LEADS_SHOWN])
+                            scores["leads@3"].add(leads_cut, truth)
+                            scores["now"].add(resolved | leads_cut, truth)
+                            scores["swap"].add(resolved | dependents_cut, truth)
+                            scores["both"].add(
+                                resolved | leads_cut | dependents_cut, truth)
                             scored_here = True
                 for score in scores.values():
                     score.end_commit()
@@ -201,10 +278,16 @@ def evaluate(repo: str, *, limit: int = 120, seed: int = 0) -> dict:
             finally:
                 subprocess.run(["git", "-C", repo, "worktree", "remove", "--force",
                                 tree], check=False, capture_output=True)
+    comparisons = {}
+    for left, right in (("dependents@2", "leads@3"), ("swap", "now"), ("both", "now")):
+        delta = paired_precision_difference(scores[left], scores[right])
+        if delta:
+            comparisons[f"{left} - {right}"] = delta
     return {"repo": os.path.basename(repo), "commits_scored": used_commits,
             "results": {name: dict(score.row(),
                                    precision_ci=score.precision_interval())
-                        for name, score in scores.items()}}
+                        for name, score in scores.items()},
+            "comparisons": comparisons}
 
 
 def main() -> int:
@@ -216,14 +299,19 @@ def main() -> int:
     for repo in repos:
         report = evaluate(repo, limit=args.limit)
         print(f"\n=== {report['repo']}  ({report['commits_scored']} commits scored)")
-        print(f"{'predictor':12} {'prec':>7} {'prec 95% CI':>16} {'recall':>7} "
+        print(f"{'predictor':14} {'prec':>7} {'prec 95% CI':>16} {'recall':>7} "
               f"{'F1':>7} {'mean n':>8} {'cases':>7}")
-        for name in ("resolved", "leads_only", "name_match"):
+        for name in PREDICTORS:
             row = report["results"][name]
             low, high = row["precision_ci"]
-            print(f"{name:12} {row['precision']:7.3f} "
+            print(f"{name:14} {row['precision']:7.3f} "
                   f"{f'[{low:.3f},{high:.3f}]':>16} {row['recall']:7.3f} "
                   f"{row['f1']:7.3f} {row['mean_predictions']:8.1f} {row['cases']:7}")
+        print("  paired precision differences (same queries, so this is the statistic):")
+        for label, delta in report["comparisons"].items():
+            verdict = "real" if delta["excludes_zero"] else "not established"
+            print(f"    {label:24} {delta['mean']:+.3f}  "
+                  f"[{delta['low']:+.3f},{delta['high']:+.3f}]  {verdict}")
     return 0
 
 

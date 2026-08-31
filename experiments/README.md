@@ -465,7 +465,7 @@ The held-out numbers were produced by the shipped code path — the cheap import
 the cap of two, the cutoff at twenty, the skipping of files another section already named
 — not by the prototype that suggested it. They match the prototype to three decimals.
 
-### Four candidates measured and rejected
+### Five candidates measured and rejected
 
 Nothing was built on any of these, which is the reason to measure first.
 
@@ -484,6 +484,24 @@ Nothing was built on any of these, which is the reason to measure first.
   mentions, by co-change confidence, or by imports alone, the pooled recall is 0.162,
   0.160 and 0.162. The tiebreaker buys nothing, so the plumbing to carry it into
   `check` was not built.
+- **Printing leads for the symbols the cost gate declined.** This was the largest
+  remaining mechanism — 32.5% of caller misses — and the sweep has already run, so the
+  leads are free. Measured on top of what 0.26.0 now ships:
+
+  | | derivation (176) | held out (175) | all six (351) |
+  |---|---|---|---|
+  | `ships` | 0.398 | 0.326 | 0.362 |
+  | `+ declined leads @2` | 0.409 | 0.326 | 0.368 |
+  | paired difference | +0.011 [+0.000, +0.028] | **+0.000** [+0.000, +0.000] | +0.006 [+0.000, +0.014] |
+  | narrowed to files that also import a changed module | — | — | **+0.000 exactly** |
+
+  Two cases in 351, none of them held out, for 0.2 to 0.5 more files named every run.
+  The gate declines a symbol precisely when many files name it, so its leads are the
+  noisiest ones there are — and the import-narrowed version adds *nothing at all*,
+  because the dependents tier already reaches those files. **The second instance of the
+  same lesson: a mechanism's share of the failures is not a repair's value.** The
+  budget explained 20% of misses and repaid nothing; the cost gate explains 32.5% and
+  repays nothing.
 
 ### The locator fix, reported honestly
 
