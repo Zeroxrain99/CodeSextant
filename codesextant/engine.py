@@ -1270,8 +1270,15 @@ def get_map(path: str, token_budget: int = 2000, *, damping: float = 0.85,
 # nothing, which is the only version of this that survives contact with a real task.
 
 
-def _identifier_tokens(name: str) -> set[str]:
-    """Words inside an identifier: parse_duration, parseDuration, ParseDuration alike."""
+# A single shared word is not evidence on its own, but two names of the same shape
+# that differ in exactly one slot are: md5_utf8 beside sha256_utf8, list_domains
+# beside list_paths. Scored at the default threshold, so the match is included by
+# default and drops out the moment anyone raises the bar.
+_FAMILY_SIMILARITY = 0.5
+
+
+def _identifier_words(name: str) -> list[str]:
+    """Words inside an identifier, in order: parse_duration, parseDuration alike."""
     words: list[str] = []
     for chunk in name.replace("-", "_").split("_"):
         if not chunk:
@@ -1284,7 +1291,27 @@ def _identifier_tokens(name: str) -> set[str]:
                 if index - start > 0:
                     words.append(chunk[start:index].lower())
                 start = index
-    return {w for w in words if w}
+    return [w for w in words if w]
+
+
+def _identifier_tokens(name: str) -> set[str]:
+    """The same words, unordered, for callers that only ask whether one is present."""
+    return set(_identifier_words(name))
+
+
+def _same_shape_family(left: list[str], right: list[str]) -> bool:
+    """Two names of the same length differing in exactly one word.
+
+    This is what a copy-pasted family looks like -- md5_utf8 and sha256_utf8,
+    get_binary_stdin and get_binary_stdout -- and what a shared verb does not:
+    release_version against release differs in *length*, so it stays rejected. The
+    thing that separates the two is not how many words are shared, which is one in
+    both cases, but whether the names have the same shape. Single-word names are
+    excluded, because two of those differing in their one position share nothing.
+    """
+    if len(left) != len(right) or len(left) < 2:
+        return False
+    return sum(1 for a, b in zip(left, right) if a != b) == 1  # noqa: B905
 
 
 def _name_similarity(left: str, right: str) -> float:
@@ -1296,24 +1323,75 @@ def _name_similarity(left: str, right: str) -> float:
     exactly, which is the correct standard for them -- run and runner are not the
     same function, and offering them as reuse candidates trains the reader to skim
     past the section that matters.
+
+    The exception is a same-shape family: equal word counts differing in exactly one
+    position. An experiment found the strict rule missing every differently-named
+    structural duplicate in one repository -- md5_utf8 beside sha256_utf8,
+    list_domains beside list_paths -- all of which share one word and all of which
+    are the same code written twice. See :func:`_same_shape_family` for why shape and
+    not count is the thing that separates those from a shared verb.
     """
     if left == right:
         return 1.0
-    a, b = _identifier_tokens(left), _identifier_tokens(right)
+    left_words, right_words = _identifier_words(left), _identifier_words(right)
+    a, b = set(left_words), set(right_words)
     if not a or not b:
         return 0.0
     shared = a & b
-    if len(shared) < 2:
-        return 0.0
-    return len(shared) / len(a | b)
+    if len(shared) >= 2:
+        return len(shared) / len(a | b)
+    if shared and _same_shape_family(left_words, right_words):
+        return _FAMILY_SIMILARITY
+    return 0.0
 
 
-def _reuse_candidates(store, symbol: str, target: str, limit: int) -> list[dict]:
+def _common_name_max() -> int:
+    """How many definitions may share a name before the name stops being evidence.
+
+    This is also the list length, deliberately: one number, so there is no band where
+    a name is uncommon enough to report but too common to report *fully*. Either the
+    candidates all fit and you see all of them, or the name is a convention and you
+    are told that instead. Showing an arbitrary eight of nine was the failure an
+    experiment caught, and a second cutoff is how it would come back.
+    """
+    raw = os.environ.get("CODESEXTANT_PREFLIGHT_COMMON_NAME_MAX", "").strip()
+    if not raw:
+        return 8
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 8
+
+
+def _path_proximity(target: str, candidate: str) -> int:
+    """Leading directory components two paths share. Higher is nearer."""
+    left = os.path.normcase(os.path.dirname(target)).split(os.sep)
+    right = os.path.normcase(os.path.dirname(candidate)).split(os.sep)
+    shared = 0
+    # Deliberately not strict=: the paths have different depths and the shorter one
+    # ending is exactly where the shared prefix ends.
+    for a, b in zip(left, right):  # noqa: B905
+        if a != b:
+            break
+        shared += 1
+    return shared
+
+
+def _reuse_candidates(store, symbol: str, target: str,
+                      limit: int) -> tuple[list[dict], int]:
     """Existing definitions that may already be what ``symbol`` is about to become.
 
     Name-based on purpose. This runs before the code exists, so there is no body to
     fingerprint; what the caller has is an intent with a name, and a name is enough to
     catch the common case of writing a second parse_duration next to the first.
+
+    Returns (candidates, definitions sharing the name exactly). When that count is
+    large the exact matches are dropped rather than sampled: a repository with
+    thirty-eight definitions called ``__init__`` is telling you about a convention,
+    and answering "here are eight of them" is worse than answering nothing, because
+    it looks like a finding. Which eight would also have been arbitrary, which is how
+    this was found -- an experiment scored the reuse check below plain grep on a
+    repository whose duplicates were all called ``__init__``.
     """
     threshold = cochange._env_float(
         "CODESEXTANT_PREFLIGHT_NAME_SIMILARITY", 0.5)
@@ -1342,13 +1420,19 @@ def _reuse_candidates(store, symbol: str, target: str, limit: int) -> list[dict]
         # helper is the least likely thing to reuse, so it sinks.
         rank = (score + (0.25 if same_file else 0.0)
                 - (0.3 if ranking_is_test_path(row["path"]) else 0.0))
-        scored.append((rank, -row["line"], {
+        # Ties are broken by proximity, then by path. Equal names used to be ordered by
+        # descending line number, which is deterministic but means nothing: it decided
+        # which of thirty-eight identical scores a caller got to see.
+        scored.append((rank, _path_proximity(target, row["path"]), row["path"], {
             "name": row["name"], "kind": row["kind"], "path": row["path"],
             "line": row["line"], "similarity": round(score, 2),
             "same_file": same_file,
         }))
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return [entry for _rank, _line, entry in scored[:limit]]
+    exact = sum(1 for _r, _p, _path, entry in scored if entry["name"] == symbol)
+    if exact > _common_name_max():
+        scored = [item for item in scored if item[3]["name"] != symbol]
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    return [entry for _rank, _proximity, _path, entry in scored[:limit]], exact
 
 
 def _repo_relative(root: str, target: str) -> str | None:
@@ -1690,8 +1774,9 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     notes: list[str] = []
 
     with storage.ProjectStore.open_readonly(abs_path) as store:
-        already = (_reuse_candidates(store, symbol, abs_target, limit=8)
-                   if symbol else [])
+        already, shared_name_count = (
+            _reuse_candidates(store, symbol, abs_target, limit=_common_name_max())
+            if symbol else ([], 0))
         companions = (
             store.cochange_rules_for(
                 relative, min_support=cochange.min_support(),
@@ -1719,7 +1804,13 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     leads = [m for m in resolution["name_match_files"]
              if os.path.normcase(os.path.abspath(m)) not in resolved_set]
 
-    if symbol and not already:
+    if symbol and shared_name_count > _common_name_max():
+        notes.append(
+            f"{shared_name_count} definitions in this project are named {symbol!r}. "
+            "That is a naming convention here, not something you would be duplicating, "
+            "so they are not listed: any eight of them would have been arbitrary. "
+            "find_duplicates compares shape and can tell them apart.")
+    elif symbol and not already:
         # "It looks new" was an overclaim: this compares names, and something
         # equivalent under an unrelated name never had a chance of showing up.
         notes.append(

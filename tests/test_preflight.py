@@ -928,3 +928,82 @@ def test_the_budget_spends_the_lead_list_before_the_explanations(repo, monkeypat
     # Leads are spent down to nothing before a confirmed caller is touched. Here there
     # are none to protect, so the check is that the leads are what paid for the budget.
     assert _blast(trimmed)["name_match_files"] == []
+
+
+# What counts as "you may already have written this".
+
+def test_a_shared_verb_is_still_not_a_reuse_candidate():
+    """The rule that keeps the section worth reading: one shared word is not evidence."""
+    assert engine._name_similarity("release_version", "release") == 0.0
+    assert engine._name_similarity("get_user", "get") == 0.0
+    assert engine._name_similarity("run", "runner") == 0.0
+
+
+def test_two_names_of_one_shape_differing_in_one_slot_are_a_family():
+    """md5_utf8 beside sha256_utf8 is the same code twice, and shares one word.
+
+    An experiment found the strict two-shared-words rule missing every differently
+    named structural duplicate in requests -- md5_utf8/sha256_utf8,
+    list_domains/list_paths, iterkeys/itervalues -- so the rule now separates a family
+    from a shared verb by shape rather than by count.
+    """
+    assert engine._name_similarity("md5_utf8", "sha256_utf8") == pytest.approx(0.5)
+    assert engine._name_similarity("list_domains", "list_paths") == pytest.approx(0.5)
+    assert engine._name_similarity("read_config", "write_config") == pytest.approx(0.5)
+    # Two slots differing is a different function, not a sibling of this one.
+    assert engine._name_similarity("handle_get_request", "handle_post_response") == 0.0
+    # And a single word has no shape to share.
+    assert engine._name_similarity("iterkeys", "itervalues") == 0.0
+
+
+def test_a_family_match_drops_out_when_the_bar_is_raised(repo, monkeypatch):
+    """It scores exactly at the default threshold, so it is the first thing to go."""
+    _commit(repo, "seed", {
+        "hashes.py": ("def md5_utf8(value):\n    return value\n\n\n"
+                      "def sha256_utf8(value):\n    return value\n"),
+    })
+    engine.index_project(str(repo), force=True)
+
+    names = [entry["name"] for entry in engine.preflight(
+        str(repo), "hashes.py", symbol="sha512_utf8")["already_exists"]]
+    assert sorted(names) == ["md5_utf8", "sha256_utf8"]
+
+    monkeypatch.setenv("CODESEXTANT_PREFLIGHT_NAME_SIMILARITY", "0.6")
+    assert engine.preflight(str(repo), "hashes.py",
+                            symbol="sha512_utf8")["already_exists"] == []
+
+
+def test_a_name_shared_by_the_whole_project_is_reported_as_a_convention(repo):
+    """Eight arbitrary __init__s is worse than nothing: it looks like a finding.
+
+    This is a defect an experiment caught, by scoring the reuse check below plain
+    grep on a repository whose structural duplicates were all called __init__.
+    """
+    files = {}
+    for n in range(12):
+        files[f"mod{n}.py"] = (f"class Widget{n}:\n"
+                               "    def __init__(self, value):\n"
+                               "        self.value = value\n")
+    _commit(repo, "seed", files)
+    engine.index_project(str(repo), force=True)
+
+    result = engine.preflight(str(repo), "mod0.py", symbol="__init__")
+
+    assert result["already_exists"] == [], "an arbitrary sample of twelve is not evidence"
+    note = next(n for n in result["notes"] if "__init__" in n)
+    assert "naming convention" in note
+    assert "find_duplicates" in note
+
+
+def test_below_that_threshold_every_match_is_listed_not_sampled(repo):
+    """One number for both the cutoff and the list length, so nothing is truncated."""
+    files = {}
+    for n in range(6):
+        files[f"mod{n}.py"] = (f"class Widget{n}:\n"
+                               "    def __init__(self, value):\n"
+                               "        self.value = value\n")
+    _commit(repo, "seed", files)
+    engine.index_project(str(repo), force=True)
+
+    found = engine.preflight(str(repo), "mod0.py", symbol="__init__")["already_exists"]
+    assert len(found) == 6, "all of them, or none of them, never an arbitrary subset"

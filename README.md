@@ -287,6 +287,7 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 | `CODESEXTANT_PROJECT` | unset | default project root for `codesextant mcp` when no path is given |
 | `CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES` | `25` | how many files may name a symbol before `preflight` declines to resolve it inline and reports name-level leads instead; `0` never resolves |
 | `CODESEXTANT_PREFLIGHT_NAME_SIMILARITY` | `0.5` | word overlap at which an existing definition counts as a reuse candidate |
+| `CODESEXTANT_PREFLIGHT_COMMON_NAME_MAX` | `8` | how many definitions may share a name before `preflight` reports it as a convention instead of listing them; also the list length, so nothing is ever truncated arbitrarily |
 | `CODESEXTANT_NAMEGRAPH_MAX_UNIQUE_EDGES` | `250000` | hard cap so generated code cannot exhaust memory |
 | `CODESEXTANT_WATCH_ENABLED` | on | filesystem watcher for proactive incremental indexing |
 | `CODESEXTANT_WATCH_IDLE_TTL_SEC` | `10800` | idle seconds before a quiescent project watcher is detached |
