@@ -137,7 +137,7 @@ read with the same suspicion.
 |---|---|---|
 | D1 · reuse before the code exists | `preflight`'s reuse check compares spellings, so an equivalent under an unrelated name never had a chance. The same-shape family rule bought +0.077 to +0.167 held out | the ceiling is unknown: nobody has measured how many real duplications are reachable from a name and an intention alone |
 | D2 · the caller gap, what is left of it | symbol-level ceiling is 0.153/0.439/0.350 and resolution reaches 0.094; module-level `dependents` took `check` to 0.326 held out | exp5 mapped the mechanism: **no single cause dominates**, and the two cheapest repairs (removing the resolution budget; printing the cost gate's leads) were measured and bought nothing |
-| D3 · score symbol-level co-change | mined, shipped, asserted, **never scored** | an exp1 variant, cheap. It either justifies the per-symbol diff mining or retires it. This is the last shipped claim in the tool with no number at all |
+| D3 · score symbol-level co-change | mined, shipped, asserted, **never scored** | **done — exp11, and it corrected the reason the feature exists.** Asked alone the narrowed question is *worse* than the file-level one (−0.047 derivation, −0.004 held out) and silent in 52–78% of queries. But `_merge_cochange` ships the union, and the union beats the file tier by **+0.056 held out** — 409 more true companions of 7,315, for 1,377 extra predictions, three in ten of them real. Justified as a supplement, not as a replacement, and `mine_symbols`' docstring now says so |
 
 ---
 

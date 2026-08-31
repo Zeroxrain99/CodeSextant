@@ -359,10 +359,25 @@ def mine_symbols(repo_path: str, rel_path: str,
                  commits: list[tuple[str, set[str]]] | None = None) -> dict:
     """Co-change rules keyed by a symbol of ``rel_path`` rather than the whole file.
 
-    The companion side stays a file. Narrowing the question is what matters -- "changing
-    this function" instead of "changing this two-thousand-line module" -- and keeping the
-    answer a file gives the rule enough support to clear the thresholds, which
-    symbol-to-symbol pairs almost never do outside a long history.
+    The companion side stays a file, because symbol-to-symbol pairs almost never clear
+    the support thresholds outside a long history.
+
+    **What this is for, corrected by measurement.** The original reason written here was
+    that narrowing the question is what matters -- "changing this function" instead of
+    "changing this two-thousand-line module". ``experiments/exp11_symbol_cochange.py``
+    scored that over 1,156 commits and it is false: asked *alone*, the narrowed question
+    is worse than the file-level one (-0.047 on the derivation set, -0.004 held out) and
+    silent in 52-89% of queries, because a symbol changes far less often than its file
+    and its rules rest on less support.
+
+    What it is actually good for is *supplementing* the file-level rules, which is what
+    ``engine._merge_cochange`` does with them. A symbol that always moves with a
+    companion clears the confidence threshold where its noisier parent file cannot, so
+    the union finds companions the file tier misses: **+0.056 held out**, three additions
+    in ten of them real against a base whose own precision is 0.34-0.46.
+
+    So it earns its place by adding to the file question, not by being a better version
+    of it. Anything that made this replace the file tier would be a regression.
 
     Returns {"rules": [...], "stats": {...}}; rules are {symbol, companion, support,
     changes, confidence}.

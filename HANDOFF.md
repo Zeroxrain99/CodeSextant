@@ -197,7 +197,11 @@ is wrong, and nothing predicts which a new repository is.
   recall, so roughly one added file in thirteen is the forgotten one. Whether that
   reads as a hint or as noise is a question about people, and belongs to the prevention
   experiment.
-- **Symbol-level co-change.** It is mined, shipped and asserted, and never scored.
+- ~~**Symbol-level co-change.**~~ **Scored by exp11**, and the reason it exists was
+  wrong. Asked alone the narrowed question loses to the file-level one; what ships is the
+  union, and the union is +0.056 held out over the file tier — 409 more true companions
+  for 1,377 more predictions, three in ten of them real. A supplement, not a better
+  version, and `mine_symbols` now says so.
 - **The always-on gates block.** Correct and complete on seven repositories by unit test,
   with no corpus score -- the position `guards` itself was in before exp9.
 - **Whether six fences is the right default.** exp9 priced it: 0.306 at six against 0.394
@@ -450,22 +454,17 @@ these numbers hold for the code you actually work on.
 this project serves, what finishing each one means, and the phase ordering. This section
 is the near-term view; the roadmap is the reason any of it is next.
 
-**1. Score symbol-level co-change.** It ships and is asserted and has never been
-measured. An exp1 variant, cheap, and it either justifies the per-file diff mining or
-retires it. It is first because it is the last *retrievable* claim in this tool that has
-never been scored at all — the caller side is worked out on both surfaces with every
-remaining idea measured and rejected, and the guard section is now scored by exp9. The
-one other unscored thing, the always-on gates block, cannot be scored by retrieval and
-says so.
+**1. The prevention experiment.** Agents doing tasks with and without the tool, on a
+task set nobody here wrote. It is now first because everything cheaper has been done:
+every retrievable claim in the tool has a held-out number, and this is the only design
+that answers the question the tool exists for — whether someone who *saw* the answer made
+a better change or spent less fixing it. Everything above is a proxy for it.
 
 **2. Tune the thresholds against the corpus.** `min_support` and `min_confidence`
-predate any evidence. Co-change recall is ~0.10 and there is very likely a better
-trade available. Sweep on the derivation set, confirm on the held-out set, never the
-other way round.
+predate any evidence. exp11 gives a second reason to look: the symbol tier is silent in
+52–78% of queries because a symbol's rules rest on less support than its file's, so the
+same floor may be wrong for the two tiers. Sweep on the derivation set, confirm on the
+held-out set, never the other way round.
 
-**3. The prevention experiment.** Agents doing tasks with and without the tool, on a
-task set nobody here wrote. It is the only design that answers the actual question, and
-everything above is a proxy for it.
-
-**4. Language coverage.** Resolution is Python-only; twelve other languages degrade to
+**3. Language coverage.** Resolution is Python-only; twelve other languages degrade to
 name matching, and exp2 says nothing about any of them.

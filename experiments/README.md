@@ -19,6 +19,7 @@ python -m experiments.exp7_preflight_dependents # does preflight want the same r
 python -m experiments.exp8_guard_inventory    # can the guards be found, and do they say why?
 python -m experiments.exp9_guards             # does `guards` name the fence that would have blocked you?
 python -m experiments.exp10_invisible_guards  # how much blocks people outside what a Python reader sees?
+python -m experiments.exp11_symbol_cochange   # does asking about a symbol beat asking about its file?
 ```
 
 The corpus is cloned on first run into `~/.cache/codesextant-corpus`, or wherever
@@ -792,6 +793,54 @@ So Phase C is not "four more guard kinds behind the same ranked section". It is
 `codesextant/gates.py`: a short always-on statement of what runs against a push, printed
 whole above the ranked answer, for three kinds — and a fourth waiting for a corpus that
 contains it.
+
+## exp11 — symbol-level co-change: justify it or retire it
+
+Mined, stored, shipped and asserted since before the corpus existed, and never scored.
+`HANDOFF.md` put it first among the next steps for that reason: the last retrievable
+claim in the tool with no number at all.
+
+Prequential, the same shape as exp1. For each sampled commit and each Python file it
+changed, the ground truth is the other files in that commit, and the model sees only
+strictly older commits. 1,156 commits, 2,723 symbol queries across six repositories.
+
+**The claim in `mine_symbols`' own docstring is not supported.** It says narrowing the
+query from a two-thousand-line module to one function is what matters. Asked alone,
+the narrowed question is *worse*: −0.047 recall against the file-level rules on the
+derivation set and −0.004 held out, and it says nothing at all in 52–78% of queries. A
+symbol changes far less often than its file, so its rules rest on less support.
+
+**What is true is different and better.** `engine._merge_cochange` does not use the
+symbol tier instead of the file tier — it puts symbol-scoped rules first and adds the
+file-scoped ones they do not cover. The union is what a reader sees, so the union is what
+had to be scored:
+
+| | derivation | held out | pooled |
+|---|---|---|---|
+| `symbol+file` − `file` | +0.019 [+0.013,+0.025] | **+0.056 [+0.045,+0.067]** | +0.040 |
+| `symbol` − `file` | −0.047 [−0.066,−0.032] | −0.004 [−0.022,+0.015] | −0.022 |
+| `symbol` − `file@k` | +0.016 [+0.010,+0.021] | +0.054 [+0.043,+0.066] | +0.038 |
+
+A symbol that always moves with a companion clears the confidence threshold where its
+noisier parent file cannot, so the narrowed query finds companions the file-level rules
+miss. That it also finds *fewer* is why asking it alone loses.
+
+**The intervals above are not the test, and cannot be.** `symbol+file` contains `file`,
+so its recall can never be lower and the lower bound is 0 by construction whenever the
+tier ever helps — the degenerate case `HANDOFF.md` layer 3 warns about. The remedy it
+prescribes is the count gained beside the interval:
+
+| | true companions gained | of | extra predictions | share of the additions that were real |
+|---|---|---|---|---|
+| derivation | 100 | 5,372 | 295 | 0.34 |
+| **held out** | **409** | **7,315** | **1,377** | **0.30** |
+
+Three additions in ten were real, against a base predictor whose own precision is
+0.34–0.46. The tier is doing work of the same quality as the thing it supplements, not
+padding it.
+
+**So: justified, and its stated reason corrected.** It is kept because it *adds* to the
+file question, not because it is a better version of it.
 
 ## What these experiments do not establish
 
