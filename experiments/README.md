@@ -17,6 +17,7 @@ python -m experiments.exp5_caller_gap     # where does the caller section lose?
 python -m experiments.exp6_caller_candidates   # which repair for it is worth building?
 python -m experiments.exp7_preflight_dependents # does preflight want the same repair?
 python -m experiments.exp8_guard_inventory    # can the guards be found, and do they say why?
+python -m experiments.exp9_guards             # does `guards` name the fence that would have blocked you?
 ```
 
 The corpus is cloned on first run into `~/.cache/codesextant-corpus`, or wherever
@@ -624,11 +625,87 @@ cases — opposite directions, both far too small to read.
 Any experiment on it has to hold out a guard file deliberately rather than take whatever
 sorting hands it.
 
+## exp9 — does the guard index name the fence that would have blocked you?
+
+`guards` shipped in 0.28.0 on the strength of exp8, which measured what a guard index
+could *contain*. It never measured whether the fences it names are the ones that would
+have stopped the change. Until this experiment that section was a design with unit tests
+behind it.
+
+**The sampler is the experiment's first result.** exp4 and exp6 hold out
+`sorted(files)`' first `.py` entry and almost never land on a guard file, so nothing else
+in this directory can answer the question. Here the held-out file is chosen *because* it
+holds a fence, preferring a test — "the test I forgot" is the canonical form of the
+failure and tests are 72–89% of all guards. 60 cases per repository, 360 in all.
+
+Every control gets exactly as many guards as `guards` printed, ordered by the thing that
+would order a real answer, because truncating a baseline alphabetically is how this
+directory once turned a real 1.4× into a claimed 5.9×.
+
+| | requests | click | tqdm | **jinja** | **httpie** | **rich** | pooled |
+|---|---|---|---|---|---|---|---|
+| `guards` | 0.350 | 0.383 | 0.483 | 0.067 | 0.167 | 0.450 | **0.317** |
+| `guards_symbols` (0.28.0) | 0.333 | 0.317 | 0.417 | 0.050 | 0.167 | 0.400 | 0.281 |
+| `guards_perfile` (rejected) | 0.100 | 0.083 | 0.333 | 0.133 | 0.117 | 0.067 | 0.139 |
+| `cochange@k` | 0.033 | 0.117 | 0.400 | 0.200 | 0.083 | 0.167 | 0.167 |
+| `same_dir@k` | 0.183 | 0.033 | 0.267 | 0.250 | 0.083 | 0.150 | 0.161 |
+| `frequency@k` | 0.267 | 0.083 | 0.533 | 0.317 | 0.050 | 0.150 | 0.233 |
+
+Held out (jinja, httpie, rich): **0.228**, naming 3.8 fences. Paired against each
+control, held-out set only:
+
+| against | difference | interval | |
+|---|---|---|---|
+| `guards_perfile` | +0.122 | [+0.050, +0.194] | real |
+| `cochange@k` | +0.078 | [+0.006, +0.150] | real |
+| `guards_symbols` | +0.022 | [+0.006, +0.044] | real |
+| `same_dir@k` | +0.067 | [−0.017, +0.150] | not established |
+| `frequency@k` | +0.056 | [−0.033, +0.139] | not established |
+
+**The rejection that was made by eye is confirmed by measurement.** `guards_perfile` —
+every guard in a file the change reaches, no per-guard check — is the design that was
+built and thrown away on one reading. It loses by +0.122 held out and +0.178 pooled.
+
+**And the design was still incomplete.** `cochange@k` is the control that matters,
+because `check` already names the forgotten file from history alone and ships. Against
+the two symbol tiers alone the held-out difference was +0.056, **not established**: on
+that evidence, reading the fences was a longer way to the same answer. Pooling the
+outcomes offline showed why — the two signals hit different commits, and their union was
+worth +0.111 held out over the symbol tiers. That measurement is what built the history
+tier, in that order, and the built version is the row above: +0.022 held out, which is
+smaller than the offline union because the tier ranks last and spends only the slots the
+first two leave empty.
+
+### Where it loses, and why
+
+**On jinja `guards` loses to every control and the losses are real** (−0.133 against
+`cochange@k`, −0.250 against `frequency@k`). jinja is also the repository where exp2's
+resolved-reference result reversed, and the two have one cause: both signals are read off
+symbol names, and a template engine drives its subjects through indirection. The fences
+`guards` did find there were `assert` and `raise` and not one test.
+
+The diagnostic is in the table. On jinja alone, `guards_perfile` (0.133) beats `guards`
+(0.067): the fences are reachable at *file* level and not at *guard* level, because
+jinja's tests do not spell the names they exercise. Per-guard evidence is the right rule
+on five repositories and the wrong one on this one, and no number here says which case a
+new repository is.
+
+`frequency@k` — the project's most-changed files, no index, no analysis — is beaten by
++0.083 pooled and not beaten at all on the held-out set. For a repository whose tests
+concentrate in a few large files, "look at what changes most" is a good and much cheaper
+answer.
+
 ## What these experiments do not establish
 
 Written down because the gaps are easier to see now than they will be later, and
 because a results section that only lists wins is an advertisement.
 
+- **Guards outside Python.** exp9 scores `guards` only on what an `ast` walk can see.
+  A required CI check, a ruff rule, a pre-commit hook and a `NOT NULL` constraint are all
+  fences that stop people, and every one of them is invisible to the number above.
+- **Which repositories `guards` is wrong for.** It loses to every control on jinja, and
+  the reason — tests that never spell the symbol they exercise — is visible only after
+  the fact. Nothing here predicts it in advance from a repository.
 - **Prevention.** Every experiment here measures retrieval — given a query, is the
   right thing returned. exp4 comes closest, since a held-out file is a thing that was
   genuinely forgotten, but it still does not measure whether an author who saw the

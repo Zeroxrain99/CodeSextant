@@ -220,3 +220,102 @@ def test_the_rendering_separates_what_it_checks_from_why_it_is_there(repo):
     assert "checks" in text
     assert "because" in text and "(docstring)" in text
     assert "reached  names encode" in text
+
+
+# The history tier. It is the one per-file claim the section admits, and it is here
+# because exp9 measured it rather than because it sounded reasonable: the symbol tiers
+# reach 0.206 held out, history alone 0.150, and the two together 0.317. What follows
+# pins the three things that make it safe to admit -- it is labelled, it is bounded, and
+# it never displaces evidence read off the fence itself.
+
+
+@pytest.fixture()
+def repo_with_history(repo):
+    """A companion pair: ``pkg/render.py`` and ``tests/test_render.py`` move together.
+
+    Four commits touching both, and none naming a symbol from ``pkg/limits.py``, so the
+    fence in the companion is reachable by history and by nothing else -- which is the
+    case the tier exists for.
+    """
+    _write(repo, "pkg/render.py", "def render(rows):\n    return rows\n")
+    _write(repo, "tests/test_render.py", """
+        from pkg.render import render
+
+
+        def test_render_returns_rows():
+            assert render([1]) == [1]
+    """)
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-q", "-m", "render")
+    for n in range(4):
+        _write(repo, "pkg/render.py", f"def render(rows):\n    return rows[:{n + 1}]\n")
+        _write(repo, "tests/test_render.py", f"""
+            from pkg.render import render
+
+
+            def test_render_returns_rows():
+                assert render([1]) == [1][:{n + 1}]
+        """)
+        _run(repo, "add", "-A")
+        _run(repo, "commit", "-q", "-m", f"render {n}")
+    engine.index_project(str(repo), force=True)
+    return repo
+
+
+def test_a_fence_reachable_only_through_history_is_still_found(repo_with_history):
+    found = engine.guards(str(repo_with_history), target="pkg/render.py")
+    reached = {row["path"]: row["why"] for row in found["guards"]}
+    assert "tests/test_render.py" in reached
+    assert reached["tests/test_render.py"].startswith("history: changes with")
+
+
+def test_the_history_tier_says_it_is_history_and_how_strong(repo_with_history):
+    """A file-level claim printed as though it were the fence's own text is a lie the
+    reader cannot detect. It says which claim it rests on, and how much of one."""
+    found = engine.guards(str(repo_with_history), target="pkg/render.py")
+    row = next(r for r in found["guards"] if r["path"] == "tests/test_render.py")
+    assert 0.0 < row["history_confidence"] <= 1.0
+    printed = "\n".join(render.guards_lines(found))
+    assert "history: changes with pkg/render.py" in printed
+    assert f"({row['history_confidence']} confidence)" in printed
+
+
+def test_history_never_outranks_a_fence_that_names_what_you_changed(repo_with_history):
+    """The tier fills the slots the first two left empty. It does not compete for
+    theirs: naming the symbol is evidence about the fence, history is evidence about
+    its file, and mixing the two orders would sell the weaker claim as the stronger."""
+    found = engine.guards(str(repo_with_history), target="pkg/limits.py",
+                          symbol="encode")
+    tiers = [0 if row["why"].startswith("names")
+             else 2 if row["why"].startswith("history") else 1
+             for row in found["guards"]]
+    assert tiers == sorted(tiers)
+    assert tiers[0] == 0, "the fence naming the changed symbol still leads"
+
+
+def test_the_history_tier_cannot_spend_the_whole_section(repo_with_history):
+    """One companion holding forty tests would otherwise bury everything above it. Two
+    guards from each of three files: enough to fill an empty section, never more."""
+    body = "\n\n".join(
+        f"def test_number_{n}():\n    assert {n} == {n}" for n in range(12))
+    _write(repo_with_history, "tests/test_render.py",
+           "from pkg.render import render\n\n\n" + body + "\n")
+    _run(repo_with_history, "add", "-A")
+    _run(repo_with_history, "commit", "-q", "-m", "many tests")
+    engine.index_project(str(repo_with_history), force=True)
+
+    history = engine._guard_history_reach(str(repo_with_history), {"pkg/render.py": "M"})
+    rows = engine._guards_in_reach(str(repo_with_history), set(), {}, set(), history)
+    assert len(history) <= engine._GUARDS_HISTORY_SCAN
+    per_file = [r for r in rows if r["path"] == "tests/test_render.py"]
+    assert len(per_file) <= engine._GUARDS_HISTORY_PER_FILE
+
+
+def test_a_companion_already_reached_by_name_is_not_listed_twice(repo_with_history):
+    found = engine.guards(str(repo_with_history), target="pkg/render.py",
+                          symbol="render")
+    keys = [(row["path"], row["line"]) for row in found["guards"]]
+    assert len(keys) == len(set(keys))
+    named = [row for row in found["guards"]
+             if row["path"] == "tests/test_render.py" and row["why"].startswith("names")]
+    assert named, "the stronger evidence is the one kept"

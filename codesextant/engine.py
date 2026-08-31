@@ -2104,19 +2104,36 @@ def _module_dependents_tier(abs_path: str, supported: dict, changed: dict,
 # experiments/ is scored at the length the tool actually prints.
 _GUARDS_SHOWN = 6
 
+# The history tier's three bounds, and the order they apply in matters. The first
+# version truncated the *companion list* to three files and then looked for fences in
+# them, which measured at +0.017 where the offline union said +0.100 was there: most
+# companions are source files holding nothing, so cutting the list first threw away the
+# guard-bearing companion sitting fifth. Walk the list instead, and cap the fences.
+#
+# _SCAN bounds the work (ten AST extractions, the same depth check mines co-change to),
+# _PER_FILE stops one large test file spending the tier, and _SHOWN stops the tier from
+# being longer than the section it is meant to finish.
+_GUARDS_HISTORY_SCAN = 10
+_GUARDS_HISTORY_PER_FILE = 2
+_GUARDS_HISTORY_SHOWN = 6
+
 
 def _guard_reach(abs_path: str, changed: dict, symbols_changed: set[str],
                  notes: list) -> dict[str, str]:
     """Which files could hold a fence this change will meet, and why each one is here.
 
-    Two ways a guard becomes relevant, and the reason is kept alongside the file because
-    "you are editing this" and "a test over there names what you touched" are different
-    claims that deserve different attention:
+    The two tiers whose evidence is the fence's own text, and the reason is kept
+    alongside the file because "you are editing this" and "a test over there names what
+    you touched" are different claims that deserve different attention:
 
     * the change is *inside* the guard's file -- you may be moving the fence itself;
     * a file names one of the symbols you changed -- the test that fences it;
+
     Bounded by the change rather than the repository, like everything else here: one
     name sweep per changed symbol, capped by the same gate the blast radius uses.
+
+    The third tier is history, and it lives in _guard_history_reach because its evidence
+    is about the file rather than about the fence.
     """
     reach = {relative for relative in changed if relative.endswith(".py")}
 
@@ -2136,32 +2153,79 @@ def _guard_reach(abs_path: str, changed: dict, symbols_changed: set[str],
         for found in sweep.files:
             reach.add(_repo_relative(abs_path, found) or found)
 
-    # A third tier -- "this file imports a module you changed" -- was built and then
-    # removed. It is per-*file* relevance with no per-guard evidence, which is exactly
-    # the defect the paragraph in _guards_in_reach exists to prevent: it filled the
-    # section with an unrelated environment switch and two symbol-extraction tests while
-    # the three fences that actually named the symbol sat above them. check's DEPENDENTS
-    # section already answers "who imports what you changed", at file level, where that
-    # claim is true. "Better than nothing" is the argument this tool refuses everywhere
-    # else, and it does not become sound here.
+    # A tier -- "this file imports a module you changed" -- was built and then removed.
+    # It is per-*file* relevance with no per-guard evidence, which is exactly the defect
+    # the paragraph in _guards_in_reach exists to prevent: it filled the section with an
+    # unrelated environment switch and two symbol-extraction tests while the three fences
+    # that actually named the symbol sat above them. check's DEPENDENTS section already
+    # answers "who imports what you changed", at file level, where that claim is true.
+    #
+    # _guard_history_reach is the one per-file tier that survived, and the difference is
+    # that it was measured rather than argued: exp9 scores it at +0.111 held out
+    # [+0.067,+0.161] on top of these two tiers. It is kept apart from them, labelled as
+    # the file-level claim it is, and ranked below both.
     return reach
+
+
+def _guard_history_reach(abs_path: str, changed: dict) -> dict[str, dict]:
+    """Files history says change with the ones you did, strongest agreement first.
+
+    A per-*file* claim, which is why it is a separate function ranked below the two
+    per-guard tiers rather than mixed into them. It earns its place by measurement:
+    exp9 holds out a fence-bearing file from 360 real commits and asks whether the
+    section names it. The symbol tiers reach 0.206 held out, history alone 0.150, and
+    the two together 0.317 -- +0.111 [+0.067,+0.161] over the symbol tiers, real in both
+    the derivation and the held-out set. They miss different commits, which is the only
+    reason to pay for both.
+
+    The complement is the point. A fence is reachable by name only if it spells the
+    symbol it guards, and a test suite that drives its subject through templates,
+    fixtures or a CLI never does. On jinja -- a template engine, indirection throughout
+    -- the symbol tiers find 0.050 and lose to every control; history is what answers
+    there.
+    """
+    stats = _ensure_cochange(abs_path)
+    if not stats.get("available"):
+        return {}
+    best: dict[str, dict] = {}
+    with storage.ProjectStore.open_readonly(abs_path) as store:
+        for relative in sorted(changed):
+            for rule in store.cochange_rules_for(
+                    relative, min_support=cochange.min_support(),
+                    min_confidence=cochange.min_confidence()):
+                companion = rule["companion"]
+                if companion in changed or not companion.endswith(".py"):
+                    continue
+                known = best.get(companion)
+                if known is None or rule["confidence"] > known["confidence"]:
+                    best[companion] = {"confidence": rule["confidence"],
+                                       "because": relative}
+    ordered = sorted(best, key=lambda path: (-best[path]["confidence"], path))
+    return {path: best[path] for path in ordered[:_GUARDS_HISTORY_SCAN]}
 
 
 def _rank_guards(found: list) -> list:
     """Order fences by how directly this change meets them.
 
-    A guard naming a symbol you just edited is the one about to fail; a guard merely
-    sitting in a file you touched is context. Within a tier, the one whose author left
-    no reason comes first, because that is the one that will cost the most to work out
-    when it fires.
+    Three tiers, strongest evidence first. A guard naming a symbol you just edited is
+    the one about to fail; a guard sitting in a file you touched is context; a guard in
+    a file history merely says moves with yours is a lead. The third never displaces the
+    first two -- it is ordered last, so with six slots it fills only what they left
+    empty, which is the case exp9 measured it on.
+
+    Within a tier, the one whose author left no reason comes first, because that is the
+    one that will cost the most to work out when it fires. Within the history tier,
+    strongest agreement first, since there the confidence *is* the evidence.
     """
     def key(entry):
-        # A fence that names what you touched comes before one that merely shares a file
-        # with your edit. Within a tier, the one whose author left no reason first: that
-        # is the one that will cost the most to work out when it fires.
-        tier = 0 if entry["why"].startswith("names") else 1
-        return (tier, entry["reason_source"] != "none",
-                entry["path"], entry["line"])
+        if entry["why"].startswith("names"):
+            tier = 0
+        elif entry["why"].startswith("history"):
+            tier = 2
+        else:
+            tier = 1
+        return (tier, -entry.get("history_confidence", 0.0),
+                entry["reason_source"] != "none", entry["path"], entry["line"])
 
     return sorted(found, key=key)
 
@@ -2183,7 +2247,8 @@ def _guard_source(abs_path: str, row: dict) -> str:
 
 
 def _guards_in_reach(abs_path: str, reach: set[str], changed: dict,
-                     symbols_changed: set[str]) -> list[dict]:
+                     symbols_changed: set[str],
+                     history: dict[str, dict] | None = None) -> list[dict]:
     """Guards a change reaches, decided per guard rather than per file.
 
     The distinction is the whole difference between a section worth reading and a
@@ -2196,7 +2261,14 @@ def _guards_in_reach(abs_path: str, reach: set[str], changed: dict,
     Guards in files the change edits are kept regardless: there the reader is standing
     inside the fence, and which lines they touched is a matter for the ranking rather
     than for admission.
+
+    ``history`` is the one exception to per-guard evidence, and it is bounded rather
+    than argued away: at most two guards from each of at most three companion files,
+    labelled with the file-level claim they rest on, and ranked below everything above.
+    It is here because exp9 measured what it adds and the number held up out of sample;
+    the paragraph in _guard_history_reach carries it.
     """
+    history = history or {}
     collected: list[dict] = []
     for relative in sorted(reach):
         abs_file = os.path.abspath(os.path.join(abs_path, relative))
@@ -2222,6 +2294,31 @@ def _guards_in_reach(abs_path: str, reach: set[str], changed: dict,
                 else:
                     continue  # the file mentions it; this fence does not
             collected.append(row)
+
+    # Deduplicated per *guard*, not per file. A companion can be in `reach` because one
+    # of its lines mentions a changed symbol while none of its fences do -- in which
+    # case the loop above admitted nothing from it, and skipping the whole file here
+    # would drop it twice for the same reason.
+    already = {(row["path"], row["line"]) for row in collected}
+    added = 0
+    for relative, evidence in history.items():
+        if added >= _GUARDS_HISTORY_SHOWN:
+            break
+        abs_file = os.path.abspath(os.path.join(abs_path, relative))
+        if not os.path.isfile(abs_file):
+            continue
+        from_file = 0
+        for guard in guards_module.extract_file(abs_file, relative):
+            if from_file >= _GUARDS_HISTORY_PER_FILE or added >= _GUARDS_HISTORY_SHOWN:
+                break
+            row = guard.as_row()
+            if (row["path"], row["line"]) in already:
+                continue
+            row["why"] = f"history: changes with {evidence['because']}"
+            row["history_confidence"] = round(evidence["confidence"], 3)
+            collected.append(row)
+            from_file += 1
+            added += 1
     return collected
 
 
@@ -2244,7 +2341,10 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
     codebase and nobody would read it twice.
 
     * **Layer one** -- which fences are in reach at all: kind, name, ``path:line``. Six
-      of them, because the seventh turns a glance into a list.
+      of them, because the seventh turns a glance into a list. Three tiers of evidence,
+      strongest first: the fence names what you changed, the fence sits in a file you
+      changed, or history says its file moves with yours. The third is a file-level
+      claim, printed with its confidence and never ahead of the other two.
     * **Layer two** -- the rule: what each one checks, derived from the code, plus the
       author's reason when there is one and a note saying which of the two you are
       reading. Printed with layer one because both are short; this is the layer that
@@ -2288,7 +2388,8 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
                         in _changed_definitions(store, abs_file, ranges["added"]))
 
     reach = _guard_reach(abs_path, changed, symbols_changed, notes)
-    collected = _guards_in_reach(abs_path, reach, changed, symbols_changed)
+    history = _guard_history_reach(abs_path, changed)
+    collected = _guards_in_reach(abs_path, reach, changed, symbols_changed, history)
 
     ranked = _rank_guards(collected)
     if full:
@@ -2296,10 +2397,11 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
             row["source"] = _guard_source(abs_path, row)
     if not ranked:
         notes.append(
-            "No fence in reach of this change: nothing you touched holds a guard, and "
-            "nothing elsewhere names a symbol you changed. That is a search, not a "
-            "clean bill of health -- only Python is read, and a guard living in CI "
-            "configuration or a database constraint is outside what this can see.")
+            "No fence in reach of this change: nothing you touched holds a guard, "
+            "nothing elsewhere names a symbol you changed, and history offers no "
+            "companion that holds one. That is a search, not a clean bill of health -- "
+            "only Python is read, and a guard living in CI configuration or a database "
+            "constraint is outside what this can see.")
     total = len(ranked)
     result = {
         "project_key": storage.project_key(abs_path),

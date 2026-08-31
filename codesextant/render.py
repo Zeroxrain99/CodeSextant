@@ -234,7 +234,13 @@ def guards_lines(result: dict, root: str | None = None) -> list[str]:
             # says the first is missing four times in five. Where it exists, say so, and
             # say who said it.
             lines.append(f"    because  {entry['reason']}  ({entry['reason_source']})")
-        lines.append(f"    reached  {entry['why']}")
+        # The history tier rests on a file-level claim rather than on the fence's own
+        # text, so the strength of that claim is printed with it. A reader who sees
+        # "0.42" weighs it differently from one who sees "0.91", and hiding the number
+        # would make the weakest tier read like the strongest.
+        confidence = entry.get("history_confidence")
+        strength = f"  ({confidence} confidence)" if confidence else ""
+        lines.append(f"    reached  {entry['why']}{strength}")
         if entry.get("source"):
             for source_line in entry["source"].splitlines():
                 lines.append(f"      | {source_line}")

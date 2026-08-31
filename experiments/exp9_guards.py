@@ -21,7 +21,10 @@ guards, and ask `guards` what the applied change is about to meet. The held-out 
 the answer -- the commit really did have to touch a fence in it, and the question is
 whether a reader would have known before the build told them.
 
-    guards          what ships: per-guard evidence, ranked, six shown
+    guards          what ships: three tiers of evidence, ranked, six shown
+    guards_symbols  the first two tiers alone -- the version that shipped in 0.28.0,
+                    where a fence is reachable only by naming what you changed. Kept as
+                    the control the history tier had to beat to be built
     guards_perfile  the version that was built and rejected -- a guard inherits its
                     file's relevance. Kept as a control because the rejection was made
                     by eye, and this is the measurement that should have made it
@@ -62,8 +65,8 @@ from codesextant import guards as guards_module  # noqa: E402
 from experiments import corpus  # noqa: E402
 from experiments.exp4_check import paired_difference  # noqa: E402
 
-PREDICTORS = ("guards", "guards_perfile", "cochange@k", "same_dir@k",
-              "frequency@k")
+PREDICTORS = ("guards", "guards_symbols", "guards_perfile", "cochange@k",
+              "same_dir@k", "frequency@k")
 
 
 def _git(root: str, *args: str) -> tuple[int, str]:
@@ -136,10 +139,18 @@ def _score_one(repo: str, home: str, sha: str, files: set[str], holders: list[st
 
         predicted: dict[str, list[dict]] = {"guards": shown}
 
+        # 0.28.0's answer: the two tiers whose evidence is the fence's own text. The
+        # history tier was added on the strength of the difference between this row and
+        # the one above, so it stays here to be re-measured rather than remembered.
+        symbols = _changed_symbols(tree, applied)
+        changed_map = {f: "M" for f in applied}
+        reach = engine._guard_reach(tree, changed_map, symbols, [])
+        symbols_only = engine._rank_guards(
+            engine._guards_in_reach(tree, reach, changed_map, symbols))
+        predicted["guards_symbols"] = symbols_only[:engine._GUARDS_SHOWN]
+
         # The rejected design, rebuilt here so the rejection is measured rather than
         # asserted: every guard in a file the change reaches, with no per-guard check.
-        reach = engine._guard_reach(tree, {f: "M" for f in applied},
-                                    _changed_symbols(tree, applied), [])
         perfile = _extract_from(tree, sorted(reach))
         predicted["guards_perfile"] = perfile[:budget]
 
@@ -258,8 +269,9 @@ def _print(report: dict) -> None:
     if report["kinds"]:
         print(f"  kinds of fence found: {report['kinds']}")
     print("  paired differences (same cases, so the difference is the statistic):")
-    for left, right in (("guards", "guards_perfile"), ("guards", "cochange@k"),
-                        ("guards", "same_dir@k"), ("guards", "frequency@k")):
+    for left, right in (("guards", "guards_symbols"), ("guards", "guards_perfile"),
+                        ("guards", "cochange@k"), ("guards", "same_dir@k"),
+                        ("guards", "frequency@k")):
         delta = paired_difference(report["outcomes"][left], report["outcomes"][right])
         if not delta:
             continue
