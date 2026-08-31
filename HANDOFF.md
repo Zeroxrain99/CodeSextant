@@ -384,6 +384,15 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   counted a looser signal than the caller section resolves, and half of a "gap" that
   drove a whole plan item was the difference between the two. When a number bounds
   something, check that it bounds the thing you are about to try to improve.
+  **This happened again, in the session that wrote the sentence above.** exp3's "the
+  name check found 0 of 18 differently-named duplicates on requests" was carried into
+  exp13 to argue that name matching was the largest unexploited margin in the whole
+  directory, and it was published in three files. exp3 scores structural duplicate
+  *groups in the current tree* — mostly deliberate families, as its own docstring says —
+  while exp13 scores *newly added* functions that repeat something. Same words, different
+  population. Measured on the right one, the shipped matcher already reaches 0.915 held
+  out and the proposed loosening costs ten times the output for +0.068. A number quoted
+  from another experiment is a hypothesis about this one, never a premise.
 - **A mechanism's share of the failures is not a repair's value.** The resolution budget
   causes 20% of caller misses and removing it buys nothing measurable, because those
   cases fail for other reasons as well. Diagnose to shortlist, then measure the repair.
@@ -463,20 +472,11 @@ with tokens recorded. **It needs agents, which is the only reason it is not done
 Everything cheaper is: every retrievable claim in the tool has a held-out number, and
 this is the only design that answers the question the tool exists for.
 
-**2. Match names the way duplicates are actually named.** exp13 measured the reuse
-ceiling and it redirects the whole item: one added function in six repeats a shape
-already in the tree, and **0.994 of those are reachable from the name** — 0.661 carry the
-same name, 0.333 share a word. Exactly one duplicate in 1,052 added functions shared no
-word with what it repeated. `preflight` compares exact spellings and found 0 of 18
-differently-named duplicates on requests, so the reachable third is almost entirely
-unreached. That is the largest unexploited margin measured anywhere in `experiments/`,
-and it is a name-matching problem, not a body-comparison one.
-
-**3. Tune the thresholds against the corpus.** `min_support` and `min_confidence`
+**2. Tune the thresholds against the corpus.** `min_support` and `min_confidence`
 predate any evidence. exp11 gives a second reason to look: the symbol tier is silent in
 52–78% of queries because a symbol's rules rest on less support than its file's, so the
 same floor may be wrong for the two tiers. Sweep on the derivation set, confirm on the
 held-out set, never the other way round.
 
-**4. Language coverage.** Resolution is Python-only; twelve other languages degrade to
+**3. Language coverage.** Resolution is Python-only; twelve other languages degrade to
 name matching, and exp2 says nothing about any of them.

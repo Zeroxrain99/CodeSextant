@@ -38,6 +38,26 @@ constructors that assign the same number of attributes have the same shape as a 
 of Python, not of anybody reinventing anything. Counting them measures how many classes
 a project has.
 
+Second question, asked of the same population
+---------------------------------------------
+If 0.994 of duplicates are reachable from the name, how much of that does the shipped
+matcher actually reach? `preflight` scores names by Jaccard overlap with a floor of 0.5,
+which rejects `escape_control_codes` against `make_control_codes_readable`: they share
+the whole meaningful core and Jaccard is 2/5, because the longer name is punished for
+being longer.
+
+So three matchers are scored on the duplicates this experiment found, against the cost
+that decides whether a looser one is usable at all -- **how many functions in the tree it
+would also surface for the same query.** A matcher that names everything has recall 1.0
+and is worthless, which is the failure mode every other experiment in this directory
+guards against with a matched budget.
+
+    shipped       what `preflight` runs today: `engine._name_similarity` over 0.5
+    containment   the same word overlap divided by the *shorter* name's length, so a
+                  long name does not lose for being long
+    any_word      one shared word. The loosest thing that could be called matching, here
+                  to price the ceiling rather than to be proposed
+
     python -m experiments.exp13_reuse_ceiling --limit 60
 """
 from __future__ import annotations
@@ -54,7 +74,10 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from codesextant import engine  # noqa: E402
 from experiments import corpus  # noqa: E402
+
+MATCHERS = ("shipped", "containment", "any_word")
 
 # Small enough to include a real helper, large enough that `return self._x` is not a
 # duplicate of `return self._y`. Reported beside the result because the number moves
@@ -127,15 +150,37 @@ def _python_files(root: str, sha: str) -> list[str]:
         else []
 
 
-def _tree_shapes(root: str, sha: str, cache: dict) -> dict[str, list[str]]:
-    """{shape: [names]} for the whole tree at one commit, memoised."""
+def _tree_shapes(root: str, sha: str, cache: dict) -> tuple[dict, list[str]]:
+    """({shape: [names]}, every function name in the tree) at one commit, memoised.
+
+    The second half is what prices a matcher: recall means nothing without the number of
+    things the same matcher would also have surfaced.
+    """
     if sha not in cache:
         shapes: dict[str, list[str]] = {}
+        names: list[str] = []
         for source in _read_blobs(root, sha, _python_files(root, sha)).values():
             for name, (shape, _size) in _functions(source).items():
                 shapes.setdefault(shape, []).append(name)
-        cache[sha] = shapes
+                names.append(name)
+        cache[sha] = (shapes, sorted(set(names)))
     return cache[sha]
+
+
+def _tokens(name: str) -> frozenset[str]:
+    return frozenset(_WORD.findall(name.lower()))
+
+
+def _matches(matcher: str, left: frozenset[str], right: frozenset[str],
+             left_name: str, right_name: str) -> bool:
+    if matcher == "shipped":
+        return engine._name_similarity(left_name, right_name) >= 0.5
+    shared = left & right
+    if not shared:
+        return False
+    if matcher == "any_word":
+        return True
+    return len(shared) / min(len(left), len(right)) >= 0.5
 
 
 def _stratum(new_name: str, existing: list[str]) -> str:
@@ -159,6 +204,9 @@ def evaluate(repo_path: str, *, limit: int = 60, seed: int = 0,
 
     cache: dict[str, dict] = {}
     strata: Counter = Counter()
+    reached: Counter = Counter()
+    cost: Counter = Counter()
+    queries = 0
     by_stratum: dict[str, list[dict]] = {"same name": [], "shares a word": [],
                                          "shares nothing": []}
     added_total = 0
@@ -187,12 +235,29 @@ def evaluate(repo_path: str, *, limit: int = 60, seed: int = 0,
         scored += 1
         added_total += len(added)
 
-        known = _tree_shapes(repo_path, parent, cache)
+        known, all_names = _tree_shapes(repo_path, parent, cache)
+        token_cache = {other: _tokens(other) for other in all_names}
         for name, shape in added:
+            mine = _tokens(name)
+            # What each matcher would surface for this query, duplicate or not. Counted
+            # for every added function so the cost is an average over queries actually
+            # made rather than over the ones that happened to hit.
+            for matcher in MATCHERS:
+                surfaced = sum(1 for other in all_names
+                               if other != name
+                               and _matches(matcher, mine, token_cache[other],
+                                            name, other))
+                cost[matcher] += surfaced
+            queries += 1
+
             existing = known.get(shape)
             if not existing:
                 strata["not a duplicate"] += 1
                 continue
+            for matcher in MATCHERS:
+                if any(_matches(matcher, mine, _tokens(other), name, other)
+                       for other in existing):
+                    reached[matcher] += 1
             where = _stratum(name, existing)
             strata[where] += 1
             # Examples for every stratum, not only the interesting one: the first run
@@ -205,6 +270,7 @@ def evaluate(repo_path: str, *, limit: int = 60, seed: int = 0,
 
     return {"repo": os.path.basename(repo_path), "commits_scored": scored,
             "functions_added": added_total, "strata": dict(strata),
+            "reached": dict(reached), "cost": dict(cost), "queries": queries,
             "examples": by_stratum, "min_nodes": _MIN_NODES}
 
 
@@ -220,6 +286,13 @@ def _print(report: dict) -> None:
         count = strata.get(name, 0)
         share = count / duplicated if duplicated else 0.0
         print(f"    {name:16} {count:5}  {share:.3f} of the duplicates")
+    duplicates = total - strata.get("not a duplicate", 0)
+    if duplicates and report.get("queries"):
+        print(f"  {'matcher':13} {'reaches':>9} {'names per query':>17}")
+        for matcher in MATCHERS:
+            found = report["reached"].get(matcher, 0)
+            print(f"  {matcher:13} {found / duplicates:9.3f} "
+                  f"{report['cost'].get(matcher, 0) / report['queries']:17.1f}")
     for name, shown in report["examples"].items():
         for example in shown[:2]:
             print(f"      [{name}] {example['added']} repeats "

@@ -956,12 +956,38 @@ pair."* That case is real and comparing bodies is the only way to catch it. It i
 **0.001 of added functions here** — one in a thousand. Body comparison is not what makes
 `REBUILT` worth having; catching the other 99.4% at no extra query is.
 
-**The actionable finding points the other way.** A third of duplicates share a word with
-what they repeat, and `preflight`'s name check — exact spellings — found **0 of 18**
-differently-named duplicates on requests. So the reachable-in-principle stratum is 0.994
-of duplicates and the reached-in-practice stratum is near zero. The gap is in name
-matching, not in body comparison, and it is the largest unexploited margin measured
-anywhere in this directory.
+### Does the shipped matcher reach it? Yes, and the obvious loosening is refused
+
+The paragraph that stood here an hour ago said the opposite, and it was wrong. It reasoned
+that since 0.994 of duplicates are reachable from a name while `preflight`'s exact-spelling
+check found **0 of 18** differently-named duplicates on requests (exp3), the gap between
+reachable and reached must be the largest unexploited margin in this directory.
+
+**exp3's 0 of 18 does not describe this population.** exp3 scores structural duplicate
+*groups in the current tree*, which its own docstring says are mostly deliberate families —
+`md5_utf8` against `sha256_utf8`, `get_binary_stdin` against `get_binary_stdout`. exp13's
+population is newly-added functions that repeat something already there, which is the
+failure itself. Same word, different question. That is the trap `HANDOFF.md` layer 3
+records as *"a ceiling is only a ceiling for the question it counts"*, and it was walked
+into by the experiment that quotes it.
+
+Asked properly — of the duplicates exp13 actually found, how many would each matcher
+surface, and how many names would it print to do it:
+
+| | reaches (derivation) | reaches (**held out**) | names per query |
+|---|---|---|---|
+| `shipped` — Jaccard ≥ 0.5, as `preflight` runs today | 0.940 | **0.915** | **5.5** |
+| `containment` — overlap over the shorter name | 0.960 | 0.983 | 55.8 |
+| `any_word` — one shared word | 0.980 | 1.000 | 192.7 |
+
+**The shipped matcher is already close to the ceiling.** Loosening it to containment buys
++0.068 recall for **ten times the names printed**, and 55.8 is far past the point exp1
+found a section stops being read at all. `any_word` reaches everything by naming a fifth
+of the repository, which is the shape of every straw predictor this directory exists to
+refuse.
+
+So the loosening is measured and refused, and `escape_control_codes` against
+`make_control_codes_readable` — the case that suggested it — stays missed on purpose.
 
 **Caveat, and it inflates the headline rather than the conclusion.** Same node-type
 sequence is not the same meaning: `test_comppath` and `test_manpath` are two similar
