@@ -274,6 +274,15 @@ from whichever platform you have.
 from the same function, with a test pinning it, so the two surfaces cannot describe a
 result differently.
 
+**A test may not assert that designed degradation did not happen.** The daemon refuses
+overload with 503 plus Retry-After and answers a busy index with `partial` plus a stated
+reason; both are the contract working. `test_real_contention` asserted neither ever
+occurred, which is an assertion about how fast the runner is, and it duly failed on two
+of thirteen jobs — on two *different* lines, on two different machines. It now asserts
+the contract instead: a refusal must be a 503 carrying Retry-After, a partial answer must
+name its reason, and the reindex loop must still make real progress. Same teeth, no
+dependence on the weather.
+
 **`time.sleep` may advance time, never establish a precondition.** `CONTRIBUTING.md`
 carries the rule and `tests/conftest.py::wait_until` is the alternative. An assert that
 can fail because the machine is slow is a race wearing a version-difference costume.

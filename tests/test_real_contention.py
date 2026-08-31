@@ -6,6 +6,7 @@ import json
 import sqlite3
 import threading
 import time
+import urllib.error
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -136,7 +137,13 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     assert admission["interactive_global_reserve"] == 3
     ready_status = status_client.status(fresh=False)
     assert ready_status["indexed"] is True
-    assert ready_status.get("partial") is not True
+    # Partial is allowed here for the same reason the loop below allows it: the watcher
+    # is attached with a two-second debounce and has just seen seventy-three files
+    # appear, so a background re-index can hold the lease exactly now. What must hold is
+    # that a partial answer *says why* -- degradation is announced, never silent. The
+    # earlier form asserted the machine was quiet, which is not a property of this code.
+    if ready_status.get("partial"):
+        assert ready_status["index_status_error"] in {"database-busy", "unavailable"}
     if not sqlite_policy["wal_allowed"]:
         with closing(sqlite3.connect(
                 storage.db_path_for(str(project)), timeout=1.0)) as blocker:
@@ -288,7 +295,15 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
         close_server()
 
     assert not rebuild.is_alive()
-    assert reindex_errors == []
+    # A reindex refused with documented back-pressure is the admission control working,
+    # not a defect: batch work gets one of four slots while three interactive routes
+    # hold the reserve, so a slow runner will reach the queue-full condition. What is
+    # not allowed is a refusal without the contract -- a 500, or a 503 that omits the
+    # Retry-After a caller is supposed to obey.
+    for error in reindex_errors:
+        assert isinstance(error, urllib.error.HTTPError), error
+        assert error.code == 503, error
+        assert error.headers.get("Retry-After"), "back-pressure must say when to return"
     assert len(reindex_results) >= 2
     assert all(result["indexed"] == 73 for result in reindex_results)
     assert storage.symbol_snapshot_path(
