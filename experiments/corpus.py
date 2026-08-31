@@ -24,6 +24,30 @@ EXTERNAL = (
     ("tqdm", "https://github.com/tqdm/tqdm.git"),
 )
 
+# A third set, for Phase E only, chosen and written down before a single commit in any
+# of them was read -- the same discipline that makes HELD_OUT worth quoting. Every rule
+# in this repository was derived on EXTERNAL and confirmed on HELD_OUT, so both have been
+# looked at; a prevention experiment run on either would be measuring a tool against
+# repositories that shaped it.
+#
+# Chosen for the three shapes the existing corpus does not have, each named with what it
+# is expected to stress:
+#
+#   flask     a framework rather than a library: blueprints, extension points and
+#             application factories, so "changing A" reaches through registration rather
+#             than through a call.
+#   pytest    a plugin architecture -- hooks resolved at runtime by name. This is the
+#             jinja failure mode on purpose: exp2 and exp9 both degrade where dispatch is
+#             indirect, and a prevention set that avoided it would flatter the tool.
+#   alembic   migrations and schema constraints. exp10 found no `.sql` file anywhere in
+#             the other six repositories, which is why roadmap C4 is blocked; this is the
+#             corpus that unblocks it.
+PREVENTION = (
+    ("flask", "https://github.com/pallets/flask.git"),
+    ("pytest", "https://github.com/pytest-dev/pytest.git"),
+    ("alembic", "https://github.com/sqlalchemy/alembic.git"),
+)
+
 
 def corpus_root() -> str:
     return os.environ.get(

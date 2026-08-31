@@ -20,6 +20,7 @@ python -m experiments.exp8_guard_inventory    # can the guards be found, and do 
 python -m experiments.exp9_guards             # does `guards` name the fence that would have blocked you?
 python -m experiments.exp10_invisible_guards  # how much blocks people outside what a Python reader sees?
 python -m experiments.exp11_symbol_cochange   # does asking about a symbol beat asking about its file?
+python -m experiments.exp12_prevention --build --limit 40   # the prevention task set, and the scorer's own baselines
 ```
 
 The corpus is cloned on first run into `~/.cache/codesextant-corpus`, or wherever
@@ -841,6 +842,68 @@ padding it.
 
 **So: justified, and its stated reason corrected.** It is kept because it *adds* to the
 file question, not because it is a better version of it.
+
+## exp12 — the task set for the experiment that would answer the actual question
+
+Everything above measures **retrieval**: given a query, is the right thing returned. Not
+one number says an author who *saw* the answer made a better change, or spent less fixing
+it. That is the demand this project was started for, and it is untouched.
+
+This is the prerequisite, not the answer: a task set and a scorer, both fixed and
+published before any run. Running the A/B needs agents; making it reproducible by
+somebody else is what roadmap G1 asks for anyway, and it has to exist first either way.
+
+**A third corpus, chosen and written down before a commit in any of it was read.** Every
+rule here was derived on requests/click/tqdm and confirmed on jinja/httpie/rich, so both
+have been looked at; a prevention experiment on either would score the tool against
+repositories that shaped it. So: **flask** (a framework — indirection through
+registration rather than calls), **pytest** (a plugin architecture, hooks resolved by
+name at runtime — deliberately the jinja failure mode, because a prevention set that
+avoided it would flatter the tool), and **alembic** (migrations and schema constraints,
+which unblocks the C4 that exp10 found no corpus for).
+
+**120 tasks, 40 per repository.** Each is a real commit: the attempt gets the parent
+tree, the commit's own message, and **one starting file** — the Python file the commit
+changed most. It does not get the file list. Finding the rest is the task.
+
+The starting file is what makes this a blast-radius question rather than a
+find-the-change question, and the first version did not have it: without it "the files
+this commit touched" is the entire ground truth, and "did you remember the fence" is
+satisfied by editing the file you were already in.
+
+| mode | what it asks | measurable in |
+|---|---|---|
+| `changed_a_broke_b` | of the files the commit touched other than the starting one, how many did the attempt touch? | 120 |
+| `forgot_the_guard` | the same, narrowed to the ones holding a fence | 116 |
+| `rebuilt_the_wheel` | the commit *imported* a helper the repository already had. Did the attempt, or did it write its own? | 29 |
+| tokens | not a rate. Recorded beside them, because winning the first three while tripling the bill is the fourth failure | — |
+
+`rebuilt_the_wheel` is deliberately not scored with this tool's own duplicate detector.
+Marking your own homework is how a benchmark stops meaning anything; the truth here is
+what the human author did.
+
+### Validating the scorer, and the baseline that caught it being wrong
+
+| baseline | changed_a_broke_b | forgot_the_guard | rebuilt_the_wheel |
+|---|---|---|---|
+| **oracle** — apply the real commit | 1.000 | 1.000 | 1.000 |
+| **parent** — touch exactly the right files, change nothing inside them | 1.000 | 1.000 | **0.000** |
+| **null** — change nothing | 0.000 | 0.000 | 0.000 |
+
+The oracle row says the ground truth is satisfiable by the answer it was taken from. The
+null row says nothing is free.
+
+**The `parent` row exists because the first version of `rebuilt_the_wheel` was vacuous
+and neither of the other two could see it.** It scored reuse by matching identifiers
+against every name the repository defines, which made `name`, `set`, `open`, `run` and
+`error` count as helpers — any attempt writing plausible Python scored well without
+reusing anything. `null` could not catch that: a predictor touching no files scores zero
+on a broken mode too. `parent` gets the files right for the wrong reason, which is
+exactly the shape that separates a content claim from a file claim, and it now fails the
+build if that mode ever scores above 0.05 on unchanged content.
+
+Counting imports instead of mentions cut the mode from 62 tasks to 29. Fewer, and
+measuring something.
 
 ## What these experiments do not establish
 

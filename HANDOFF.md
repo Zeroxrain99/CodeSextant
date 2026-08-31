@@ -423,7 +423,7 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
 | `gates.py` | what runs against every push: CI jobs, pre-commit hooks, lint rules, the language floor. Deliberately none of this tool's ranking machinery |
 | `storage.py` | SQLite schema, derived-state markers, co-change counters |
 | `references.py` | name sweeps, jedi resolution, and the module-import scan behind DEPENDENTS |
-| `experiments/` | ten experiments, corpus management, the results and the caveats |
+| `experiments/` | twelve experiments, three corpora, the frozen prevention task set, the results and the caveats |
 
 ## Reproducing the experiments
 
@@ -454,11 +454,14 @@ these numbers hold for the code you actually work on.
 this project serves, what finishing each one means, and the phase ordering. This section
 is the near-term view; the roadmap is the reason any of it is next.
 
-**1. The prevention experiment.** Agents doing tasks with and without the tool, on a
-task set nobody here wrote. It is now first because everything cheaper has been done:
-every retrievable claim in the tool has a held-out number, and this is the only design
-that answers the question the tool exists for — whether someone who *saw* the answer made
-a better change or spent less fixing it. Everything above is a proxy for it.
+**1. The prevention experiment — run it.** The task set and scorer now exist and are
+checked in: `experiments/exp12_prevention.py` and `experiments/prevention_tasks.json`,
+120 real commits over a third corpus (flask, pytest, alembic) chosen before any of it was
+read, one rate per failure mode, and three baselines proving no mode is free. What is
+left is E2: the same model on the same tasks with the tool available and without, paired,
+with tokens recorded. **It needs agents, which is the only reason it is not done.**
+Everything cheaper is: every retrievable claim in the tool has a held-out number, and
+this is the only design that answers the question the tool exists for.
 
 **2. Tune the thresholds against the corpus.** `min_support` and `min_confidence`
 predate any evidence. exp11 gives a second reason to look: the symbol tier is silent in

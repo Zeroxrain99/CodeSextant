@@ -120,7 +120,7 @@ progressive disclosure. It wants stating.**
 | C1 · CI workflow rules | the jobs that go red, and only those that fire on a branch | **done** — `codesextant/gates.py`. Not a ranked tier: one row saying what runs, because the population is 4–15 and universally applicable. A workflow triggered only by `push: tags:` is excluded, because claiming something gates you when it does not is the one direction this section must never be wrong in |
 | C2 · lint and type configuration | ruff `select`/`ignore`/`target-version`, mypy strictness, flake8, **and the language floor printed next to the lint target** | **done.** This repository's own `target-version = py311` against a 3.10 floor was exactly this class and went unnoticed until CI said so. Adjacency is the whole intervention; no ranking would have surfaced it |
 | C3 · pre-commit hooks | `.pre-commit-config.yaml` | **done.** 8–21 hooks in five of seven repositories, and the first measurement saying zero was a bug |
-| C4 · schema, migration and database constraints | `NOT NULL`, `UNIQUE`, migration ordering | **blocked on a corpus.** No `.sql` file anywhere here. These live in applications; the corpus is seven libraries. Building an extractor whose score is undefined is what `guards` was doing before exp9 |
+| C4 · schema, migration and database constraints | `NOT NULL`, `UNIQUE`, migration ordering | **unblocked but not built.** No `.sql` file existed in the seven repositories exp10 counted; `alembic` was added to the prevention corpus in E1 partly for this, so the corpus now exists. Nothing has been measured on it yet |
 
 **What C1–C3 do not have is a corpus score,** and it is not an oversight: retrieval
 recall is meaningless for a fence that always applies, so exp9's machinery cannot judge
@@ -147,11 +147,12 @@ Everything above measures **retrieval**: given a query, is the right thing retur
 Not one number here says an author who saw the answer made a better change, or spent
 fewer tokens fixing it. That is demand 1 stated exactly, and it is untouched.
 
-| step | what | done when |
+| step | what | status |
 |---|---|---|
-| E1 · a task set nobody here wrote | real commits from repositories outside the derivation set, or an existing public suite. The tasks must include the four failure modes, not just "make the test pass" | the task set is fixed and published before any run |
-| E2 · the A/B | same model, same tasks, tool available against not | paired per task, with an interval |
-| E3 · measure what was asked for | task success, **tokens spent**, whether a guard was tripped, whether something was rebuilt that existed, whether an unrelated thing broke | each of the four failure modes has its own rate, not one blended score |
+| E1 · a task set nobody here wrote | real commits from repositories outside both existing sets, covering the failure modes rather than "make the test pass" | **done** — `experiments/exp12_prevention.py` and the frozen `experiments/prevention_tasks.json`. 120 tasks over a third corpus (flask, pytest, alembic) chosen and written down before a commit in any of it was read. Each gives the parent tree, the commit's message and one starting file; the rest is the task |
+| E1b · a scorer that is not vacuous | one rate per failure mode, and proof each mode can be failed | **done.** Three baselines: oracle 1.000 everywhere, null 0.000 everywhere, and **parent** — the right files with unchanged contents — which scores 1.000 on the file modes and 0.000 on reuse. That third one caught `rebuilt_the_wheel` being satisfiable by any plausible Python, which neither of the others could see |
+| E2 · the A/B | same model, same tasks, tool available against not | **open, and it needs agents.** Everything it depends on now exists and is checked in, so it is reproducible by somebody else — which G1 wanted regardless |
+| E3 · measure what was asked for | task success, **tokens spent**, whether a guard was tripped, whether something was rebuilt that existed, whether an unrelated thing broke | the three retrieval-shaped modes are scored; **tokens are not**, and cannot be until E2 runs |
 
 **This is the expensive one and the only one that closes demand 1.** Everything before
 it exists to make it worth running.
