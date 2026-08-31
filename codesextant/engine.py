@@ -34,6 +34,7 @@ from . import (
     storage,
     work_coordinator,
 )
+from . import guards as guards_module
 from .lazy_import import LazyModule
 from .ranking import is_test_path as ranking_is_test_path
 from .ranking import rank_symbols
@@ -2096,6 +2097,225 @@ def _module_dependents_tier(abs_path: str, supported: dict, changed: dict,
                     key=lambda path: (-found[path], path))
     return [{"path": path, "imports": found[path]}
             for path in ranked[:_DEPENDENTS_SHOWN]]
+
+
+# How many fences layer one shows. Six is a glance; the seventh is a list, and a list
+# is what a reader learns to skip -- exp1's finding, and the reason every candidate in
+# experiments/ is scored at the length the tool actually prints.
+_GUARDS_SHOWN = 6
+
+
+def _guard_reach(abs_path: str, changed: dict, symbols_changed: set[str],
+                 notes: list) -> dict[str, str]:
+    """Which files could hold a fence this change will meet, and why each one is here.
+
+    Two ways a guard becomes relevant, and the reason is kept alongside the file because
+    "you are editing this" and "a test over there names what you touched" are different
+    claims that deserve different attention:
+
+    * the change is *inside* the guard's file -- you may be moving the fence itself;
+    * a file names one of the symbols you changed -- the test that fences it;
+    Bounded by the change rather than the repository, like everything else here: one
+    name sweep per changed symbol, capped by the same gate the blast radius uses.
+    """
+    reach = {relative for relative in changed if relative.endswith(".py")}
+
+    for symbol in sorted(symbols_changed)[:_check_max_symbols()]:
+        try:
+            sweep = references.name_sweep(abs_path, symbol, lang="python",
+                                          limit=_SWEEP_LIMIT)
+        except Exception:  # noqa: BLE001 - a missing section is not a failed answer
+            continue
+        if len(sweep.files) > _resolve_max_files():
+            # The same cost gate the blast radius uses, for the same reason and with the
+            # same announcement: a name in forty files cannot single out a fence.
+            notes.append(
+                f"{len(sweep.files)} files name {symbol!r}, too many to attribute a "
+                "guard to; its fences are not listed.")
+            continue
+        for found in sweep.files:
+            reach.add(_repo_relative(abs_path, found) or found)
+
+    # A third tier -- "this file imports a module you changed" -- was built and then
+    # removed. It is per-*file* relevance with no per-guard evidence, which is exactly
+    # the defect the paragraph in _guards_in_reach exists to prevent: it filled the
+    # section with an unrelated environment switch and two symbol-extraction tests while
+    # the three fences that actually named the symbol sat above them. check's DEPENDENTS
+    # section already answers "who imports what you changed", at file level, where that
+    # claim is true. "Better than nothing" is the argument this tool refuses everywhere
+    # else, and it does not become sound here.
+    return reach
+
+
+def _rank_guards(found: list) -> list:
+    """Order fences by how directly this change meets them.
+
+    A guard naming a symbol you just edited is the one about to fail; a guard merely
+    sitting in a file you touched is context. Within a tier, the one whose author left
+    no reason comes first, because that is the one that will cost the most to work out
+    when it fires.
+    """
+    def key(entry):
+        # A fence that names what you touched comes before one that merely shares a file
+        # with your edit. Within a tier, the one whose author left no reason first: that
+        # is the one that will cost the most to work out when it fires.
+        tier = 0 if entry["why"].startswith("names") else 1
+        return (tier, entry["reason_source"] != "none",
+                entry["path"], entry["line"])
+
+    return sorted(found, key=key)
+
+
+def _guard_source(abs_path: str, row: dict) -> str:
+    """The fence's own lines -- layer three, read only when asked for.
+
+    Kept out of the default answer on purpose. A test body can be forty lines, and six
+    of those is the whole context window's worth of exactly the material a reader
+    already knows how to open.
+    """
+    try:
+        with open(os.path.join(abs_path, row["path"]),
+                  encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[row["line"] - 1:row["end_line"]])
+
+
+def _guards_in_reach(abs_path: str, reach: set[str], changed: dict,
+                     symbols_changed: set[str]) -> list[dict]:
+    """Guards a change reaches, decided per guard rather than per file.
+
+    The distinction is the whole difference between a section worth reading and a
+    section people skip. A file that mentions ``module_dependents`` also holds eleven
+    environment switches that have nothing to do with it; inheriting the file's reason
+    would put all eleven in front of a reader looking for the two tests that actually
+    fence the symbol. So a guard reached *because a file names a symbol* has to name
+    that symbol **itself**, inside its own span.
+
+    Guards in files the change edits are kept regardless: there the reader is standing
+    inside the fence, and which lines they touched is a matter for the ranking rather
+    than for admission.
+    """
+    collected: list[dict] = []
+    for relative in sorted(reach):
+        abs_file = os.path.abspath(os.path.join(abs_path, relative))
+        if not os.path.isfile(abs_file):
+            continue
+        try:
+            with open(abs_file, encoding="utf-8", errors="replace") as handle:
+                lines = handle.read().splitlines()
+        except OSError:
+            continue
+        for guard in guards_module.extract_file(abs_file, relative):
+            row = guard.as_row()
+            if relative in changed:
+                row["why"] = "you changed this file"
+            else:
+                span = "\n".join(lines[guard.line - 1:guard.end_line])
+                named = sorted(
+                    symbol for symbol in symbols_changed
+                    if references._word_re(symbol).search(span))
+                if named:
+                    row["why"] = f"names {named[0]}"
+                    row["names"] = named
+                else:
+                    continue  # the file mentions it; this fence does not
+            collected.append(row)
+    return collected
+
+
+def guards(path: str, *, base: str | None = None, staged: bool = False,
+           target: str | None = None, symbol: str | None = None,
+           full: bool = False, token_budget: int = 1500) -> dict:
+    """The fences your change is about to meet, with what each one checks.
+
+    The failure this answers is the one a diff cannot: a guard written months ago blocks
+    you now, you do not remember it, and the cheapest-looking way out is to delete it.
+    ``check`` says *which file* you forgot. This says *which fence, what it checks, and
+    what would satisfy it* -- before the build says it, and without reading a log.
+
+    Two ways to ask, matching the two halves of the tool. With ``target`` it answers
+    about one file the way ``preflight`` does, from a name and an intention. Without it,
+    it reads the diff the way ``check`` does and answers about everything you touched.
+
+    Progressive disclosure, because the measurement demanded it: a repository holds 182
+    to 935 guards (``experiments/exp8_guard_inventory.py``), so a flat list is a second
+    codebase and nobody would read it twice.
+
+    * **Layer one** -- which fences are in reach at all: kind, name, ``path:line``. Six
+      of them, because the seventh turns a glance into a list.
+    * **Layer two** -- the rule: what each one checks, derived from the code, plus the
+      author's reason when there is one and a note saying which of the two you are
+      reading. Printed with layer one because both are short; this is the layer that
+      answers "what would satisfy it".
+    * **Layer three** -- ``full=True``, the guard's own source. Not fetched otherwise,
+      which is the point: it is the expensive layer and it is rarely the one needed.
+    """
+    abs_path = os.path.abspath(path)
+    notes: list[str] = []
+    symbols_changed: set[str] = set()
+
+    if target:
+        relative = _repo_relative(abs_path, os.path.abspath(
+            os.path.join(abs_path, target))) or target
+        changed = {relative: "M"}
+        if symbol:
+            symbols_changed.add(symbol)
+    else:
+        found_changes = diffscan.changed_files(abs_path, base=base, staged=staged)
+        if found_changes is None:
+            return {"project_key": storage.project_key(abs_path), "guards": [],
+                    "notes": ["guards needs a Git worktree, or a --target to ask about."],
+                    "approx_tokens": 0, "truncated_by_budget": False}
+        changed = found_changes
+        if not changed:
+            return {"project_key": storage.project_key(abs_path), "guards": [],
+                    "notes": ["Nothing has changed, so there is no fence to meet yet. "
+                              "Pass --target to ask about a file before editing it."],
+                    "approx_tokens": 0, "truncated_by_budget": False}
+        db_file = storage.db_path_for(abs_path)
+        if db_file.exists():
+            with storage.ProjectStore.open_readonly(abs_path) as store:
+                for relative in sorted(changed):
+                    abs_file = os.path.abspath(os.path.join(abs_path, relative))
+                    if not os.path.isfile(abs_file) or not relative.endswith(".py"):
+                        continue
+                    ranges = diffscan.changed_ranges(
+                        abs_path, relative, base=base, staged=staged)
+                    symbols_changed.update(
+                        item["name"] for item
+                        in _changed_definitions(store, abs_file, ranges["added"]))
+
+    reach = _guard_reach(abs_path, changed, symbols_changed, notes)
+    collected = _guards_in_reach(abs_path, reach, changed, symbols_changed)
+
+    ranked = _rank_guards(collected)
+    if full:
+        for row in ranked[:_GUARDS_SHOWN]:
+            row["source"] = _guard_source(abs_path, row)
+    if not ranked:
+        notes.append(
+            "No fence in reach of this change: nothing you touched holds a guard, and "
+            "nothing elsewhere names a symbol you changed. That is a search, not a "
+            "clean bill of health -- only Python is read, and a guard living in CI "
+            "configuration or a database constraint is outside what this can see.")
+    total = len(ranked)
+    result = {
+        "project_key": storage.project_key(abs_path),
+        "changed_files": sorted(changed),
+        "guards": ranked[:_GUARDS_SHOWN],
+        "total_in_reach": total,
+        "notes": notes,
+        "approx_tokens": 0,
+    }
+    result["truncated_by_budget"] = total > _GUARDS_SHOWN
+    result["approx_tokens"] = _json_tokens(result)
+    while result["approx_tokens"] > token_budget and result["guards"]:
+        result["guards"].pop()
+        result["truncated_by_budget"] = True
+        result["approx_tokens"] = _json_tokens(result)
+    return result
 
 
 def check(path: str, *, base: str | None = None, staged: bool = False,

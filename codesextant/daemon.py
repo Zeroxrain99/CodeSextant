@@ -1272,6 +1272,22 @@ def _ep_check(parsed, body):
                              token_budget=budget, resolve=_q(parsed, "resolve"))
 
 
+def _ep_guards(parsed, body):
+    # Before or after editing: which fences this change meets, and what each one checks.
+    project = _require_project(_q(parsed, "project"))
+    raw_budget = _q(parsed, "budget")
+    try:
+        budget = int(raw_budget) if raw_budget else 1500
+    except (TypeError, ValueError):
+        raise _HttpError(400, f"budget must be an integer, got '{raw_budget}'") from None
+    truthy = ("1", "true", "yes", "on")
+    return 200, engine.guards(
+        project, base=_q(parsed, "base"),
+        staged=_q(parsed, "staged") in truthy,
+        target=_q(parsed, "target"), symbol=_q(parsed, "symbol"),
+        full=_q(parsed, "full") in truthy, token_budget=budget)
+
+
 def _ep_comment_overview(parsed, body):
     # Summarize docstring coverage, tags, and comment density.
     project = _require_project(_q(parsed, "project"))
@@ -1417,6 +1433,7 @@ _ROUTES_GET = {
     "/find_duplicates": _ep_find_duplicates,
     "/preflight": _ep_preflight,
     "/check": _ep_check,
+    "/guards": _ep_guards,
     "/graph_data": _ep_graph_data,
     "/links": _ep_links,
 }
@@ -1432,6 +1449,7 @@ _ROUTES_POST = {
 _HEAVY_PATHS = frozenset({
     "/preflight",
     "/check",
+    "/guards",
     "/get_symbols",
     "/get_map",
     "/deadcode",
@@ -1453,6 +1471,7 @@ _HEAVY_PATHS = frozenset({
 _INTERACTIVE_HEAVY_PATHS = frozenset({
     "/preflight",
     "/check",
+    "/guards",
     "/get_symbols",
     "/get_map",
     "/find_references",

@@ -134,6 +134,18 @@ def cmd_preflight(args) -> int:
     return 0
 
 
+def cmd_guards(args) -> int:
+    r = engine.guards(args.path, base=args.base, staged=args.staged,
+                      target=args.target, symbol=args.symbol,
+                      full=args.full, token_budget=args.budget)
+    if args.json:
+        _emit(r, True)
+        return 0
+    for line in render.guards_lines(r, args.path):
+        print(line)
+    return 0
+
+
 def cmd_check(args) -> int:
     r = engine.check(args.path, base=args.base, staged=args.staged,
                      token_budget=args.budget)
@@ -602,6 +614,24 @@ def _build_parser() -> argparse.ArgumentParser:
     pck.add_argument("--strict", action="store_true",
                      help="exit 1 when anything is found (for a pre-commit hook)")
     pck.set_defaults(func=cmd_check)
+
+    pg = sub.add_parser(
+        "guards",
+        help="which fences your change will meet, and what each one checks")
+    pg.add_argument("path", nargs="?", default=".", help="project root")
+    pg.add_argument("--target", default=None,
+                    help="ask about one file before editing it, instead of reading the "
+                         "diff")
+    pg.add_argument("--symbol", default=None,
+                    help="with --target, the name you are about to change")
+    pg.add_argument("--base", default=None,
+                    help="diff against this ref's merge base instead of HEAD")
+    pg.add_argument("--staged", action="store_true", help="read the staged change only")
+    pg.add_argument("--full", action="store_true",
+                    help="also print each fence's own source (the third layer, which "
+                         "is not fetched unless asked for)")
+    pg.add_argument("--budget", type=int, default=1500, help="token budget")
+    pg.set_defaults(func=cmd_guards)
 
     pmcp = sub.add_parser(
         "mcp",

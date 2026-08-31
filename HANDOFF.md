@@ -17,8 +17,8 @@ the machine.
 | | |
 |---|---|
 | branch | `claude/codesextant-handoff-us93o7`, 34 commits ahead of master. Last commit touching `codesextant/` is `a382e99`; anything after it is this document. |
-| version | 0.27.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
-| tests | `python -m pytest -q` → 729 passed, 6 skipped |
+| version | 0.28.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
+| tests | `python -m pytest -q` → 739 passed, 6 skipped |
 | lint | `python -m ruff check codesextant tests experiments` → **clean**, and a CI job enforces it. The baseline used to be "12 pre-existing", written here and checked by nobody; a number you have to remember is a guard with a memory requirement. |
 | experiments | `experiments/README.md` — protocol, results, and what they do not establish |
 
@@ -38,7 +38,11 @@ preflight's BLAST RADIUS carries the same three claims in one place: resolved ca
 files that name the symbol (`?`), and files that import the module (`?`). The third is
 the only one that can say anything about a symbol you have not written yet.
 
-**For agents:** `codesextant mcp` speaks MCP over stdio, nine tools, no new dependency.
+`guards` is the third command and answers what neither of the other two can: *which
+fence* your change is about to meet, what it checks, and what would satisfy it. See
+`docs/guard-index.md` for why it leads with a derived rule rather than with prose.
+
+**For agents:** `codesextant mcp` speaks MCP over stdio, ten tools, no new dependency.
 `claude mcp add codesextant -- codesextant mcp`.
 
 **Do not** create a pull request unless asked.
@@ -148,6 +152,20 @@ fifth of the caller misses and removing it buys nothing; the cost gate explains 
 and printing its leads buys nothing. In both cases the cases it would reach fail for
 other reasons as well. Diagnose to shortlist, then measure the repair — never ship on
 the diagnosis.
+
+## The guard index (0.28.0)
+
+The second of the three problems, sharpened: *a fence you built yourself blocks you, you
+do not remember it, and deleting it looks cheaper than understanding it.* exp8 surveyed
+seven repositories before anything was designed and **refused the obvious design**:
+guards run 16-34 per thousand lines (182-935 per project), the author's reason is absent
+for four in five, and the commit that added them does not carry it either (0.00-0.04).
+So `guards` leads with a rule derived from the code, discloses in three layers, and
+admits a fence only on per-guard evidence. Cost 79 ms with a symbol, 3 ms without.
+
+**What it is not**: measured. It is pinned by unit tests and it reads correctly on this
+repository; nothing scores it against a corpus the way exp4 scores `check`. The
+experiment that would is named at the end of `docs/guard-index.md`.
 
 ## What is not established
 

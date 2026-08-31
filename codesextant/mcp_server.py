@@ -354,6 +354,24 @@ def _t_check(backend: Backend, arguments: dict) -> dict:
     )
 
 
+def _t_guards(backend: Backend, arguments: dict) -> dict:
+    base = _optional_str(arguments, "base")
+    staged = _optional_bool(arguments, "staged")
+    target = _optional_str(arguments, "target")
+    symbol = _optional_str(arguments, "symbol")
+    full = _optional_bool(arguments, "full")
+    budget = _optional_int(arguments, "budget", 1500)
+    return backend.execute(
+        arguments,
+        lambda client, project: client.guards(
+            base=base, staged=staged, target=target, symbol=symbol,
+            full=full, budget=budget, project=project),
+        lambda project: engine.guards(
+            project, base=base, staged=staged, target=target, symbol=symbol,
+            full=full, token_budget=budget),
+    )
+
+
 def _t_code_map(backend: Backend, arguments: dict) -> dict:
     budget = _optional_int(arguments, "budget", 2000)
     focus_files = _optional_list(arguments, "focus_files")
@@ -522,6 +540,49 @@ TOOLS: tuple[Tool, ...] = (
         },
         run=_t_check,
         render=render.check_lines,
+    ),
+    Tool(
+        name="guards",
+        title="Which fences your change will meet",
+        description=(
+            "Call this when a test, an assertion, an allowlist or a limit is about to "
+            "block you -- or better, before it does. It answers the question a diff "
+            "cannot: WHICH fence, WHAT it checks, and what would satisfy it.\n"
+            "Every entry carries a machine-derived rule -- the allowlist's members, the "
+            "limit's value, the variable and its default, the message a raise carries, "
+            "what a test asserts -- because measured over seven repositories the "
+            "author's reason is absent for four guards in five, and absent from the "
+            "commit that added them too. Where a reason does exist it is shown and "
+            "labelled with where it came from, so you can tell the author speaking from "
+            "the tool speaking.\n"
+            "Two ways to ask: with `target` (and ideally `symbol`) about a file you are "
+            "ABOUT to edit, or with no arguments to read your diff. Only the fences your "
+            "change actually reaches are listed -- a repository holds hundreds -- and "
+            "`full` adds each one's own source, which is not fetched otherwise."),
+        schema={
+            "type": "object",
+            "properties": {
+                "target": {"type": "string",
+                           "description": "Ask about this file instead of the diff, "
+                                          "before editing it."},
+                "symbol": {"type": "string",
+                           "description": "With target: the name you are about to "
+                                          "change, which is what finds the tests "
+                                          "fencing it."},
+                "base": {"type": "string",
+                         "description": "Diff against this ref's merge base instead of "
+                                        "HEAD."},
+                "staged": {"type": "boolean",
+                           "description": "Read only what is staged."},
+                "full": {"type": "boolean",
+                         "description": "Also return each fence's own source."},
+                "budget": {"type": "integer",
+                           "description": "Approximate token ceiling (default 1500)."},
+                "project": _PROJECT_ARG,
+            },
+        },
+        run=_t_guards,
+        render=render.guards_lines,
     ),
     Tool(
         name="code_map",

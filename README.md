@@ -185,6 +185,36 @@ Check: 8 file(s) changed
 
 It takes no arguments: the diff says what happened, so nothing has to be remembered at the right moment. Cost is bounded by the size of your change rather than the repository — only changed files are re-read and re-parsed. `--staged` reads the index instead of the working tree, `--base BRANCH` reviews a whole branch against where it left the base, and `--strict` exits non-zero when anything is found, which is what a pre-commit hook wants.
 
+## The fence you forgot you built
+
+```bash
+python -m codesextant guards . --target pkg/limits.py --symbol encode
+```
+
+```
+Guards: 5 in reach of this change
+
+  TEST         test_an_unknown_format_is_refused_rather_than_guessed   tests/test_limits.py:4
+    checks   1 assertion, first: "SUPPORTED_FORMATS" in str(exc)
+    because  A silent fallback shipped bad data once; the allowlist is the fence.  (docstring)
+    reached  names encode
+
+  ALLOWLIST    SUPPORTED_FORMATS   pkg/limits.py:4
+    checks   SUPPORTED_FORMATS admits 3: 'json', 'csv', 'ndjson'
+    reached  you changed this file
+
+  THRESHOLD    MAX_BATCH_SIZE   pkg/limits.py:2
+    checks   MAX_BATCH_SIZE = 100
+    because  A request larger than this is a mistake upstream, not a big request.  (comment)
+    reached  you changed this file
+```
+
+`check` tells you *which file* your change forgot. This tells you *which fence, what it checks, and what would satisfy it* — before the build says it, and without reading a log. Run it with `--target` before an edit, or with no arguments to read your diff.
+
+**It leads with the rule, not with prose, because the prose is usually not there.** Surveying seven repositories ([`exp8`](experiments/README.md)) found guards at 16 to 34 per thousand lines — 182 to 935 per project — and the author's reason absent for four in five: tests are 3% documented in jinja and 7% in httpie, and thresholds and environment switches sit at or near zero almost everywhere. Nor does history rescue them; searching the whole commit message of 250 undocumented guards per repository turned one up in 0.00 to 0.04 of cases. A registry whose middle layer is prose would be empty for exactly the fences that block people. What a guard *does* is readable from the code either way, and it is also what a blocked reader needs first. Where a reason exists it is shown and labelled with where it came from, so you can tell the author speaking from the tool speaking.
+
+Three layers, because hundreds of guards will not fit in any answer: which fences are in reach (six of them, ranked so the one naming what you touched comes first), then the rule for each, then `--full` for the fence's own source — not fetched otherwise. Only guards with **per-guard** evidence are listed: a file that merely mentions your symbol does not drag in the eleven unrelated switches it also contains.
+
 ## Why use an index
 
 Name matching cannot distinguish same-named symbols in different scopes. In collision-heavy repositories, searches for names such as `handle`, `run`, and `Config` can return many false positives. For Python and TypeScript/JavaScript, CodeSextant resolves imports and stores the graph in a shared local service.

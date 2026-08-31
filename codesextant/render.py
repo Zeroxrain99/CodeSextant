@@ -209,6 +209,41 @@ def index_lines(result: dict, root: str | None = None) -> list[str]:
     return lines
 
 
+def guards_lines(result: dict, root: str | None = None) -> list[str]:
+    """The fences this change meets, in the two layers that are cheap to read.
+
+    Layer one is the heading line -- kind, name, where. Layer two is the rule beneath
+    it, and the reason when the author left one, marked with where it came from: a
+    docstring is the author speaking and a derived rule is the tool speaking, and a
+    reader deciding whether to satisfy a fence or move it needs to know which. Layer
+    three is the source, printed only when it was asked for.
+    """
+    found = result.get("guards") or []
+    total = result.get("total_in_reach", len(found))
+    if not found:
+        lines = ["Guards: none in reach of this change"]
+    else:
+        more = f", showing {len(found)}" if total > len(found) else ""
+        lines = [f"Guards: {total} in reach of this change{more}"]
+    for entry in found:
+        lines.append(f"\n  {entry['kind'].upper():11}  {entry['name'] or '—'}"
+                     f"   {entry['path']}:{entry['line']}")
+        lines.append(f"    checks   {entry['rule']}")
+        if entry.get("reason"):
+            # "why it exists" and "what it does" are different claims, and the corpus
+            # says the first is missing four times in five. Where it exists, say so, and
+            # say who said it.
+            lines.append(f"    because  {entry['reason']}  ({entry['reason_source']})")
+        lines.append(f"    reached  {entry['why']}")
+        if entry.get("source"):
+            for source_line in entry["source"].splitlines():
+                lines.append(f"      | {source_line}")
+
+    for note in result.get("notes") or []:
+        lines.append(f"\n  Note: {note}")
+    return lines
+
+
 def check_lines(result: dict, root: str | None = None) -> list[str]:
     """What the change already made looks like it forgot."""
     lines = [f"Check: {result.get('changed_count', 0)} file(s) changed"]
