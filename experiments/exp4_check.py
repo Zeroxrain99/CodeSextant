@@ -19,10 +19,17 @@ is applied, and check runs on the result.
     same_dir@k       the most-changed neighbours of the files that did change
     frequency@k      the most-changed files in the project
 
-`callers_ceiling` is not a candidate for shipping -- it is a text sweep and would bury
-a reader. It is here to separate two explanations for a weak caller section: import
-resolution missing real callers, or the held-out file simply not being one. The gap
-between it and `callers` is the first; the gap between it and 1.0 is the second.
+`callers_ceiling` is not a candidate for shipping -- it is a text sweep naming about
+eight files per case, which is a list nobody reads. It is here to separate two
+explanations for a weak caller section: import resolution missing real callers, or the
+held-out file simply not being one. The gap between it and `callers` is the first; the
+gap between it and 1.0 is the second.
+
+`callers_named@2` and `callers_named@k` sit between the two and are the candidates. A
+file that names *one* symbol a change touched has probably just got a same-named
+function of its own; a file that names several is much more likely to be using the
+thing that changed. Whether that intuition survives contact with the corpus is the
+question, and it is asked before anything is built on it rather than after.
 
 The two section-only rows exist to answer the question the union cannot: does reading
 the diff add anything over mining history, or is check just co-change with extra steps?
@@ -47,8 +54,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from codesextant import engine, references, storage  # noqa: E402
 from experiments import corpus  # noqa: E402
 
-PREDICTORS = ("check", "companions", "callers", "callers_ceiling",
-              "same_dir@k", "frequency@k")
+PREDICTORS = ("check", "companions", "callers", "callers_named@2", "callers_named@k",
+              "callers_ceiling", "same_dir@k", "frequency@k")
 
 
 def _git(root: str, *args: str) -> tuple[int, str]:
@@ -134,14 +141,16 @@ def evaluate(repo: str, *, limit: int = 60, seed: int = 0,
             "results": {name: tally.row() for name, tally in tallies.items()}}
 
 
-def _naming_files(tree: str, applied: list[str]) -> set[str]:
-    """Every file naming a symbol defined in a changed file, outside the change.
+def _naming_counts(tree: str, applied: list[str]) -> Counter:
+    """How many symbols each outside file names, for symbols the change touched.
 
-    The ceiling the resolved caller section is working against: a caller has to name
-    the symbol, so nothing outside this set can ever be found by any amount of
-    resolution.
+    The ceiling the resolved caller section works against: a caller has to name the
+    symbol, so nothing outside this set is reachable by any amount of resolution. The
+    counts are kept rather than collapsed because "names one of them" and "names five
+    of them" are very different claims, and the difference is what might make a
+    name-level signal short enough to be worth printing.
     """
-    named: set[str] = set()
+    counts: Counter = Counter()
     changed_abs = {os.path.normcase(os.path.abspath(os.path.join(tree, f)))
                    for f in applied}
     with storage.ProjectStore.open_readonly(tree) as store:
@@ -157,8 +166,8 @@ def _naming_files(tree: str, applied: list[str]) -> set[str]:
                         tree, row["name"], lang="python", limit=60):
                     if os.path.normcase(os.path.abspath(hit)) in changed_abs:
                         continue
-                    named.add(os.path.relpath(hit, tree).replace(os.sep, "/"))
-    return named
+                    counts[os.path.relpath(hit, tree).replace(os.sep, "/")] += 1
+    return counts
 
 
 def _score_one(repo: str, home: str, sha: str, files: set[str],
@@ -188,7 +197,9 @@ def _score_one(repo: str, home: str, sha: str, files: set[str],
         engine.index_project(tree, force=True)
         result = engine.check(tree, token_budget=100_000)
         predicted = _predicted_files(result)
-        predicted["callers_ceiling"] = _naming_files(tree, applied)
+        counts = _naming_counts(tree, applied)
+        predicted["callers_ceiling"] = set(counts)
+        predicted["callers_named@2"] = {f for f, n in counts.items() if n >= 2}
 
         changed = set(applied)
         neighbours = {p for f in applied
@@ -198,6 +209,8 @@ def _score_one(repo: str, home: str, sha: str, files: set[str],
         local = sorted(neighbours, key=lambda p: (-changed_total[p], p))
         predicted["same_dir@k"] = set(local[:budget])
         predicted["frequency@k"] = set(frequent[:budget])
+        ranked = sorted(counts, key=lambda f: (-counts[f], f))
+        predicted["callers_named@k"] = set(ranked[:budget])
 
         for name in PREDICTORS:
             tallies[name].add(predicted[name], held_out)
