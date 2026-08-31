@@ -16,9 +16,9 @@ the machine.
 
 | | |
 |---|---|
-| branch | `claude/codesextant-handoff-us93o7`, 32 commits ahead of master. Last commit touching `codesextant/` is `8104c57`; anything after it is this document and the experiment write-up. |
-| version | 0.26.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
-| tests | `python -m pytest -q` → 720 passed, 6 skipped |
+| branch | `claude/codesextant-handoff-us93o7`, 34 commits ahead of master. Last commit touching `codesextant/` is `a382e99`; anything after it is this document. |
+| version | 0.27.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
+| tests | `python -m pytest -q` → 724 passed, 6 skipped |
 | lint | `python -m ruff check codesextant tests experiments` → 12 errors, all pre-existing. **12 is the baseline; 13 means you added one.** |
 | experiments | `experiments/README.md` — protocol, results, and what they do not establish |
 
@@ -34,6 +34,9 @@ takes no arguments. They ask the same three questions; `check` has more to work 
 and is the one that catches a helper reinvented under a different name. `check` prints
 four sections: REBUILT, COMPANIONS, CALLERS, and DEPENDENTS — the last marked `?`,
 because importing a module you changed is not calling the thing you changed.
+preflight's BLAST RADIUS carries the same three claims in one place: resolved callers,
+files that name the symbol (`?`), and files that import the module (`?`). The third is
+the only one that can say anything about a symbol you have not written yet.
 
 **For agents:** `codesextant mcp` speaks MCP over stdio, nine tools, no new dependency.
 `claude mcp add codesextant -- codesextant mcp`.
@@ -62,7 +65,7 @@ The owner stated them, and they are the standard everything is judged against:
 |---|---|---|
 | 1. rebuilt wheel | `check` → `rebuilt` | **solved in principle.** Compares bodies, so a wheel reinvented *and renamed* is found. `preflight` cannot do this at all: before the code exists there is no body, only a name, and on requests its name-based reuse check finds 0 of 18 differently-named structural duplicates. |
 | 2. forgotten companion | `check` → `companions` | **usable.** Recall 0.169–0.250 across three repositories, 2–3× the strongest matched control, intervals excluding zero. A high-precision hint, **not a safety net**. |
-| 3. changed A, broke B | `check` → `callers` + `dependents` | **improved, still the weakest.** Resolved callers alone recall 0.094 pooled over 351 cases. The module-level tier added in 0.26.0 takes the whole of `check` from 0.280 to 0.326 on three repositories nothing was tuned against (+0.046, interval excluding zero). The mechanism of what is still lost is now measured rather than guessed. |
+| 3. changed A, broke B | `check` → `callers` + `dependents`; `preflight` → blast radius | **improved on both surfaces, still the weakest of the three.** Resolved callers alone recall 0.094 pooled over 351 cases. The module-level tier takes `check` from 0.280 to 0.326 and preflight's whole answer from 0.385 to 0.421, both on three repositories nothing was tuned against, both intervals excluding zero. What is still lost has been mechanism-mapped, and the two largest mechanisms were both measured and found not worth repairing. |
 
 ## Headline results
 
@@ -106,8 +109,18 @@ symbols it declines are the widely-named ones a held-out file is most likely to 
 at changed-symbol level. Files importing a changed module beat resolved callers by
 **+0.102 to +0.183 in all six repositories**, every interval excluding zero. Shipped as
 the DEPENDENTS tier: `check` 0.305 → 0.362 pooled, **+0.046 [+0.017, +0.080] held out**,
-for 0.6 more files named per run. Four other candidates were measured and **not** built —
+for 0.6 more files named per run. Five other candidates were measured and **not** built —
 see "what was tried and refuted" below.
+
+**exp7 (whether preflight wanted the same thing).** It did, added rather than swapped in.
+525 cases on exp4's held-out-file protocol, checked out at the parent with nothing
+applied, which is where preflight runs. The blast radius goes **0.183 → 0.230** held out
+(+0.047 [+0.025, +0.072]) and the whole answer **0.385 → 0.421** (+0.036 [+0.018,
++0.061]). *Replacing* the leads tier with it is +0.004 and not established, so the leads
+stay — jinja is on record as the repository where the unconfirmed symbol-level tier is
+the useful one. The new tier earns most where the other two are empty by construction:
+asked about a function not yet written, there is nothing to resolve and nothing to name,
+and the file's importers are still there to read.
 
 ## What was tried and refuted
 
@@ -121,10 +134,20 @@ was built on it, and nothing was built on any of them.
 | Name-level signal combined with co-change confidence | exactly level; finds nothing the two do not find apart | +0.000 [−0.034, +0.034] |
 | Ranking dependents by symbol mentions or co-change instead of import count | identical, so the plumbing was not built | 0.162 / 0.160 / 0.162 |
 | Ranking outside files by how many changed symbols they name (exp4) | worse than what ships once cut to a readable length | — |
+| Printing leads for the symbols the cost gate declined — 32.5% of caller misses, and the sweep has already run | two cases in 351, none held out, for 0.2–0.5 more files a run; narrowed to importers it adds *nothing at all* | +0.000 held out |
+| Swapping preflight's leads tier for module dependents rather than adding it | not established either way; the leads keep their place | +0.004 held out, ns |
 
-The first is the one worth remembering: **a mechanism's share of the failures is not
-the same as a repair's value.** The budget explains a fifth of the misses and removing
-it buys nothing, because those cases fail for other reasons too.
+The cost-gate row is the one that changed how this project reasons. It was the largest
+remaining mechanism and the cheapest possible fix, and it repaid nothing: the gate
+declines a symbol precisely when many files name it, which is to say it declines exactly
+the symbols whose leads are worthless.
+
+The rule to carry forward: **a mechanism's share of the failures is not the same as a
+repair's value.** Two independent confirmations now. The resolution budget explains a
+fifth of the caller misses and removing it buys nothing; the cost gate explains a third
+and printing its leads buys nothing. In both cases the cases it would reach fail for
+other reasons as well. Diagnose to shortlist, then measure the repair — never ship on
+the diagnosis.
 
 ## What is not established
 
@@ -178,13 +201,21 @@ marked with `?`. Merging them is the confidence inflation the whole tool exists 
 avoid. jinja is the independent evidence that the unconfirmed tier can be the more
 useful one.
 
-**Dependents are never merged with callers, and never counted as them.** Separate key,
-separate heading, marked `?`. A resolved reference says B calls the thing you changed; an
+**Dependents are never merged with callers, and never counted as them.** On both
+surfaces: `check`'s DEPENDENTS section and preflight's third blast-radius tier. Separate
+key, separate heading, marked `?`. A resolved reference says B calls the thing you changed; an
 import says B depends on the module it lives in. Merging them would be the same
 confidence inflation that leads are kept apart from callers to avoid, and it would make
 the caller section's measured recall a number about something else. The tier also skips
 any file another section already named — a slot spent repeating a stronger claim is a
 slot not spent on a file nothing else reached.
+
+**preflight keeps its leads tier.** Replacing it with module dependents was measured
+over 525 cases and came back +0.004 held out, not established — while *adding* the third
+tier came back +0.036 and established. Three tiers is the measured answer, not an
+oversight, and jinja remains the independent evidence that the unconfirmed symbol-level
+tier can be the useful one. The token budget takes the module tier first, because
+"imports this module" is the weakest of the three claims.
 
 **The dependents cutoff and the list length are one pair of numbers, chosen together.**
 Past 20 importers nothing is listed and a note says why, because two of forty would be an
@@ -263,7 +294,7 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
 | `mcp_server.py` | JSON-RPC 2.0 over stdio, nine tools, no SDK |
 | `storage.py` | SQLite schema, derived-state markers, co-change counters |
 | `references.py` | name sweeps, jedi resolution, and the module-import scan behind DEPENDENTS |
-| `experiments/` | six experiments, corpus management, the results and the caveats |
+| `experiments/` | seven experiments, corpus management, the results and the caveats |
 
 ## Reproducing the experiments
 
@@ -275,6 +306,7 @@ python -m experiments.exp4_check --limit 120 --dump outcomes.json   # ~55 min
 python -m experiments.exp5_caller_gap --limit 60            # ~6 min
 python -m experiments.exp6_caller_candidates --limit 60 --dump features.json   # ~25 min
 python -m experiments.exp6_caller_candidates --score features.json             # instant
+python -m experiments.exp7_preflight_dependents --limit 150 # ~35 min, preflight's side
 ```
 
 `exp6 --score` is the one to reach for first. It re-runs every candidate over a dump
@@ -291,28 +323,18 @@ these numbers hold for the code you actually work on.
 
 **1. Score symbol-level co-change.** It ships and is asserted and has never been
 measured. An exp1 variant, cheap, and it either justifies the per-file diff mining or
-retires it. It is first now because the caller gap has been worked and this has not.
+retires it. It is first because it is the last shipped claim in this tool that has never
+been scored at all — the caller side is now worked out on both surfaces, and every
+remaining idea there has been measured and rejected.
 
-**2. The caller side's two loose ends, both now narrow.** The gap is worked, not closed,
-and exp5 says exactly what is left. (a) The **cost gate is the largest single mechanism
-at 32.5% of misses**, and `check` currently drops a declined symbol entirely — where
-`preflight`, asked the same thing, shows its leads marked `?`. Showing ranked leads for
-declined symbols costs nothing, since the sweep has already run; the caution is that
-`names@k`, a looser relative of that signal, scored *below* `check` in all six
-repositories, so rank and truncate before believing it. (b) **`preflight` has no
-module-level tier at all.** DEPENDENTS only exists in `check`; the same
-`references.module_dependents` call would work before an edit, where there is a file but
-no diff. Both are `exp6 --score` questions first — (a) needs one new feature in the dump
-(which symbol was declined), (b) needs a preflight-shaped collection.
-
-**3. Tune the thresholds against the corpus.** `min_support` and `min_confidence`
+**2. Tune the thresholds against the corpus.** `min_support` and `min_confidence`
 predate any evidence. Co-change recall is ~0.10 and there is very likely a better
 trade available. Sweep on the derivation set, confirm on the held-out set, never the
 other way round.
 
-**4. The prevention experiment.** Agents doing tasks with and without the tool, on a
+**3. The prevention experiment.** Agents doing tasks with and without the tool, on a
 task set nobody here wrote. It is the only design that answers the actual question, and
 everything above is a proxy for it.
 
-**5. Language coverage.** Resolution is Python-only; twelve other languages degrade to
+**4. Language coverage.** Resolution is Python-only; twelve other languages degrade to
 name matching, and exp2 says nothing about any of them.
