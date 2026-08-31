@@ -36,7 +36,6 @@ import math
 import os
 import secrets
 import shutil
-import signal
 import socket
 import sqlite3
 import stat
@@ -1573,8 +1572,7 @@ def _execute_route(path: str, handler, parsed, body: dict | None,
         # interpreters running at once. The request did not finish, but nothing about it
         # was wrong and retrying is the caller's move. A crash signal is a different
         # claim entirely and still reaches them as an internal error.
-        if worker_process.killed_by_signal(
-                getattr(exc, "exitcode", None)) == signal.SIGKILL:
+        if worker_process.killed_externally(getattr(exc, "exitcode", None)):
             raise _transient_http_error(
                 f"the route worker was killed before answering: {exc}",
                 "worker-killed") from exc

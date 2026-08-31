@@ -55,6 +55,29 @@ def killed_by_signal(exitcode: int | None) -> int | None:
     return -exitcode
 
 
+# Windows has no SIGKILL, and nothing there can send one. Resolved once, here, rather
+# than named at each call site: a bare ``signal.SIGKILL`` raises AttributeError on
+# Windows, and every call site is inside an exception handler -- the one place where a
+# second failure is hardest to see and most expensive to diagnose.
+_SIGKILL = getattr(signal, "SIGKILL", None)
+
+
+def killed_externally(exitcode: int | None) -> bool:
+    """Whether a worker was ended from outside rather than by its own failure.
+
+    The distinction is the whole point: a worker killed by SIGKILL was ended by the
+    containment guardian or by a kernel short of memory, so the request did not finish
+    but nothing about it was wrong and retrying is the caller's move. A worker that took
+    SIGSEGV or SIGABRT crashed, which is a defect and has to reach the caller as one.
+
+    False on Windows for every exitcode, which is correct rather than a degradation:
+    multiprocessing there reports a terminated process with a non-negative code, so no
+    exitcode can mean "killed by a signal" in the first place.
+    """
+    killed = killed_by_signal(exitcode)
+    return killed is not None and killed == _SIGKILL
+
+
 class RemoteHttpError(RuntimeError):
     """A controlled HTTP error raised inside the isolated worker."""
 
@@ -114,7 +137,14 @@ def _route_child(send_connection, method: str, target: str,
 
 
 def _kill_group_when_parent_closes(connection) -> None:
-    """Block on a parent-owned pipe and kill the POSIX worker group at EOF."""
+    """Block on a parent-owned pipe and kill the POSIX worker group at EOF.
+
+    posix-only: started only from the ``os.name != "nt"`` branch of
+    ``_contained_child_entry``, because ``killpg`` and ``SIGKILL`` do not exist on
+    Windows, where the job object does this job instead. The precondition is written
+    down rather than assumed -- the surrounding ``except OSError`` would not catch the
+    AttributeError that reaching this on Windows would raise.
+    """
     try:
         connection.recv_bytes()
     except (EOFError, OSError):

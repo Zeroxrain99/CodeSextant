@@ -496,8 +496,12 @@ def test_the_package_version_matches_the_packaging_version():
     83% -- but knowing is not the same as being unable to get it wrong.
     """
     import sys
-    import tomllib
     from pathlib import Path
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
 
     import codesextant
 
