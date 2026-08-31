@@ -177,15 +177,25 @@ def goto_definition(src_root: str, file_path: str, line: int, column: int) -> li
     return out
 
 
-def _locate_definition_position(src_root: str, def_name: str,
-                                def_path: str | None) -> tuple[str, int, int] | None:
-    """Locate the def/class line for `def_name` in its definition file (jedi's get_references needs a starting point).
+def _locate_definition_positions(src_root: str, def_name: str,
+                                 def_path: str | None) -> list[tuple[str, int, int]]:
+    """Every def/class line for `def_name` in its definition file, not just the first.
 
-    If def_path is given, search only that file; otherwise search src_root for the first hit.
-    Returns (path, line, column 1-based, pointing at the start of the name) or None.
+    One file may define a name more than once, and it happens in ordinary code rather
+    than in pathological code: ``send`` on two classes, ``run`` on a base and its
+    override, a function redefined under ``if TYPE_CHECKING``. Taking the first match
+    and comparing jedi's answer against that one line scores every reference to any of
+    the others as pointing somewhere else -- so the blast radius comes back empty for
+    the symbol most likely to have callers, and says nothing about why.
+
+    All of them are returned because the answer this feeds is a list of *files*, and
+    the edges are stored per (file, name): "something named ``send`` and defined in
+    ``dec.py`` is used here" is exactly the claim, and it is true of every definition
+    in the file. The first entry keeps the position the single-position callers used.
     """
     pat = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+(" + re.escape(def_name) + r")\b")
     search_files = [def_path] if def_path else list(_iter_python_files(src_root))
+    found: list[tuple[str, int, int]] = []
     for fp in search_files:
         if not fp or not os.path.exists(fp):
             continue
@@ -194,10 +204,22 @@ def _locate_definition_position(src_root: str, def_name: str,
                 for i, line_text in enumerate(f, 1):
                     m = pat.match(line_text)
                     if m:
-                        return (fp, i, m.start(1) + 1)
+                        found.append((fp, i, m.start(1) + 1))
         except OSError:
             continue
-    return None
+        if found:
+            # Without def_path this walks the project, and the first file that defines
+            # the name is the one meant -- carrying on would mix unrelated definitions
+            # that merely share a spelling.
+            break
+    return found
+
+
+def _locate_definition_position(src_root: str, def_name: str,
+                                def_path: str | None) -> tuple[str, int, int] | None:
+    """The first definition position, for callers that only need a starting point."""
+    found = _locate_definition_positions(src_root, def_name, def_path)
+    return found[0] if found else None
 
 
 def _occurrences_in_file(file_path: str, symbol: str) -> list[tuple[int, int]]:
@@ -248,7 +270,8 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
         "truncated": bool,
       }
     """
-    located = _locate_definition_position(src_root, symbol, def_path)
+    positions = _locate_definition_positions(src_root, symbol, def_path)
+    located = positions[0] if positions else None
     candidate_files = _prefilter_candidate_files(src_root, symbol)
 
     result: dict = {
@@ -272,6 +295,13 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
 
     def_file, def_line, def_col = located
     result["definition"] = {"path": def_file, "line": def_line, "column": def_col}
+    # Every same-named definition in that file counts as the target: see
+    # _locate_definition_positions. The line jedi actually landed on is kept per
+    # reference, so the persisted edge points at the definition that was really
+    # used rather than at whichever one came first in the file.
+    result["definitions"] = [{"path": path, "line": line, "column": column}
+                             for path, line, column in positions]
+    def_lines = {line for _path, line, _column in positions}
     def_file_norm = os.path.normcase(os.path.abspath(def_file))
 
     project = _make_project(src_root)
@@ -305,19 +335,22 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
                         "src_path": fp, "line": line, "column": col,
                         "confidence": "low", "note": "goto resolution failed, cannot confirm target"})
                 continue
-            # Does this occurrence point at the "target definition"?
-            points_to_target = any(
-                d.module_path
-                and os.path.normcase(os.path.abspath(str(d.module_path))) == def_file_norm
-                and d.line == def_line
-                for d in defs
+            # Does this occurrence point at the "target definition"? Any same-named
+            # definition in the target file counts, and which one is remembered.
+            landed = next(
+                (d.line for d in defs
+                 if d.module_path
+                 and os.path.normcase(os.path.abspath(str(d.module_path))) == def_file_norm
+                 and d.line in def_lines),
+                None,
             )
             # Exclude "the definition's own line" (doesn't count as a reference)
             is_definition_site = (os.path.normcase(os.path.abspath(fp)) == def_file_norm
-                                  and line == def_line)
-            if points_to_target and not is_definition_site:
+                                  and line in def_lines)
+            if landed is not None and not is_definition_site:
                 result["high_confidence"].append({
-                    "src_path": fp, "line": line, "column": col, "confidence": "high"})
+                    "src_path": fp, "line": line, "column": col,
+                    "def_line": landed, "confidence": "high"})
             elif include_low_confidence and not is_definition_site:
                 result["low_confidence"].append({
                     "src_path": fp, "line": line, "column": col, "confidence": "low",

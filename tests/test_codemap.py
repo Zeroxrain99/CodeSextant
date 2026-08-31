@@ -266,6 +266,48 @@ def test_find_references_disambiguates_same_name(project):
     assert len(res["high_confidence"]) < res["name_match_hit_count"]
 
 
+def test_find_references_finds_the_second_definition_of_a_name(project):
+    """A file may define one name twice, and references to the later one still count.
+
+    ``send`` is defined on two classes in one module. The locator used to take the
+    first ``def send`` it found and accept only jedi answers landing on that exact
+    line, so every reference to the *second* one was scored as pointing somewhere
+    else -- and the blast radius came back empty while claiming to have looked.
+
+    The claim being rendered is per (file, name): "something named ``send`` and
+    defined in ``dec.py`` is used here". So both definitions are targets, and each
+    reference remembers which one it resolved to, because the call graph attaches
+    edges to symbol nodes by (def_path, def_line).
+    """
+    dec = _write(project, "dec.py", """
+        class First:
+            def send(self):
+                return 1
+
+
+        class Second:
+            def send(self, value):
+                return value
+    """)
+    _write(project, "user.py", textwrap.dedent('''
+        from dec import Second
+        def run():
+            return Second().send(3)
+    '''))
+    codesextant.index_project(str(project))
+
+    res = codesextant.find_references(str(project), "send", def_path=dec,
+                                      src_root=str(project))
+    hits = {os.path.basename(h["src_path"]) for h in res["high_confidence"]}
+    assert "user.py" in hits, f"the call on the second definition is a reference, got {hits}"
+    landed = {h.get("def_line") for h in res["high_confidence"]
+              if os.path.basename(h["src_path"]) == "user.py"}
+    first, second = (d["line"] for d in res["definitions"])
+    assert landed == {second}, (
+        f"the edge must point at the definition really used (line {second}), got {landed}")
+    assert first != second
+
+
 def test_find_references_missing_definition_is_loud(project):
     _write(project, "a.py", "x = 1\n")
     codesextant.index_project(str(project))

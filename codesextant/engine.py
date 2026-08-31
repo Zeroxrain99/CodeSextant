@@ -795,7 +795,11 @@ def find_references(path: str, symbol: str, *, def_path: str | None = None,
                 "src_line": ref["line"],
                 "symbol_name": symbol,
                 "def_path": d["path"],
-                "def_line": d["line"],
+                # The definition this reference actually resolved to, which is not
+                # always the first one of that name in the file. namegraph matches
+                # edges to symbol nodes on (def_path, def_line), so the first-match
+                # line would hang the edge off the wrong definition.
+                "def_line": ref.get("def_line", d["line"]),
                 "confidence": "high",
             })
         if edges_by_src:
@@ -1917,6 +1921,25 @@ def _changed_units(abs_path: str, abs_file: str,
             if diffscan.overlaps(added, unit["line"], unit.get("end_line") or unit["line"])]
 
 
+def _changed_definitions(store, abs_file: str, added: list[tuple[int, int]]) -> list[dict]:
+    """Definitions in this file whose body the diff wrote into, with their own lines.
+
+    The line matters and is easy to drop. A file may define the same name twice --
+    ``send`` on two classes, ``run`` on a base and its override -- and resolution asked
+    only for the name has to guess which one, which it does by taking the first. The
+    line says which one the diff actually touched, so anything resolving against these
+    can pin the right definition instead of the first same-named one.
+    """
+    out = []
+    for row in store.conn.execute(
+            "SELECT name,line,end_line FROM symbols WHERE path=? AND "
+            "kind IN ('function','method','class')", (abs_file,)).fetchall():
+        end = row["end_line"] or row["line"]
+        if diffscan.overlaps(added, row["line"], end):
+            out.append({"name": row["name"], "line": row["line"], "end_line": end})
+    return out
+
+
 def _structurally_significant(unit) -> bool:
     """Whether repeating this shape would mean anything.
 
@@ -2052,12 +2075,8 @@ def check(path: str, *, base: str | None = None, staged: bool = False,
                             "size": unit.get("node_count"),
                             "matches": matches,
                         })
-                for row in store.conn.execute(
-                        "SELECT name,line,end_line FROM symbols WHERE path=? AND "
-                        "kind IN ('function','method','class')", (abs_file,)).fetchall():
-                    end = row["end_line"] or row["line"]
-                    if diffscan.overlaps(ranges["added"], row["line"], end):
-                        changed_symbols.append((rel, row["name"]))
+                for definition in _changed_definitions(store, abs_file, ranges["added"]):
+                    changed_symbols.append((rel, definition["name"]))
 
     cochange_stats = _ensure_cochange(abs_path)
     companions: dict[str, dict] = {}
