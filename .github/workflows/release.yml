@@ -1,0 +1,101 @@
+name: Release
+
+# Cutting a release should not require a local checkout, a remembered command, or a
+# credential on somebody's laptop. Run this from the Actions tab with a tag name and it
+# creates the tag, builds the distributions, checks them, and publishes a GitHub Release
+# with the wheel attached. Pushing a v* tag by hand does the same thing.
+#
+# The wheel is attached because it is how people install this without PyPI:
+#   pip install https://github.com/Zeroxrain99/CodeSextant/releases/download/v0.28.0/codesextant-0.28.0-py3-none-any.whl
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create, e.g. v0.28.0 (must match the version in pyproject.toml)'
+        required: true
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # The tag and the packaged version are one number in two places, so they get the
+      # same treatment as the Python floor: checked, not remembered. Releasing v0.28.0
+      # from a tree that says 0.27.0 is the kind of mistake that is only visible to the
+      # person who later cannot work out which code they installed.
+      #
+      # Inputs reach the shell through env rather than through ${{ }} interpolation: a
+      # tag name is attacker-controlled text on a public repository, and interpolating
+      # it into a script is how that text becomes a command.
+      - name: The tag must match the version being packaged
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          echo "pyproject says $version, tag says ${RELEASE_TAG}"
+          test "${RELEASE_TAG}" = "v${version}"
+
+      - name: Build the distributions
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+
+      # A release whose wheel does not run is worse than no release: it is discovered by
+      # the first person who trusts it. Installing into a clean environment and calling
+      # the entry point costs seconds and rules that out.
+      - name: The wheel must install and run
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/relcheck
+          /tmp/relcheck/bin/pip install --quiet dist/*.whl
+          /tmp/relcheck/bin/codesextant --help > /dev/null
+          /tmp/relcheck/bin/python -c "import codesextant, sys; sys.exit(0 if codesextant.__version__ else 1)"
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TARGET: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" > /dev/null 2>&1; then
+            echo "${RELEASE_TAG} already exists; uploading artifacts to it instead."
+            gh release upload "${RELEASE_TAG}" dist/* --clobber
+          elif [ -f "docs/release-notes/${RELEASE_TAG}.md" ]; then
+            # Written notes when they exist. --generate-notes lists every commit since
+            # the previous release, which for a release spanning ninety-three of them is
+            # a changelog nobody reads and not a description of what changed.
+            gh release create "${RELEASE_TAG}" dist/* \
+              --target "${TARGET}" \
+              --title "CodeSextant ${RELEASE_TAG}" \
+              --notes-file "docs/release-notes/${RELEASE_TAG}.md"
+          else
+            gh release create "${RELEASE_TAG}" dist/* \
+              --target "${TARGET}" \
+              --title "CodeSextant ${RELEASE_TAG}" \
+              --generate-notes
+          fi
