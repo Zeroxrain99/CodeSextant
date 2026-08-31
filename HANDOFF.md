@@ -19,7 +19,7 @@ the machine.
 | branch | `claude/codesextant-handoff-us93o7`, 34 commits ahead of master. Last commit touching `codesextant/` is `a382e99`; anything after it is this document. |
 | version | 0.27.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
 | tests | `python -m pytest -q` → 729 passed, 6 skipped |
-| lint | `python -m ruff check codesextant tests experiments` → 12 errors, all pre-existing. **12 is the baseline; 13 means you added one.** |
+| lint | `python -m ruff check codesextant tests experiments` → **clean**, and a CI job enforces it. The baseline used to be "12 pre-existing", written here and checked by nobody; a number you have to remember is a guard with a memory requirement. |
 | experiments | `experiments/README.md` — protocol, results, and what they do not establish |
 
 **The two things that matter most.**
@@ -253,6 +253,13 @@ platform. The distinction between what an import raises and what an attribute ra
 load-bearing — the first version of that checker treated `except OSError` as a guard and
 therefore passed over the very hole it was written for.
 
+**One Python floor, three places that each believe it.** `requires-python` says what is
+supported, the CI matrix says what is proven, and ruff's `target-version` says what the
+linter will accept. They disagreed — ruff targeted 3.11 against a 3.10 floor, so the one
+tool reading every file on every commit was quietly agreeing to syntax a third of the
+matrix cannot run. `test_the_python_floor_is_the_same_number_in_all_three_places` now
+joins them.
+
 **Removing a crash is not the same as keeping the behaviour.** The first repair of
 `signal.SIGKILL` resolved it to `None`, which stopped the AttributeError and quietly
 made `killed_externally` answer False on Windows — a *different definition of the
@@ -308,7 +315,12 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   four times, the `tomllib`/`tomli` fallback three times — forgotten in exactly the spot
   the author could not run. That is not a discipline problem and more discipline will
   not fix it; a checker that reads the AST from whichever platform you happen to have
-  will.
+  will. Three rounds of this in one sitting: the original two defects; then a repair
+  that removed the crash and changed the behaviour instead; then a *test written to
+  catch that* which itself said `signal.SIGKILL` while saving the value, and a checker
+  that missed it because the import was aliased. Each round was caught one push later.
+  What ended it was making the condition reproducible locally — deleting the name and
+  reloading — rather than being more careful.
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is
   scored by `--score` on an old dump in one second instead of an hour. Four candidates

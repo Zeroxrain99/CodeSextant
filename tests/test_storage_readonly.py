@@ -37,10 +37,9 @@ def test_open_readonly_can_read_existing_data(tmp_path, monkeypatch):
 def test_open_readonly_refuses_writes(tmp_path, monkeypatch):
     """A worker must not be able to corrupt the index even by mistake."""
     repo = _seed(tmp_path, monkeypatch)
-    with storage.ProjectStore.open_readonly(str(repo)) as store:
-        with pytest.raises(sqlite3.OperationalError):
-            store.conn.execute(
-                "INSERT INTO meta(key,value) VALUES('intruder','1')")
+    with storage.ProjectStore.open_readonly(str(repo)) as store, \
+            pytest.raises(sqlite3.OperationalError):
+        store.conn.execute("INSERT INTO meta(key,value) VALUES('intruder','1')")
 
 
 def test_open_readonly_does_not_create_a_database(tmp_path, monkeypatch):

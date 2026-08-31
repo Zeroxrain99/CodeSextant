@@ -187,6 +187,17 @@ def _findings(path: pathlib.Path, floor: tuple[int, ...]) -> list[str]:
     relative = path.relative_to(REPO_ROOT).as_posix()
     out: list[str] = []
 
+    # `import signal as signal_module` puts the same names behind a different local
+    # name. The first version of this checker matched only the literal `signal.`, and
+    # missed a real use in tests/test_daemon_routing.py for exactly that reason -- which
+    # Windows CI then found, one push later, which is the loop this file exists to end.
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if "." not in alias.name:
+                    aliases[alias.asname or alias.name] = alias.name
+
     def report(line: int, kind: str, what: str) -> None:
         if not _covered(ranges, line, kind):
             out.append(f"{relative}:{line}  {what}")
@@ -201,7 +212,8 @@ def _findings(path: pathlib.Path, floor: tuple[int, ...]) -> list[str]:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            module, attribute = node.value.id, node.attr
+            local, attribute = node.value.id, node.attr
+            module = aliases.get(local, local)
             if (node.lineno, attribute) in excused:
                 continue
             if module == "signal" and attribute in POSIX_ONLY_SIGNALS:
@@ -327,14 +339,30 @@ def test_the_accepted_guarded_forms_are_all_accepted():
     assert findings == [], findings
 
 
-def test_the_python_floor_is_the_one_the_matrix_tests():
-    """One number, in one place, or the checker drifts from what CI proves."""
+def test_the_python_floor_is_the_same_number_in_all_three_places():
+    """One number, three places that each believe it, and nothing joining them.
+
+    ``requires-python`` says what the package supports, the CI matrix says what is
+    proven, and ruff's ``target-version`` says what the linter will accept. They were
+    not the same: ruff targeted 3.11 while the package claimed 3.10, so the one tool
+    that reads every file on every commit was quietly agreeing to syntax a third of the
+    matrix cannot run.
+    """
+    with open(REPO_ROOT / "pyproject.toml", "rb") as handle:
+        config = tomllib.load(handle)
+    floor = _floor()
+
     workflow = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(
         encoding="utf-8")
     versions = re.findall(r'"(\d+\.\d+)"', workflow)
     lowest = min((tuple(int(p) for p in v.split(".")) for v in versions
                   if v.startswith("3.")), default=None)
-    assert lowest == _floor(), (
-        f"pyproject requires-python floor is {_floor()} but the CI matrix's lowest "
+    assert lowest == floor, (
+        f"pyproject requires-python floor is {floor} but the CI matrix's lowest "
         f"Python is {lowest}; one of them is testing something nobody supports")
-    assert sys.version_info >= _floor()
+
+    target = config["tool"]["ruff"]["target-version"]
+    assert target == f"py{floor[0]}{floor[1]}", (
+        f"ruff targets {target} but requires-python floor is "
+        f"py{floor[0]}{floor[1]}; the linter would accept syntax the floor cannot run")
+    assert sys.version_info >= floor

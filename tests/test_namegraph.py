@@ -304,8 +304,8 @@ def test_external_usage_body_aware(project):
         indexed = st.all_indexed_files()
     usage, over, _meta = namegraph.compute_external_usage(syms, indexed_files=indexed)
     by_name = {}
-    for (p, l, n), c in usage.items():
-        by_name.setdefault(n, []).append(c)
+    for (_path, _line, name), count in usage.items():
+        by_name.setdefault(name, []).append(count)
     assert max(by_name["helper"]) > 0     # called from outside its body, so external
     assert max(by_name["lonely"]) == 0    # nobody calls it
     assert max(by_name["recur"]) == 0     # only calls itself, from inside its own body

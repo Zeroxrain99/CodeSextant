@@ -221,8 +221,10 @@ def test_project_isolation(tmp_path, monkeypatch):
     """Two projects at different paths get different project_keys and therefore
     separate databases, so their symbols never mix."""
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
-    p1 = tmp_path / "proj1"; p1.mkdir()
-    p2 = tmp_path / "proj2"; p2.mkdir()
+    p1 = tmp_path / "proj1"
+    p1.mkdir()
+    p2 = tmp_path / "proj2"
+    p2.mkdir()
     (p1 / "x.py").write_text("def only_in_p1(): pass\n", encoding="utf-8")
     (p2 / "y.py").write_text("def only_in_p2(): pass\n", encoding="utf-8")
     codesextant.index_project(str(p1))
@@ -382,8 +384,10 @@ def test_list_projects_lists_all_indexed(tmp_path, monkeypatch):
     """list_projects walks the database directory and reports every indexed
     project with its statistics. This is what feeds the panel overview."""
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
-    p1 = tmp_path / "alpha"; p1.mkdir()
-    p2 = tmp_path / "beta"; p2.mkdir()
+    p1 = tmp_path / "alpha"
+    p1.mkdir()
+    p2 = tmp_path / "beta"
+    p2.mkdir()
     (p1 / "a.py").write_text("def fa(): return 1\ndef fb(): return 2\n", encoding="utf-8")
     (p2 / "b.py").write_text("def fc(): return 3\n", encoding="utf-8")
     codesextant.index_project(str(p1))
@@ -406,7 +410,8 @@ def test_list_projects_flags_missing_path(tmp_path, monkeypatch):
     listing marks path_exists=False and the panel can flag it."""
     import shutil
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
-    repo = tmp_path / "gone"; repo.mkdir()
+    repo = tmp_path / "gone"
+    repo.mkdir()
     (repo / "x.py").write_text("def gx(): return 1\n", encoding="utf-8")
     codesextant.index_project(str(repo))
     shutil.rmtree(repo)
@@ -517,7 +522,8 @@ def test_index_multilang_project(tmp_path, monkeypatch):
     """A mixed project: one indexing pass collects Python, TS and Go symbols
     together, because _iter_source_files accepts all three extensions."""
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
-    repo = tmp_path / "multi"; repo.mkdir()
+    repo = tmp_path / "multi"
+    repo.mkdir()
     (repo / "a.py").write_text("def py_fn(): pass\n", encoding="utf-8")
     (repo / "b.ts").write_text("export function tsFn(){}\nexport class TsCls{}\n", encoding="utf-8")
     (repo / "c.go").write_text("package main\nfunc GoFn() {}\n", encoding="utf-8")
@@ -535,7 +541,8 @@ def test_find_references_ts_fallback_when_ts_morph_unavailable(tmp_path, monkeyp
     # force ts-morph off so the fallback path is exercised whether or not node
     # happens to be installed here
     monkeypatch.setattr("codesextant.references.ts_morph_available", lambda: False)
-    repo = tmp_path / "ts"; repo.mkdir()
+    repo = tmp_path / "ts"
+    repo.mkdir()
     (repo / "lib.ts").write_text("export function helper(x){ return x; }\n", encoding="utf-8")
     (repo / "caller.ts").write_text("import { helper } from './lib';\nhelper(1);\n", encoding="utf-8")
     codesextant.index_project(str(repo))
@@ -557,7 +564,8 @@ def test_find_references_ts_morph_high_confidence(tmp_path, monkeypatch):
     if not references.ts_morph_available():
         pytest.skip("ts-morph bridge unavailable: no node, or ts_bridge not npm installed")
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
-    repo = tmp_path / "ts"; repo.mkdir()
+    repo = tmp_path / "ts"
+    repo.mkdir()
     _write(repo, "lib_a.ts", "export function helper(x: number) { return x + 1; }\n")
     _write(repo, "lib_b.ts", "export function helper(y: number) { return y - 1; }\n")  # the decoy
     _write(repo, "caller.ts",

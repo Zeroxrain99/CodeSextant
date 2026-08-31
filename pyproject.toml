@@ -41,7 +41,10 @@ Issues = "https://github.com/Zeroxrain99/CodeSextant/issues"
 Documentation = "https://github.com/Zeroxrain99/CodeSextant/blob/master/docs/getting-started.md"
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+# ruff is pinned, not floated. An unpinned linter in CI is a guard that turns red
+# on somebody else's release for reasons unrelated to the change in front of you,
+# which is how a fence stops being read.
+test = ["pytest>=8", "ruff==0.16.5"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -58,7 +61,7 @@ packages = ["codesextant"]
 # Match the existing source style and keep lint focused on correctness.
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
 # Prototype scripts are excluded from product linting.
 exclude = ["build", "dist", ".venv", "_poc_graph_c"]
 

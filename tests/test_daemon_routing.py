@@ -187,8 +187,13 @@ def test_the_kill_reading_survives_a_platform_without_SIGKILL():
 
     from codesextant import worker_process
 
-    saved = signal_module.SIGKILL
-    del signal_module.SIGKILL
+    # Read defensively, or this test becomes the very mistake it is checking for: on
+    # Windows the name is already absent, and reaching for it to save it raises the
+    # AttributeError the whole exercise is about. Windows simply runs the assertions
+    # against its own platform, which is the real thing rather than a simulation.
+    saved = getattr(signal_module, "SIGKILL", None)
+    if saved is not None:
+        delattr(signal_module, "SIGKILL")
     try:
         windows_like = importlib.reload(worker_process)
         assert windows_like._SIGKILL == 9, "SIGKILL's number is fixed by POSIX"
@@ -196,7 +201,10 @@ def test_the_kill_reading_survives_a_platform_without_SIGKILL():
         assert windows_like.killed_externally(-11) is False, "a crash is still a defect"
         assert windows_like.killed_externally(None) is False
     finally:
-        signal_module.SIGKILL = saved
+        if saved is not None:
+            # Named as a string throughout, not as an attribute: a file about a name
+            # that may be missing should not spell it in a way that assumes it is there.
+            setattr(signal_module, "SIGKILL", saved)  # noqa: B010
         importlib.reload(worker_process)
 
     assert worker_process.killed_externally(-9) is True
