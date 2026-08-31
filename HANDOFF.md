@@ -154,19 +154,40 @@ and printing its leads buys nothing. In both cases the cases it would reach fail
 other reasons as well. Diagnose to shortlist, then measure the repair — never ship on
 the diagnosis.
 
-## The guard index (0.28.0)
+## The guard index
 
 The second of the three problems, sharpened: *a fence you built yourself blocks you, you
 do not remember it, and deleting it looks cheaper than understanding it.* exp8 surveyed
 seven repositories before anything was designed and **refused the obvious design**:
 guards run 16-34 per thousand lines (182-935 per project), the author's reason is absent
 for four in five, and the commit that added them does not carry it either (0.00-0.04).
-So `guards` leads with a rule derived from the code, discloses in three layers, and
-admits a fence only on per-guard evidence. Cost 79 ms with a symbol, 3 ms without.
+So `guards` leads with a rule derived from the code and discloses in layers.
 
-**What it is not**: measured. It is pinned by unit tests and it reads correctly on this
-repository; nothing scores it against a corpus the way exp4 scores `check`. The
-experiment that would is named at the end of `docs/guard-index.md`.
+**exp9 measured it**, holding out a file the commit had to touch *that holds a fence* --
+which no other experiment here can do, because exp4/exp6 hold out `sorted(files)`' first
+`.py` and almost never land on one. 360 cases. Held out **0.306** at 4.9 fences named,
+beating all four controls with every interval excluding zero: the per-file design it
+replaced by +0.189, reading co-change instead by +0.156, proximity by +0.139, the
+project's most-changed files by +0.128.
+
+**Two rejections made by eye were reversed by that measurement.** `guards` originally
+reached a fence only through the fence's own text. Two tiers resting on a claim about the
+*file* -- history says it moves with yours, it imports what you changed -- were written
+down as refused on the argument that per-file relevance is what made an earlier version
+unreadable. Both were then scored and both were worth building: together **+0.100 held
+out**. They rank below every fence read off its own text and say which claim they rest on.
+
+**And one thing it is not, deliberately.** The always-on block above the ranked answer --
+CI jobs, pre-commit hooks, lint rules, the language floor -- is not ranked, retrieved or
+disclosed progressively. exp10 counted the population at 4-15 CI checks, 8-21 hooks and
+0-14 lint rules against 182-964 Python guards, and every one applies to every change, so
+relevance has the same answer every time. It has **no corpus score and cannot have one**:
+retrieval recall is meaningless for a fence that always applies.
+
+**Where it loses.** On jinja it is last -- beaten by simply reading the most-changed files
+by 0.167 -- because a template engine's tests reach their subjects through indirection and
+never spell the names. Five repositories say per-guard evidence is right and one says it
+is wrong, and nothing predicts which a new repository is.
 
 ## What is not established
 
@@ -177,6 +198,12 @@ experiment that would is named at the end of `docs/guard-index.md`.
   reads as a hint or as noise is a question about people, and belongs to the prevention
   experiment.
 - **Symbol-level co-change.** It is mined, shipped and asserted, and never scored.
+- **The always-on gates block.** Correct and complete on seven repositories by unit test,
+  with no corpus score -- the position `guards` itself was in before exp9.
+- **Whether six fences is the right default.** exp9 priced it: 0.306 at six against 0.394
+  at twenty and 0.506 uncapped, so six costs 0.088. Whether a longer section is *read* is
+  the other half and no experiment here can test it. `--limit` exists so the reader
+  decides.
 - **Thresholds.** `min_support=3`, `min_confidence=0.5` predate the corpus that could
   justify them. Tuning must use the held-out repositories, not the derivation set.
 - **Twelve of thirteen languages.** Only Python gets import resolution.
@@ -312,6 +339,31 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
 
 ## Traps this session actually fell into
 
+- **A rejection made by eye is a hypothesis.** Two tiers of `guards` were refused with
+  written reasons that were individually sound -- per-file relevance with no per-guard
+  evidence, the defect that made an earlier version unreadable. Measured, both were worth
+  building, together +0.100 held out. The argument being correct did not make the
+  conclusion correct. Anything refused without a number is a candidate, not a decision.
+- **A column that reads zero everywhere is a defect until proven otherwise.** exp10
+  reported zero pre-commit hooks in all seven repositories, from a regex missing
+  `re.MULTILINE` -- without it `^` anchors to the start of the *string*, so `findall` over
+  a file returns at most one match. Five of seven have between 8 and 21, and the roadmap
+  briefly carried the wrong conclusion. It was caught sideways: two repositories run a CI
+  job *named* `pre-commit`, which cannot be true of a repository with no pre-commit
+  configuration.
+- **A guard that excludes silently is worse than one that fails.** `.gitignore` carries
+  `docs/*` with an allowlist under it. Three documents were written into `docs/` over a
+  session and never added to it; every `git add -A` reported success and dropped them.
+  `HANDOFF.md` pointed at a roadmap that was not in the repository, and the release
+  workflow would have published a generated changelog instead of the notes written for
+  it. Nothing failed, which is why it survived. `tests/test_published_docs.py` is the
+  fix -- not remembering the allowlist.
+- **A test asserting an absolute wall-clock time asserts the speed of the machine.** Two
+  different tests failed on two consecutive runs of one Windows job going at half speed,
+  while the behaviour they guard was correct. Derive the threshold from something the
+  test controls -- the length of the wait it is claiming not to have made, or an
+  uncontended baseline measured on the same machine -- and state the behavioural half of
+  the claim first, because that half holds at any speed.
 - **`pkill -f <pattern>` kills your own shell** when your command line contains the
   pattern. Happened three times. Kill by PID from `ps -eo pid,args | awk '/patt[e]rn/'`.
 - **The Bash tool caps at 10 minutes.** Long experiments must use `run_in_background`.
@@ -362,10 +414,12 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
 | `diffscan.py` | what the working tree changed, as files and line ranges |
 | `cochange.py` | mining change coupling from git, file-level and symbol-level |
 | `render.py` | every result-to-text renderer, shared by the CLI and MCP |
-| `mcp_server.py` | JSON-RPC 2.0 over stdio, nine tools, no SDK |
+| `mcp_server.py` | JSON-RPC 2.0 over stdio, ten tools, no SDK |
+| `guards.py` | the six Python fence kinds, their derived rules, and where a reason lives |
+| `gates.py` | what runs against every push: CI jobs, pre-commit hooks, lint rules, the language floor. Deliberately none of this tool's ranking machinery |
 | `storage.py` | SQLite schema, derived-state markers, co-change counters |
 | `references.py` | name sweeps, jedi resolution, and the module-import scan behind DEPENDENTS |
-| `experiments/` | seven experiments, corpus management, the results and the caveats |
+| `experiments/` | ten experiments, corpus management, the results and the caveats |
 
 ## Reproducing the experiments
 
@@ -398,9 +452,11 @@ is the near-term view; the roadmap is the reason any of it is next.
 
 **1. Score symbol-level co-change.** It ships and is asserted and has never been
 measured. An exp1 variant, cheap, and it either justifies the per-file diff mining or
-retires it. It is first because it is the last shipped claim in this tool that has never
-been scored at all — the caller side is now worked out on both surfaces, and every
-remaining idea there has been measured and rejected.
+retires it. It is first because it is the last *retrievable* claim in this tool that has
+never been scored at all — the caller side is worked out on both surfaces with every
+remaining idea measured and rejected, and the guard section is now scored by exp9. The
+one other unscored thing, the always-on gates block, cannot be scored by retrieval and
+says so.
 
 **2. Tune the thresholds against the corpus.** `min_support` and `min_confidence`
 predate any evidence. Co-change recall is ~0.10 and there is very likely a better
