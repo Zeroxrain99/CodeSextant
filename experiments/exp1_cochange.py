@@ -23,6 +23,10 @@ none        predicts nothing. The floor, and the honest description of an agent 
 same_dir    every other file ever touched in the same directory. "Look around you."
 frequency   the globally most-changed files. "What usually changes."
 
+At a matched budget both are ranked by how often each candidate has changed, not
+truncated arbitrarily: a control cut alphabetically would be a straw man, and beating
+a straw man would say nothing.
+
 The two controls are also scored at a *matched budget*: given exactly as many guesses
 as co-change made for that query, are co-change's guesses better ones? Without that,
 a control can buy recall with an unusable number of predictions and the comparison
@@ -127,12 +131,18 @@ def evaluate(repo_path: str, *, warmup_fraction: float = 0.3,
                         neighbours = directory_files.get(directory, set()) - {path}
                         frequent = [p for p, _n in changed_total.most_common(60)
                                     if p != path]
+                        # Truncating the directory alphabetically would be a weak
+                        # control and would flatter the treatment. Rank it by how
+                        # often each neighbour has changed, which is what someone
+                        # looking around the directory would actually notice.
+                        local = sorted(neighbours,
+                                       key=lambda p: (-changed_total[p], p))
 
                         predictions = {
                             "cochange": treatment,
                             "same_dir": neighbours,
                             "frequency": set(frequent[:20]),
-                            "same_dir@k": set(sorted(neighbours)[:budget]),
+                            "same_dir@k": set(local[:budget]),
                             "frequency@k": set(frequent[:budget]),
                             "none": set(),
                         }

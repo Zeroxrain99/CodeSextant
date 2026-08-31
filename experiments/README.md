@@ -14,6 +14,12 @@ python -m experiments.exp2_blast_radius   # is a resolved reference better than 
 python -m experiments.exp3_reuse          # is the equivalent definition surfaced?
 ```
 
+The corpus is cloned on first run into `~/.cache/codesextant-corpus`, or wherever
+`CODESEXTANT_CORPUS` points. Clones are blobless — history and trees are all the mining
+reads, though exp2 checks trees out and so fetches the blobs it needs. Pass `--repo` to
+score a repository of your own; that is the only way to find out whether these numbers
+hold for the code you actually work on, and they may not.
+
 ## Why not CodeSextant's own history
 
 It is the obvious corpus and it is disqualified twice over. It has 67 commits, 32 of
@@ -105,3 +111,130 @@ run them:
    in exactly one position, scored at the default threshold so it is the first thing
    to go when anyone raises the bar — and was validated on the held-out set, where it
    had not been fitted.
+
+---
+
+# Results
+
+Run on 2026-08-31, CodeSextant 0.24.0. Reproduce with the three commands at the top.
+
+## exp1 — co-change against three baselines
+
+Micro-averaged over every (commit, file) query. `speaks` is how often the predictor
+said anything at all; `useful` is how often what it said contained a file that really
+did change. F1 confidence intervals are bootstrapped over commits, not queries,
+because queries inside one commit are not independent.
+
+At a matched budget both baselines are ranked by how often each candidate has changed.
+An earlier version of this table truncated the directory baseline alphabetically; that
+tripled the apparent advantage of co-change and was a straw man. The numbers below are
+against the stronger control.
+
+| repo | predictor | prec | recall | F1 | F1 95% CI | speaks | useful | mean n |
+|---|---|---|---|---|---|---|---|---|
+| requests | **cochange** | **0.536** | 0.093 | 0.158 | [0.121, 0.204] | 0.465 | **0.651** | 0.8 |
+| requests | same_dir | 0.110 | 0.318 | 0.164 | [0.130, 0.204] | 0.987 | 0.626 | 13.8 |
+| requests | frequency | 0.081 | 0.339 | 0.131 | [0.101, 0.163] | 1.000 | 0.672 | 20.0 |
+| requests | same_dir@k | 0.389 | 0.060 | 0.104 | [0.082, 0.134] | 0.464 | 0.460 | 0.7 |
+| requests | frequency@k | 0.114 | 0.020 | 0.034 | [0.024, 0.046] | 0.465 | 0.168 | 0.8 |
+| click | **cochange** | **0.548** | 0.105 | **0.177** | [0.153, 0.203] | 0.515 | 0.687 | 1.0 |
+| click | same_dir | 0.077 | 0.326 | 0.125 | [0.101, 0.150] | 0.988 | 0.553 | 20.9 |
+| click | frequency | 0.071 | 0.285 | 0.113 | [0.102, 0.123] | 1.000 | 0.741 | 20.0 |
+| click | same_dir@k | 0.345 | 0.066 | 0.111 | [0.092, 0.131] | 0.515 | 0.429 | 1.0 |
+| click | frequency@k | 0.240 | 0.046 | 0.078 | [0.065, 0.093] | 0.515 | 0.403 | 1.0 |
+| tqdm | **cochange** | **0.492** | 0.082 | **0.141** | [0.118, 0.168] | 0.481 | 0.610 | 0.7 |
+| tqdm | same_dir | 0.073 | 0.396 | 0.123 | [0.099, 0.148] | 0.992 | 0.577 | 21.7 |
+| tqdm | frequency | 0.076 | 0.379 | 0.126 | [0.110, 0.141] | 1.000 | 0.734 | 20.0 |
+| tqdm | same_dir@k | 0.231 | 0.039 | 0.066 | [0.052, 0.084] | 0.481 | 0.275 | 0.7 |
+| tqdm | frequency@k | 0.150 | 0.025 | 0.043 | [0.034, 0.055] | 0.481 | 0.199 | 0.7 |
+
+**At a matched budget co-change is 1.4× to 2.1× more precise than the strongest
+control**, and its F1 interval clears `same_dir@k` on click and tqdm. On requests the
+two intervals overlap: there, against a directory baseline ranked by change frequency,
+this experiment does not establish an advantage. Two of three is the honest score.
+
+**Against unbounded baselines it is a draw on F1, and that draw is the interesting
+part.** `same_dir` and `frequency` reach 3–4× the recall by naming 14–22 files on
+every single query. As a number that is a fair trade; as a reminder shown before an
+edit it is not a reminder, and an agent told twenty files every time learns to skip the
+section. co-change speaks on about half of queries and is right on roughly two thirds
+of those, against 0.43–0.46 for the matched directory baseline.
+
+**Recall is low and no framing fixes that.** Co-change catches about one companion file
+in ten. It is a high-precision hint, not a safety net, and the documentation should not
+imply otherwise.
+
+### The contrast: CodeSextant's own history
+
+30 commits evaluated — far too few to conclude anything, and included because it is
+the case that goes the other way.
+
+| predictor | prec | recall | F1 | F1 95% CI | mean n |
+|---|---|---|---|---|---|
+| cochange | 0.575 | 0.107 | 0.180 | [0.077, 0.268] | 1.4 |
+| **frequency** | 0.221 | **0.583** | **0.321** | [0.233, 0.396] | 20.0 |
+
+On a 67-commit single-author project, "predict the twenty most-changed files" wins
+outright, because a handful of files really are in almost every commit. Co-change earns
+its place on repositories where change is distributed across many hands and many
+areas — which is the case it was built for, but it is worth saying plainly that on a
+young project it is beaten by a heuristic you can write in one line.
+
+## exp3 — reuse retrieval, and what the same-shape rule bought
+
+`off` / `on` is recall over differently-named structural duplicates with the same-shape
+family rule disabled and enabled. An exact-name grep scores 0.000 on that column by
+construction, and 1.000 on same-named pairs.
+
+**Held out** — cloned and left unexamined until the rule was written:
+
+| repo | diff-name n | off | on | delta | listable |
+|---|---|---|---|---|---|
+| httpie/cli | 12 | 0.333 | 0.500 | **+0.167** | — |
+| pallets/jinja | 20 | 0.400 | 0.500 | **+0.100** | 1.000 |
+| Textualize/rich | 26 | 0.462 | 0.538 | **+0.077** | — |
+
+**Derivation set** — the rule was written after looking at these, so these numbers are
+not evidence for it:
+
+| repo | diff-name n | off | on | delta | listable |
+|---|---|---|---|---|---|
+| requests | 18 | 0.000 | 0.778 | +0.778 | 1.000 |
+| click | 44 | 0.705 | 0.705 | +0.000 | 1.000 |
+| tqdm | 0 | — | — | — | 1.000 |
+| CodeSextant | 40 | 0.300 | 0.300 | +0.000 | 1.000 |
+
++0.778 on the repository that suggested the rule, against +0.08 to +0.17 where it had
+not been fitted. That gap is the entire reason the held-out set exists, and the smaller
+numbers are the ones to believe.
+
+`listable` is 1.000 everywhere: every same-named duplicate whose name was rare enough
+to list at all was found. The remaining same-name gap is the tool declining to offer an
+arbitrary sample of a name the project uses as a convention, which the metric scores as
+a miss and which is the right behaviour anyway.
+
+## What these experiments do not establish
+
+Written down because the gaps are easier to see now than they will be later, and
+because a results section that only lists wins is an advertisement.
+
+- **Prevention.** Every experiment here measures retrieval — given a query, is the
+  right thing returned. None measures whether an author who saw the answer went on to
+  make a better change. That needs agents doing tasks with and without the tool, and a
+  task set nobody involved wrote.
+- **Symbol-level co-change is unmeasured.** preflight mines per-symbol rules from hunk
+  headers as well as per-file ones, and exp1 scores only the file-level rules. The
+  symbol-level claim — that changing `serve` brings a different companion set than
+  changing `daemon.py` — is still an assertion.
+- **Thresholds are untuned.** `min_support=3` and `min_confidence=0.5` were chosen
+  before any of this existed. A sweep would very likely trade some of that 0.53
+  precision for more than 0.09 recall, and the corpus can now say by how much. It has
+  to be done against the held-out set, not this one.
+- **Python only.** jedi resolves Python; everything else degrades to name matching, so
+  exp2's result says nothing about the twelve other languages CodeSextant indexes.
+- **Three repositories, all libraries.** No application, no monorepo, no repository
+  where a single commit spans several services. `--repo` exists so you can check your
+  own rather than trust these.
+- **exp2 samples 100 commits per repository** and scores at most two symbols in each of
+  at most three files, to keep a full run inside a coffee break. Wider sampling would
+  narrow the intervals it does not currently report.

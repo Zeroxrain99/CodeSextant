@@ -12,13 +12,14 @@ making the change. The symbols the commit actually modified are recovered from t
 diff's hunk ranges. For each of them:
 
     resolved    files with import-resolved references to the symbol (engine)
-    name_match  files whose text names the symbol  (references.name_sweep) -- grep
-    preflight   what the tool actually returns: the resolved files, plus the named
-                ones as leads, each labelled with which it is
+    leads_only  files that name the symbol but do not resolve to it -- the `?` tier
+    name_match  every file that names it, undifferentiated  (references.name_sweep)
     truth       the other files that commit changed
 
-The third row is there because the first two are halves of one answer, and scoring
-only the halves would leave the shipped output unmeasured.
+The first two are the two tiers preflight prints, and the third is what you get
+without resolution. Their union is by definition the third row -- a caller has to name
+the symbol -- so the question resolution answers is not "which files" but "which of
+these files is worth believing", and only a split table can show whether it does.
 
 Precision is the comparison that means something here. Recall is reported but must be
 read carefully: a caller is not obliged to change when a callee does, so no predictor
@@ -118,7 +119,7 @@ def _eligible(repo: str, limit: int, seed: int) -> list[tuple[str, list[str]]]:
 
 
 def evaluate(repo: str, *, limit: int = 120, seed: int = 0) -> dict:
-    scores = {"resolved": Score(), "name_match": Score(), "preflight": Score()}
+    scores = {"resolved": Score(), "leads_only": Score(), "name_match": Score()}
     used_commits = 0
     with tempfile.TemporaryDirectory() as home:
         os.environ["CODESEXTANT_HOME"] = home
@@ -153,8 +154,8 @@ def evaluate(repo: str, *, limit: int = 120, seed: int = 0) -> dict:
                             named = {os.path.abspath(p) for p in references.name_sweep(
                                 tree, symbol, lang="python", limit=400).files} - {abs_file}
                             scores["resolved"].add(resolved, truth)
+                            scores["leads_only"].add(named - resolved, truth)
                             scores["name_match"].add(named, truth)
-                            scores["preflight"].add(resolved | named, truth)
                             scored_here = True
                 used_commits += scored_here
             finally:
@@ -175,7 +176,7 @@ def main() -> int:
         print(f"\n=== {report['repo']}  ({report['commits_scored']} commits scored)")
         print(f"{'predictor':12} {'prec':>7} {'recall':>7} {'F1':>7} "
               f"{'mean n':>8} {'cases':>7}")
-        for name in ("resolved", "name_match", "preflight"):
+        for name in ("resolved", "leads_only", "name_match"):
             row = report["results"][name]
             print(f"{name:12} {row['precision']:7.3f} {row['recall']:7.3f} "
                   f"{row['f1']:7.3f} {row['mean_predictions']:8.1f} {row['cases']:7}")

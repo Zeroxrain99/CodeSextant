@@ -112,6 +112,27 @@ With `--symbol`, the middle section narrows to that one definition where history
 
 The middle section is mined from version-control history rather than written by hand. Some obligations are not in the code at all: bumping a version constant means editing the packaging file, adding a route means adding it to the allowlist and to the routing test. Files that keep appearing in the same commit are coupled whether or not anything imports anything, so the rule can be recovered instead of remembered. Sweeping commits are excluded, a pair needs several shared commits before it counts, and every rule shows the commit counts behind it, because history records what people did rather than what they should have done.
 
+### What the three sections are actually worth
+
+Measured, not asserted. [`experiments/`](experiments/README.md) replays the history of
+psf/requests, pallets/click and tqdm/tqdm against control groups, prequentially, so no
+prediction is made from a state that contains the commit it is predicting.
+
+- **Co-change**, given exactly as many guesses as the baselines, is **1.4× to 2.1× more
+  precise** than the strongest of them — the same directory, ranked by how often each
+  file changes. Its F1 interval clears that baseline on two repositories of three; on
+  the third they overlap and no advantage is established. It speaks on about half of
+  queries and names a file that really did change on about two thirds of those. Its
+  **recall is roughly one companion file in ten**: a high-precision hint, not a safety
+  net.
+- **On a young single-author repository the frequency baseline beats it outright.** It
+  earns its place where change is spread across many hands and many areas.
+- **Reuse detection** finds a differently-named structural duplicate about half the
+  time on repositories it was not tuned against. An exact-name grep finds none of them.
+
+The experiments also found two defects in preflight and paid for themselves doing it;
+both are described in `experiments/README.md`.
+
 ## Why use an index
 
 Name matching cannot distinguish same-named symbols in different scopes. In collision-heavy repositories, searches for names such as `handle`, `run`, and `Config` can return many false positives. For Python and TypeScript/JavaScript, CodeSextant resolves imports and stores the graph in a shared local service.
