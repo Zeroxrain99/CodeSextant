@@ -404,6 +404,10 @@ The suite covers the daemon lifecycle, incremental indexing, map scalability, sn
 - Go and Rust use tree-sitter symbols and low-confidence name-matched references. Their imports are not resolved.
 - Event-driven updates require the daemon to be running. After downtime, the first graph query can return the existing index while one background reconciliation runs. Its `index_lifecycle.stale_possible` field tells callers to verify affected source. `status?fresh=1` remains available for an explicit Git HEAD check.
 
+## Handing this over
+
+[`HANDOFF.md`](HANDOFF.md) is written for whoever picks this up next, in three layers: what to know to start working, what has been measured and how well, and what not to break and why. It also carries the ranked next steps, the traps that cost real time, and the invariants whose reasons are expensive to rediscover.
+
 ## Repository layout
 
 | Path | What it is |
