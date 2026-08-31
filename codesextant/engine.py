@@ -1370,17 +1370,35 @@ def _ensure_cochange(abs_path: str) -> dict:
         # that nothing needs mining, so paying for a write connection to discover that
         # is most of the cost of a call meant to be too cheap to think about.
         with storage.ProjectStore.open_readonly(abs_path) as store:
-            if store.cochange_head() == (head or ""):
-                return {"available": True, "cached": True, "head": head}
+            previous = store.cochange_head()
+        if previous == (head or ""):
+            return {"available": True, "cached": True, "head": head}
+
+        # Read only what is new. The totals describe every commit read so far, so a new
+        # commit costs one commit rather than the history -- unless that history was
+        # rewritten under us, in which case `previous..HEAD` describes a different set of
+        # commits than the totals assume and they have to be rebuilt.
+        incremental = bool(previous) and cochange.is_ancestor(abs_path, previous)
+        commits = cochange.read_commits(
+            abs_path, since=previous if incremental else None)
+        if commits is None:
+            return {"available": False,
+                    "reason": "not a Git worktree, or Git is unavailable"}
+        changes, pairs = cochange.tally(commits)
         with storage.ProjectStore.open(abs_path) as store:
-            mined = cochange.mine(abs_path)
-            if not mined["stats"].get("available"):
-                return mined["stats"]
-            store.store_cochange_rules(mined["rules"], head)
-            stats = dict(mined["stats"])
-            stats["cached"] = False
-            stats["head"] = head
-            return stats
+            if not incremental:
+                store.clear_cochange_counts()
+            store.add_cochange_counts(changes, pairs, head)
+        cap = cochange.max_commit_files()
+        return {"available": True, "cached": False, "head": head,
+                "incremental": incremental, "commits_read": len(commits),
+                "commits_used": sum(1 for _sha, files in commits
+                                    if 2 <= len(files) <= cap),
+                "commits_skipped_as_sweeping": sum(
+                    1 for _sha, files in commits if len(files) > cap),
+                "max_commit_files": cap,
+                "min_support": cochange.min_support(),
+                "min_confidence": cochange.min_confidence()}
     except Exception as exc:
         # One of three sections, and the only one that shells out. A slow Git, a busy
         # index or a repository shape nobody anticipated must cost this section, not the
@@ -1470,7 +1488,11 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     with storage.ProjectStore.open_readonly(abs_path) as store:
         already = (_reuse_candidates(store, symbol, abs_target, limit=8)
                    if symbol else [])
-        companions = (store.cochange_for(relative) if relative else [])
+        companions = (
+            store.cochange_rules_for(
+                relative, min_support=cochange.min_support(),
+                min_confidence=cochange.min_confidence())
+            if relative else [])
         symbol_companions = (
             store.symbol_cochange_for(relative, symbol)
             if symbol and relative and symbol_stats.get("available") else [])

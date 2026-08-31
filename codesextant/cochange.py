@@ -88,8 +88,8 @@ def _git_kwargs(timeout: float = 30.0) -> dict:
     return kwargs
 
 
-def read_commits(repo_path: str,
-                 *, limit: int | None = None) -> list[tuple[str, set[str]]] | None:
+def read_commits(repo_path: str, *, limit: int | None = None,
+                 since: str | None = None) -> list[tuple[str, set[str]]] | None:
     """Each commit as (sha, changed paths), newest first. None outside a Git worktree.
 
     The sha is carried so the per-file symbol pass can join back onto the same commits
@@ -99,10 +99,13 @@ def read_commits(repo_path: str,
     same false coupling a sweeping commit creates.
     """
     count = max_commits() if limit is None else limit
+    # `since..HEAD` is what makes an update cost the new commits rather than the whole
+    # history: the counts accumulate, so nothing already read is read again.
+    span = [f"{since}..HEAD"] if since else []
     try:
         result = subprocess.run(
             ["git", "-C", repo_path, "log", f"--max-count={int(count)}",
-             "--format=%H", "--name-only", "--no-merges", "--no-renames"],
+             "--format=%H", "--name-only", "--no-merges", "--no-renames", *span],
             **_git_kwargs())
     except (OSError, subprocess.SubprocessError):
         return None
@@ -127,7 +130,75 @@ def read_commits(repo_path: str,
     return commits
 
 
-def mine(repo_path: str, *, commits: list[set[str]] | None = None) -> dict:
+def is_ancestor(repo_path: str, sha: str) -> bool:
+    """Whether ``sha`` is still on HEAD's history.
+
+    Accumulated counts describe the commits reached from the sha they were last updated
+    at. A rebase, a force-push or a branch switch can leave that sha off the current
+    history, and `sha..HEAD` would then describe a different set of commits than the one
+    the totals assume -- so the totals have to be rebuilt rather than added to.
+    """
+    if not sha:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_path, "merge-base", "--is-ancestor", sha, "HEAD"],
+            **_git_kwargs(timeout=10.0))
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def tally(commits: list[tuple[str, set[str]]]) -> tuple[Counter, Counter]:
+    """(changes per path, co-occurrences per unordered pair) for a set of commits.
+
+    Counters rather than rules, because counters add and rules do not. Storing only the
+    pairs that cleared the thresholds would make every new commit a reason to re-read the
+    whole history, just to recover the ones that had not cleared them yet.
+    """
+    cap = max_commit_files()
+    changes: Counter[str] = Counter()
+    pairs: Counter[tuple[str, str]] = Counter()
+    for _sha, files in commits:
+        if not 2 <= len(files) <= cap:
+            continue
+        ordered = sorted(files)
+        for path in ordered:
+            changes[path] += 1
+        for index, left in enumerate(ordered):
+            for right in ordered[index + 1:]:
+                pairs[(left, right)] += 1
+    return changes, pairs
+
+
+def rules_from(changes, pairs) -> list[dict]:
+    """Apply the support and confidence thresholds to accumulated counters.
+
+    Applied here rather than baked into what is stored, so raising or lowering a
+    threshold takes effect without re-reading any history.
+    """
+    floor_support = min_support()
+    floor_confidence = min_confidence()
+    rules: list[dict] = []
+    for (left, right), support in pairs.items():
+        if support < floor_support:
+            continue
+        # Both directions: a test ships with its module far more reliably than the
+        # module drags the test along, and only one of those is worth saying.
+        for path, companion in ((left, right), (right, left)):
+            total = changes.get(path, 0)
+            confidence = support / total if total else 0.0
+            if confidence >= floor_confidence:
+                rules.append({
+                    "path": path, "companion": companion, "support": support,
+                    "changes": total, "confidence": round(confidence, 4),
+                })
+    rules.sort(key=lambda r: (-r["confidence"], -r["support"], r["path"], r["companion"]))
+    return rules
+
+
+def mine(repo_path: str,
+         *, commits: list[tuple[str, set[str]]] | None = None) -> dict:
     """Derive co-change rules for one repository.
 
     Returns {"rules": [...], "stats": {...}}. ``rules`` are dicts of
@@ -142,33 +213,8 @@ def mine(repo_path: str, *, commits: list[set[str]] | None = None) -> dict:
 
     cap = max_commit_files()
     usable = [files for _sha, files in commits if 2 <= len(files) <= cap]
-    changes: Counter[str] = Counter()
-    pairs: Counter[tuple[str, str]] = Counter()
-    for files in usable:
-        ordered = sorted(files)
-        for path in ordered:
-            changes[path] += 1
-        for i, left in enumerate(ordered):
-            for right in ordered[i + 1:]:
-                pairs[(left, right)] += 1
-
-    floor_support = min_support()
-    floor_confidence = min_confidence()
-    rules: list[dict] = []
-    for (left, right), support in pairs.items():
-        if support < floor_support:
-            continue
-        # Both directions: a test ships with its module far more reliably than the
-        # module drags the test along, and only one of those is worth saying.
-        for path, companion in ((left, right), (right, left)):
-            total = changes[path]
-            confidence = support / total if total else 0.0
-            if confidence >= floor_confidence:
-                rules.append({
-                    "path": path, "companion": companion, "support": support,
-                    "changes": total, "confidence": round(confidence, 4),
-                })
-    rules.sort(key=lambda r: (-r["confidence"], -r["support"], r["path"], r["companion"]))
+    changes, pairs = tally(commits)
+    rules = rules_from(changes, pairs)
     return {
         "rules": rules,
         "stats": {
@@ -178,8 +224,8 @@ def mine(repo_path: str, *, commits: list[set[str]] | None = None) -> dict:
             "commits_skipped_as_sweeping": sum(
                 1 for _sha, files in commits if len(files) > cap),
             "max_commit_files": cap,
-            "min_support": floor_support,
-            "min_confidence": floor_confidence,
+            "min_support": min_support(),
+            "min_confidence": min_confidence(),
             "rules": len(rules),
         },
     }

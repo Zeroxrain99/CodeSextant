@@ -34,11 +34,21 @@ except Exception:
     cs = None
 ```
 
-If ensure, status, or a graph query raises `TimeoutError`, returns HTTP 503 or 504, reports an
-authentication or upgrade action, a partial status, or no index, stop using CodeSextant for this task. Fall
-back immediately to narrow local AST queries, `rg`, and direct source reads. Do not retry the
-same failed heavy query in the same task. A delayed graph is less useful than a focused local
-read, and CodeSextant must never become a modification gate.
+Fall back to narrow local AST queries, `rg`, and direct source reads **when a call actually
+fails**: `TimeoutError`, HTTP 503 or 504, an authentication or upgrade action, a partial
+status, or no index. Do not retry the same failed heavy query in the same task. A delayed
+graph is less useful than a focused local read, and CodeSextant must never become a
+modification gate.
+
+That is a response to an observed failure, not a standing licence to skip the tool. There
+is no paused, disabled, or owner-suspended state to infer: if `ensure()` returns
+`already-running` or `spawned` and `status` reports an index, CodeSextant is available and
+declining to use it costs the task the three checks it exists to provide. Do not attribute a
+decision to skip to a rule of CodeSextant's — the only rules it has are the failure
+conditions listed above, and each one is something a call returned, not something to assume
+in advance. Concern about cost is not one of them: the queries in this skill are bounded and
+measured in milliseconds, and the daemon is shared, so a second agent on the same machine
+reuses it rather than starting anything.
 
 3. If `cs` is available, call `cs.get_map(budget=1500, focus_files=[...], focus_symbols=[...])`
    once to identify the small set of files and symbols worth reading. Interactive graph calls

@@ -206,7 +206,7 @@ def test_a_broken_miner_costs_its_own_section_only(repo, monkeypatch):
     def explode(*_args, **_kwargs):
         raise RuntimeError("git went sideways")
 
-    monkeypatch.setattr(engine.cochange, "mine", explode)
+    monkeypatch.setattr(engine.cochange, "tally", explode)
 
     result = engine.preflight(str(repo), "app.py", symbol="main")
 
@@ -284,18 +284,24 @@ def test_a_target_outside_the_repository_is_not_given_history(repo):
     assert result["co_change"] == []
 
 
-def test_storage_replaces_rules_wholesale(repo):
-    """Rules describe the history up to one commit; a half-updated mixture describes none."""
+def test_storage_adds_counts_rather_than_replacing_them(repo):
+    """A batch of commits is added to the totals; the head records how far they reach."""
     _commit(repo, "seed", {"app.py": "A = 1\n"})
     engine.index_project(str(repo), force=True)
     with storage.ProjectStore.open(str(repo)) as store:
-        store.store_cochange_rules(
-            [{"path": "old.py", "companion": "gone.py", "support": 9,
-              "changes": 9, "confidence": 1.0}], "sha-one")
-        assert store.cochange_for("old.py")
-        store.store_cochange_rules([], "sha-two")
-        assert store.cochange_for("old.py") == []
+        store.clear_cochange_counts()
+        store.add_cochange_counts({"a.py": 2, "b.py": 2}, {("a.py", "b.py"): 2}, "sha-one")
+        store.add_cochange_counts({"a.py": 1, "b.py": 1}, {("a.py", "b.py"): 1}, "sha-two")
+
+        rules = store.cochange_rules_for("a.py", min_support=3, min_confidence=0.5)
+        assert rules == [{"companion": "b.py", "support": 3, "changes": 3,
+                          "confidence": 1.0}], "two batches must sum, not overwrite"
         assert store.cochange_head() == "sha-two"
+        # Pairs are stored under both orderings, so either side is one indexed read.
+        assert store.cochange_rules_for("b.py", min_support=3, min_confidence=0.5)
+        # Clearing is what a rewritten history gets, and it must leave nothing behind.
+        store.clear_cochange_counts()
+        assert store.cochange_rules_for("a.py", min_support=1, min_confidence=0.0) == []
 
 
 def test_preflight_is_reachable_over_http_and_is_interactive():
@@ -470,3 +476,115 @@ def test_a_language_git_has_no_driver_for_still_attributes(repo):
     mined = cochange.mine_symbols(str(repo), "index.ts")
 
     assert "buildIndex" in {rule["symbol"] for rule in mined["rules"]}
+
+
+def test_the_package_version_matches_the_packaging_version():
+    """These two never mention each other, and drifting apart has shipped a bug before.
+
+    0.19.2 exists only because pyproject carried 0.19.1's features while __version__
+    still said 0.19.0. The map cache key includes __version__ so that a ranking change
+    reaches an existing project, which makes a stale version quietly serve maps built by
+    code that is no longer running. History knows the pairing -- preflight reports it at
+    83% -- but knowing is not the same as being unable to get it wrong.
+    """
+    import sys
+    import tomllib
+    from pathlib import Path
+
+    import codesextant
+
+    root = Path(__file__).resolve().parent.parent
+    with open(root / "pyproject.toml", "rb") as handle:
+        packaging_version = tomllib.load(handle)["project"]["version"]
+    assert codesextant.__version__ == packaging_version, (
+        f"codesextant.__version__ is {codesextant.__version__} but pyproject.toml says "
+        f"{packaging_version}; bump both or the map cache will not invalidate on upgrade")
+    assert sys.version_info >= (3, 10)
+
+
+# Adding a commit must cost a commit, not the history.
+
+def test_a_new_commit_reads_only_itself(repo):
+    """The whole point: totals accumulate, so an update is not a re-derivation."""
+    for n in range(4):
+        _commit(repo, f"work {n}", {"mod.py": f"M = {n}\n", "pair.py": f"P = {n}\n"})
+    engine.index_project(str(repo), force=True)
+    engine.preflight(str(repo), "mod.py")          # first mine reads everything
+
+    reads = []
+    real = cochange.read_commits
+
+    def watched(repo_path, **kwargs):
+        result = real(repo_path, **kwargs)
+        reads.append((kwargs.get("since"), len(result or [])))
+        return result
+
+    import pytest as _pytest  # noqa: F401  (monkeypatch is function-scoped below)
+    original = cochange.read_commits
+    cochange.read_commits = watched
+    try:
+        _commit(repo, "work 4", {"mod.py": "M = 4\n", "pair.py": "P = 4\n"})
+        result = engine.preflight(str(repo), "mod.py")
+    finally:
+        cochange.read_commits = original
+
+    assert result["cochange_stats"]["incremental"] is True
+    assert reads and reads[-1][0] is not None, "the update has to be bounded by a since"
+    assert reads[-1][1] == 1, f"a single new commit should read one commit, read {reads[-1][1]}"
+
+
+def test_counts_accumulate_across_updates(repo):
+    """Five commits read as four-then-one must equal five read at once."""
+    for n in range(5):
+        _commit(repo, f"work {n}", {"mod.py": f"M = {n}\n", "pair.py": f"P = {n}\n"})
+    engine.index_project(str(repo), force=True)
+
+    incremental = engine.preflight(str(repo), "mod.py")["co_change"]
+
+    with storage.ProjectStore.open(str(repo)) as store:
+        store.clear_cochange_counts()
+        changes, pairs = cochange.tally(cochange.read_commits(str(repo)))
+        store.add_cochange_counts(changes, pairs, "rebuilt")
+        from_scratch = store.cochange_rules_for(
+            "mod.py", min_support=cochange.min_support(),
+            min_confidence=cochange.min_confidence())
+
+    assert [c["path"] for c in incremental] == [r["companion"] for r in from_scratch]
+    assert incremental[0]["support"] == from_scratch[0]["support"]
+
+
+def test_rewritten_history_rebuilds_instead_of_adding_to_stale_totals(repo):
+    """After a rebase the old sha is off HEAD, so `old..HEAD` describes the wrong set."""
+    for n in range(4):
+        _commit(repo, f"work {n}", {"mod.py": f"M = {n}\n", "pair.py": f"P = {n}\n"})
+    engine.index_project(str(repo), force=True)
+    before = engine.preflight(str(repo), "mod.py")["co_change"][0]
+
+    # Rewrite the branch so the mined commit is no longer an ancestor of HEAD.
+    _run(repo, "checkout", "-q", "-b", "rebuilt", "HEAD~3")
+    for n in range(4):
+        _commit(repo, f"redone {n}",
+                {"mod.py": f"M = {n} + 100\n", "pair.py": f"P = {n} + 100\n"})
+
+    stats = engine.preflight(str(repo), "mod.py")["cochange_stats"]
+
+    assert stats["incremental"] is False, "a rewritten history cannot be added to"
+    after = engine.preflight(str(repo), "mod.py")["co_change"][0]
+    assert after["changes"] <= before["changes"] + 4, (
+        "counts must describe the new history, not both histories added together")
+
+
+def test_thresholds_apply_without_re_reading_history(repo, monkeypatch):
+    """Stored counts are raw, so raising a threshold takes effect immediately."""
+    for n in range(4):
+        _commit(repo, f"work {n}", {"mod.py": f"M = {n}\n", "pair.py": f"P = {n}\n"})
+    engine.index_project(str(repo), force=True)
+    assert engine.preflight(str(repo), "mod.py")["co_change"], "baseline has a rule"
+
+    monkeypatch.setenv("CODESEXTANT_COCHANGE_MIN_SUPPORT", "99")
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("changing a threshold must not re-read history")
+
+    monkeypatch.setattr(cochange, "read_commits", refuse)
+    assert engine.preflight(str(repo), "mod.py")["co_change"] == []
