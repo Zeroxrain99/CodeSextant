@@ -188,6 +188,52 @@ its place on repositories where change is distributed across many hands and many
 areas — which is the case it was built for, but it is worth saying plainly that on a
 young project it is beaten by a heuristic you can write in one line.
 
+## exp2 — resolved references against grep
+
+100 commits sampled per repository, at most two symbols in each of at most three files.
+`resolved` and `leads_only` are the two tiers preflight prints; `name_match` is their
+union, which is what grep gives you undifferentiated. Precision intervals are
+bootstrapped over commits.
+
+| repo | predictor | prec | prec 95% CI | recall | mean n |
+|---|---|---|---|---|---|
+| requests | **resolved** | **0.314** | [0.247, 0.391] | 0.125 | 0.9 |
+| requests | leads_only | 0.099 | [0.069, 0.125] | 0.135 | 3.1 |
+| requests | name_match | 0.147 | [0.121, 0.177] | 0.260 | 4.0 |
+| click | **resolved** | **0.154** | [0.108, 0.212] | 0.056 | 1.3 |
+| click | leads_only | 0.069 | [0.049, 0.093] | 0.098 | 4.8 |
+| click | name_match | 0.086 | [0.065, 0.113] | 0.154 | 6.1 |
+| tqdm | resolved | 0.095 | [0.069, 0.125] | 0.093 | 2.3 |
+| tqdm | leads_only | 0.069 | [0.045, 0.100] | 0.115 | 3.9 |
+| tqdm | name_match | 0.079 | [0.059, 0.106] | 0.209 | 6.3 |
+| jinja | resolved | 0.108 | [0.074, 0.158] | 0.045 | 1.9 |
+| jinja | **leads_only** | **0.180** | [0.131, 0.232] | 0.088 | 2.2 |
+| jinja | name_match | 0.147 | [0.106, 0.195] | 0.133 | 4.1 |
+
+**Two of four, not four of four.** On requests and click the resolved tier is 2.2× to
+3.2× more precise than the leads tier, with intervals that do not overlap. On tqdm the
+two intervals overlap and no difference is established. On jinja the sign reverses —
+the leads tier is the more precise one — though there the intervals overlap slightly
+and the reversal is suggested rather than shown.
+
+Against plain grep the picture is thinner still: the resolved tier's interval clears
+`name_match` cleanly only on requests, marginally on click, and not at all on tqdm or
+jinja.
+
+**What that does and does not mean.** It is not a refutation, because the ground truth
+is co-change and resolution optimises for callers — the two come apart, and this
+experiment cannot tell a wrong caller from a caller who had no reason to edit. But it
+does mean the blast radius must not be sold as a reliable predictor of what else you
+have to change, and the documentation should not imply that it is.
+
+It also supports a decision made earlier for a different reason. Leads were originally
+reported only when nothing resolved; they are now reported beside the confirmed callers
+because CodeSextant's own lazily-bound modules were invisible to resolution. jinja is a
+second, independent instance of the same thing: a template engine full of runtime
+dispatch, where the half jedi cannot confirm is the more useful half. A tool that
+showed only the confirmed tier would be at its worst exactly where indirection is
+heaviest.
+
 ## exp3 — reuse retrieval, and what the same-shape rule bought
 
 `off` / `on` is recall over differently-named structural duplicates with the same-shape

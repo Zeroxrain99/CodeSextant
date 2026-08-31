@@ -129,6 +129,12 @@ prediction is made from a state that contains the commit it is predicting.
   earns its place where change is spread across many hands and many areas.
 - **Reuse detection** finds a differently-named structural duplicate about half the
   time on repositories it was not tuned against. An exact-name grep finds none of them.
+- **Import-resolved references are 2.2× to 3.2× more precise than the name matches
+  beside them on two repositories of four**, and on the other two the difference is not
+  established — on one of them it reverses. Resolution optimises for callers while the
+  only available ground truth is co-change, so this neither confirms nor refutes the
+  claim; it does mean the blast radius is not a reliable predictor of what else you
+  have to edit, and it is why both tiers are printed and labelled rather than one.
 
 The experiments also found two defects in preflight and paid for themselves doing it;
 both are described in `experiments/README.md`.
