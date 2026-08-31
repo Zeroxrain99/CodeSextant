@@ -108,7 +108,11 @@ reuses it rather than starting anything.
      `declined`, `unsupported` and `off` mean the question is still open and
      `find_references` is the way to close it. `name_match_files` are leads, never
      callers — they are kept in their own key precisely so they cannot be read as one
-     list with the confirmed ones.
+     list with the confirmed ones, and they are reported *beside* confirmed callers,
+     not instead of them. A lead is usually a same-named symbol elsewhere, but it is
+     also what a caller reached through dynamic dispatch, a re-export or a registry
+     looks like, since no static resolver can follow those. When a lead matters to
+     your change, read it; do not resolve the ambiguity by trusting either list.
 
    Every section states its own evidence, and a claim with weak evidence says so.
    Treat co-change as advice, not law: history records what people did, and a rule at

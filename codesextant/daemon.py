@@ -48,6 +48,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 # Clients only need ensure/http_ping; do not load the full tree-sitter engine at client import time.
@@ -61,14 +62,21 @@ project_state = importlib.import_module(f"{_PACKAGE}.project_state")
 work_coordinator = importlib.import_module(f"{_PACKAGE}.work_coordinator")
 local_auth = importlib.import_module(f"{_PACKAGE}.local_auth")
 _lazy_import = importlib.import_module(f"{_PACKAGE}.lazy_import")
-LazyModule = _lazy_import.LazyModule
 
 
-engine = LazyModule(f"{_PACKAGE}.engine")
-panel = LazyModule(f"{_PACKAGE}.panel")
-watcher = LazyModule(f"{_PACKAGE}.watcher")
-cache_gc = LazyModule(f"{_PACKAGE}.cache_gc")
-worker_process = LazyModule(f"{_PACKAGE}.worker_process")
+# The TYPE_CHECKING branch never runs. It exists so static analysis -- jedi included,
+# which is what CodeSextant resolves references with -- can see what these names are;
+# a call through an unannotated proxy resolves to nothing at all.
+if TYPE_CHECKING:
+    from . import cache_gc, engine, panel, watcher, worker_process
+    from .lazy_import import LazyModule
+else:
+    LazyModule = _lazy_import.LazyModule
+    engine = LazyModule(f"{_PACKAGE}.engine")
+    panel = LazyModule(f"{_PACKAGE}.panel")
+    watcher = LazyModule(f"{_PACKAGE}.watcher")
+    cache_gc = LazyModule(f"{_PACKAGE}.cache_gc")
+    worker_process = LazyModule(f"{_PACKAGE}.worker_process")
 _HEAVY_COORDINATOR = work_coordinator.SHARED_SHARDED
 
 # File-watcher manager, built lazily and shared across projects.

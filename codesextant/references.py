@@ -7,12 +7,14 @@ result assembly.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import time
+from typing import NamedTuple
 
 import jedi
 
@@ -55,15 +57,39 @@ def _iter_files_by_ext(root: str, exts):
                 yield os.path.join(dirpath, fn)
 
 
-def candidate_files(src_root: str, symbol: str, *, lang: str | None = None,
-                    limit: int | None = None) -> list[str]:
+class NameSweep(NamedTuple):
+    """Which files name a symbol, and a fingerprint of exactly that.
+
+    ``digest`` covers every matching file's path and content, which makes it a sound
+    answer to "could the set of callers have changed since last time?". A caller has
+    to name the symbol, so these files are a complete superset of the possible
+    callers: if none of them has changed and no new one has appeared, no caller can
+    have appeared either. That is what lets an expensive resolution be cached without
+    the cache going quietly stale -- see engine._ensure_blast_radius.
+
+    ``truncated`` means the walk stopped at ``limit``, so the set is partial and the
+    digest describes a prefix rather than the whole answer.
+    """
+
+    files: list[str]
+    digest: str
+    truncated: bool
+
+
+def name_sweep(src_root: str, symbol: str, *, lang: str | None = None,
+               limit: int | None = None) -> NameSweep:
     """Files whose text names ``symbol`` as a standalone word: stage one, without jedi.
 
-    This is the cheap half of reference finding -- a text sweep costing well under a
-    millisecond per file, against roughly a tenth of a second per file for
+    This is the cheap half of reference finding -- a text sweep costing roughly seven
+    microseconds per file, against about a tenth of a second per file for
     per-occurrence resolution. It is therefore also the honest way to decide whether
     the expensive half is worth starting: the number of files a name appears in is
     the thing that drives that cost, and it can be measured before committing to it.
+
+    Files are read as bytes and rejected on a substring test before anything is
+    decoded, because decoding every file in the repository to look for one name is
+    the sweep's entire cost and almost none of it buys anything -- the overwhelming
+    majority of files do not contain the name at all.
 
     ``lang`` restricts the scan to one language's extensions; None scans every
     supported extension. ``limit`` stops the walk once that many files have matched,
@@ -77,19 +103,37 @@ def candidate_files(src_root: str, symbol: str, *, lang: str | None = None,
             src_root, frozenset(symbols.LANGUAGE_SPECS[lang]["exts"]))
     else:
         paths = _iter_files_by_ext(src_root, symbols.SUPPORTED_EXTENSIONS)
+    needle = symbol.encode("utf-8")
     pat = _word_re(symbol)
     found: list[str] = []
+    fingerprints: list[tuple[str, str]] = []
+    truncated = False
     for fp in paths:
         try:
-            with open(fp, encoding="utf-8", errors="replace") as f:
-                text = f.read()
+            with open(fp, "rb") as f:
+                data = f.read()
         except OSError:
             continue
-        if pat.search(text):
-            found.append(fp)
-            if limit is not None and len(found) >= limit:
-                break
-    return found
+        if needle not in data:
+            continue
+        if not pat.search(data.decode("utf-8", "replace")):
+            continue
+        found.append(fp)
+        fingerprints.append((os.path.relpath(fp, src_root).replace(os.sep, "/"),
+                             hashlib.sha256(data).hexdigest()))
+        if limit is not None and len(found) >= limit:
+            truncated = True
+            break
+    accumulator = hashlib.sha256()
+    for relative, content in sorted(fingerprints):
+        accumulator.update(f"{relative}\0{content}\0".encode())
+    return NameSweep(found, accumulator.hexdigest(), truncated)
+
+
+def candidate_files(src_root: str, symbol: str, *, lang: str | None = None,
+                    limit: int | None = None) -> list[str]:
+    """The file list from :func:`name_sweep`, for callers that need nothing else."""
+    return name_sweep(src_root, symbol, lang=lang, limit=limit).files
 
 
 def _prefilter_candidate_files(src_root: str, symbol: str) -> list[str]:

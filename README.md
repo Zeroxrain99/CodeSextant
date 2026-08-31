@@ -94,13 +94,19 @@ python -m codesextant preflight . codesextant/storage.py --symbol project_key
      80%  (4/5 commits)  codesextant/engine.py
      60%  (3/5 commits)  codesextant/daemon.py
 
-  BLAST RADIUS     10 file(s) with resolved references  (resolved in 1.4s)
+  BLAST RADIUS     10 file(s) with resolved references; 2 more name it  (resolved in 1.4s)
+    codesextant/engine.py
     ...
+    ?  codesextant/daemon.py
 ```
 
-The last section used to be empty on the call where it mattered most. Resolved references only accumulate as `references` runs, so on a fresh index there were none, and "no callers" and "nobody has looked" printed identically. With `--symbol`, preflight now resolves that one symbol itself when it has to — but only after measuring what it would cost, because a check worth running before every edit has to be one you never stop to think about. A text sweep counts the files naming the symbol first, at a fraction of a millisecond each; resolution costs roughly a tenth of a second per file, so 25 files is the default ceiling for doing it inline. Above that preflight declines, lists the files that name the symbol as leads rather than callers, and says which limit it hit. Either way the result is stored, so the same question costs nothing the second time and is resolved again only when the definition changes.
+The last section used to be empty on the call where it mattered most. Resolved references only accumulate as `references` runs, so on a fresh index there were none, and "no callers" and "nobody has looked" printed identically. With `--symbol`, preflight now resolves that one symbol itself — but only after measuring what it would cost, because a check worth running before every edit has to be one you never stop to think about. A text sweep counts the files naming the symbol first, at about seven microseconds each; resolution costs roughly a tenth of a second per file, so 25 files is the default ceiling for doing it inline. Above that preflight declines, reports the files that name the symbol as leads rather than callers, and says which limit it hit.
 
-`--resolve yes` spends whatever it takes for the exact answer; `--resolve no` reads only what is already stored.
+That same sweep is what makes caching the expensive half safe, and it is the reason the cache is not keyed to the file being edited. **A caller has to name the symbol**, so the files naming it are a complete superset of the possible callers: if none of them has changed and no new one has appeared, no caller can have appeared either. Keying the cache to the definition instead — the obvious choice — goes stale silently the moment a caller is added in some *other* file, and keeps reporting a measured absence that stopped being true.
+
+Lines marked `?` are files that name the symbol without resolving to it. They are reported beside the confirmed callers, never merged into one list. Usually they are a same-named symbol elsewhere — but they are also what a caller reached through dynamic dispatch, a re-export or a registry looks like, because no static resolver can follow those.
+
+`--resolve yes` spends whatever it takes for the exact answer; `--resolve no` reads only what is already stored, and is the one mode that skips the sweep.
 
 With `--symbol`, the middle section narrows to that one definition where history supports it. On a two-thousand-line module the file-level claim is too coarse to act on: changing `daemon.py` anywhere brings its reliability test 70% of the time, while changing `serve` has brought it every time.
 

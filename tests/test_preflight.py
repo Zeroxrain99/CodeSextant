@@ -816,15 +816,94 @@ def test_a_resolution_failure_costs_the_section_not_the_answer(repo):
     assert result["co_change"], "and so did co-change"
 
 
-def test_leads_and_confirmed_callers_are_never_reported_together(repo):
-    """Leads exist to fill an empty answer, not to pad a real one.
+def test_a_caller_the_resolver_cannot_see_is_still_reported(repo):
+    """Import resolution has blind spots, and silence about them is the dangerous part.
 
-    Listing "these two files call it, and these five mention it" invites reading the
-    seven as one set, which is the confidence inflation the split was meant to prevent.
+    Dynamic dispatch, re-exports and registries all look the same to a static
+    resolver: nothing. Answering "one file calls this" when a second one does, through
+    getattr, is exactly the "changed A, broke B" this section exists to prevent -- so
+    the files that name it are reported beside the confirmed callers, in their own key
+    and marked apart, never merged into one list.
     """
-    _seed_caller_and_callee(repo)
+    _commit(repo, "seed", {
+        "core.py": "def load_settings(path):\n    return {'path': path}\n",
+        "app.py": ("from core import load_settings\n\n\n"
+                   "def main():\n    return load_settings('x')\n"),
+        "dyn.py": ("import core\n\n\n"
+                   "def main():\n    return getattr(core, 'load_settings')()\n"),
+    })
+    engine.index_project(str(repo), force=True)
+
     blast = _blast(engine.preflight(str(repo), "core.py", symbol="load_settings"))
-    assert blast["dependent_files"] and not blast["name_match_files"]
+
+    assert [os.path.basename(p) for p in blast["dependent_files"]] == ["app.py"]
+    assert [os.path.basename(p) for p in blast["name_match_files"]] == ["dyn.py"], (
+        "the caller jedi cannot follow is still surfaced, as a lead")
+    # Separate keys, and separate lines: nothing about the output invites reading the
+    # two as one set.
+    text = "\n".join(render.preflight_lines(
+        engine.preflight(str(repo), "core.py", symbol="load_settings"), str(repo)))
+    assert "1 file(s) with resolved references; 1 more name it" in text
+    assert "    app.py" in text and "    ?  dyn.py" in text
+
+
+# Staleness: what a cached "no callers" is allowed to claim.
+
+def test_a_caller_appearing_elsewhere_invalidates_a_cached_absence(repo):
+    """The obvious cache key is the defining file, and it is the wrong one.
+
+    A new caller appears in some *other* file. The definition is untouched, so a
+    marker keyed to its content hash still looks current, and preflight would go on
+    reporting a measured absence that had stopped being true -- the worst kind of
+    wrong answer, because it is confidently phrased.
+    """
+    _commit(repo, "seed", {"core.py": "def load_settings():\n    return 1\n"})
+    engine.index_project(str(repo), force=True)
+    first = _blast(engine.preflight(str(repo), "core.py", symbol="load_settings"))
+    assert first["resolution"]["status"] == "resolved" and not first["dependent_files"]
+
+    _write(repo, "app.py", "from core import load_settings\n\n\n"
+                           "def main():\n    return load_settings()\n")
+
+    second = _blast(engine.preflight(str(repo), "core.py", symbol="load_settings"))
+    assert second["resolution"]["status"] == "resolved", "the cache had to be dropped"
+    assert [os.path.basename(p) for p in second["dependent_files"]] == ["app.py"]
+
+
+def test_an_existing_file_becoming_a_caller_invalidates_it_too(repo):
+    """The set of naming files is unchanged; what one of them does with the name is not."""
+    _commit(repo, "seed", {
+        "core.py": "def load_settings():\n    return 1\n",
+        "app.py": "import core\n\n\n# load_settings is documented here, not called\n",
+    })
+    engine.index_project(str(repo), force=True)
+    first = _blast(engine.preflight(str(repo), "core.py", symbol="load_settings"))
+    assert first["dependent_files"] == []
+    assert [os.path.basename(p) for p in first["name_match_files"]] == ["app.py"]
+
+    _write(repo, "app.py", "from core import load_settings\n\n\n"
+                           "def main():\n    return load_settings()\n")
+
+    second = _blast(engine.preflight(str(repo), "core.py", symbol="load_settings"))
+    assert second["resolution"]["status"] == "resolved"
+    assert [os.path.basename(p) for p in second["dependent_files"]] == ["app.py"]
+
+
+def test_an_unchanged_repository_still_answers_from_the_cache(repo):
+    """The invalidation has to be tight, or it is just a slower way of never caching."""
+    _commit(repo, "seed", {
+        "core.py": "def load_settings():\n    return 1\n",
+        "notes.md": "nothing here names it\n",
+    })
+    engine.index_project(str(repo), force=True)
+    engine.preflight(str(repo), "core.py", symbol="load_settings")
+
+    # Touching a file that does not name the symbol cannot change who calls it.
+    _write(repo, "notes.md", "still nothing here\n")
+    _write(repo, "unrelated.py", "def other():\n    return 2\n")
+
+    blast = _blast(engine.preflight(str(repo), "core.py", symbol="load_settings"))
+    assert blast["resolution"]["status"] == "cached"
 
 
 def test_the_budget_spends_the_lead_list_before_the_explanations(repo, monkeypatch):

@@ -24,6 +24,7 @@ import time
 from collections import OrderedDict
 from copy import deepcopy
 from threading import RLock, Thread
+from typing import TYPE_CHECKING
 
 from . import (
     cochange,
@@ -40,10 +41,17 @@ from .ranking import rank_symbols
 # request. jedi (references) and the tree-sitter language pack (symbols) together cost
 # about 85ms, and a cached get_map -- which resolves nothing and parses nothing -- was
 # paying all of it. Each still resolves on first attribute access.
-clones = LazyModule(f"{__package__}.clones")
-comments = LazyModule(f"{__package__}.comments")
-references = LazyModule(f"{__package__}.references")
-symbols = LazyModule(f"{__package__}.symbols")
+# The TYPE_CHECKING branch never runs; it exists so that static analysis -- jedi's
+# included, which is what CodeSextant resolves references with -- can see what these
+# names are. Without it every call through one of these proxies is invisible to
+# resolution, and this file's own callers went missing from its own blast radius.
+if TYPE_CHECKING:
+    from . import clones, comments, references, symbols
+else:
+    clones = LazyModule(f"{__package__}.clones")
+    comments = LazyModule(f"{__package__}.comments")
+    references = LazyModule(f"{__package__}.references")
+    symbols = LazyModule(f"{__package__}.symbols")
 
 # Directories skipped while scanning source files during indexing (target = Rust build output).
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
@@ -1510,9 +1518,8 @@ def _resolvable_language(abs_target: str) -> str | None:
 
 
 def _ensure_blast_radius(abs_path: str, abs_target: str, symbol: str | None, *,
-                         resolve, has_edges: bool, already_resolved: bool,
-                         defined_here: bool) -> dict:
-    """Make the blast radius mean something on the first ask.
+                         resolve, defined_here: bool) -> dict:
+    """Make the blast radius mean something on the first ask, and keep it meaning it.
 
     An empty blast radius used to carry two readings a caller could not tell apart:
     nothing depends on this symbol, or nobody has resolved it yet. The refs table only
@@ -1521,9 +1528,18 @@ def _ensure_blast_radius(abs_path: str, abs_target: str, symbol: str | None, *,
 
     Resolution is not simply run every time, because preflight is only worth calling
     before every edit if calling it is never a decision. The cost is driven by how many
-    files name the symbol, and that is measurable beforehand with a text sweep costing a
-    fraction of a millisecond per file. So: measure, resolve when the measurement says it
-    is cheap, and when it is not, hand back the sweep as leads and say what was not done.
+    files name the symbol, and a text sweep measures that for about seven microseconds
+    per file, against a tenth of a second per file to resolve. So: measure, resolve when
+    the measurement says it is cheap, and when it is not, hand back the sweep as leads
+    and say what was not done.
+
+    The same sweep is what makes caching the expensive half safe. A caller has to name
+    the symbol, so the files naming it are a complete superset of the possible callers;
+    if none of them has changed and no new one has appeared, no caller can have
+    appeared either. Keying the cache to the *defining* file instead -- the obvious
+    choice, and the wrong one -- would go stale silently the moment a caller was added
+    somewhere else, and would keep reporting a measured absence that had stopped being
+    true.
 
     ``resolve`` is True to resolve regardless of the measurement, False never, and
     "auto" to let the measurement decide.
@@ -1540,8 +1556,6 @@ def _ensure_blast_radius(abs_path: str, abs_target: str, symbol: str | None, *,
         outcome["reason"] = reason
         return outcome
 
-    if has_edges:
-        return decided("recorded", "resolved edges are already stored for this file")
     if symbol is None:
         return decided("no-symbol", "resolution needs a symbol; without one every "
                                     "definition in the file would have to be resolved")
@@ -1556,27 +1570,29 @@ def _ensure_blast_radius(abs_path: str, abs_target: str, symbol: str | None, *,
         # reading what is stored. It buys nothing else, including the sweep.
         return decided("off", "resolution was turned off for this call")
 
-    # The sweep runs before the branch on whether resolution has already happened,
-    # because it is the fallback evidence in both cases. Without that, the first ask
-    # would list leads and the second -- answering from the same empty result -- would
-    # list none, which reads as the leads having gone away.
     language = _resolvable_language(abs_target)
     sweep_language = language or symbols.language_for_file(abs_target)
     try:
-        matches = references.candidate_files(
+        sweep = references.name_sweep(
             abs_path, symbol, lang=sweep_language, limit=_SWEEP_LIMIT)
     except Exception as exc:
         return decided("failed", f"the name sweep failed ({type(exc).__name__}: {exc})")
     # The file being edited names the symbol by definition; listing it as a lead to
-    # itself is noise.
-    matches = [m for m in matches
+    # itself is noise. It stays in the digest, where its content still counts.
+    matches = [m for m in sweep.files
                if os.path.normcase(os.path.abspath(m)) != os.path.normcase(abs_target)]
     outcome["name_match_files"] = matches
     outcome["name_match_count"] = len(matches)
-    outcome["name_match_truncated"] = len(matches) >= _SWEEP_LIMIT - 1
+    outcome["name_match_truncated"] = sweep.truncated
 
-    if already_resolved:
-        return decided("cached", "references were resolved for this exact file content")
+    try:
+        with storage.ProjectStore.open_readonly(abs_path) as store:
+            cached = store.symbol_references_resolved(abs_target, symbol, sweep.digest)
+    except sqlite3.OperationalError:
+        cached = False
+    if cached:
+        return decided("cached", "references were resolved against this exact evidence, "
+                                 "and nothing that names the symbol has changed since")
     if language is None:
         return decided(
             "unsupported",
@@ -1588,7 +1604,7 @@ def _ensure_blast_radius(abs_path: str, abs_target: str, symbol: str | None, *,
         return decided("declined", "inline resolution is switched off by "
                                    "CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES=0")
     if resolve is not True and len(matches) > cap:
-        counted = f"{len(matches)}{'+' if outcome['name_match_truncated'] else ''}"
+        counted = f"{len(matches)}{'+' if sweep.truncated else ''}"
         return decided(
             "declined",
             f"{counted} file(s) name {symbol!r}, above the inline limit of {cap} "
@@ -1606,9 +1622,15 @@ def _ensure_blast_radius(abs_path: str, abs_target: str, symbol: str | None, *,
         # never the answer.
         return decided("failed", f"resolution failed ({type(exc).__name__}: {exc})")
     outcome["elapsed_sec"] = round(time.perf_counter() - started, 3)
+    if sweep.truncated:
+        # The digest describes a prefix of the evidence, so it cannot stand in for all
+        # of it. Answer this call and re-resolve next time rather than cache a claim
+        # about files the sweep never reached.
+        return decided("resolved", "the name sweep hit its file limit, so this result "
+                                   "is not cached")
     try:
         with storage.ProjectStore.open(abs_path) as store:
-            store.mark_symbol_references_resolved(abs_target, symbol)
+            store.mark_symbol_references_resolved(abs_target, symbol, sweep.digest)
     except sqlite3.OperationalError:
         # A busy index costs the marker, not the answer: the next call resolves again.
         return decided("resolved", "resolved, but the result could not be marked as "
@@ -1682,15 +1704,20 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
         defined_here = bool(symbol) and store.conn.execute(
             "SELECT 1 FROM symbols WHERE path=? AND name=? LIMIT 1",
             (abs_target, symbol)).fetchone() is not None
-        already_resolved = bool(symbol) and store.symbol_references_resolved(
-            abs_target, symbol)
 
     resolution = _ensure_blast_radius(
-        abs_path, abs_target, symbol, resolve=resolve, has_edges=bool(dependents),
-        already_resolved=already_resolved, defined_here=defined_here)
+        abs_path, abs_target, symbol, resolve=resolve, defined_here=defined_here)
     if resolution["status"] == "resolved":
         with storage.ProjectStore.open_readonly(abs_path) as store:
             dependents, total_edges = _read_blast_radius(store, abs_target, symbol)
+    # Leads are what named the symbol and did not resolve to it. They are reported
+    # beside confirmed callers rather than instead of them, because a resolver that
+    # cannot see through dynamic dispatch, a re-export or a registry will resolve some
+    # callers and miss others -- and "one file calls this" is a worse answer than "one
+    # file calls this and one more names it" when the second one is also a caller.
+    resolved_set = {os.path.normcase(p) for p in dependents}
+    leads = [m for m in resolution["name_match_files"]
+             if os.path.normcase(os.path.abspath(m)) not in resolved_set]
 
     if symbol and not already:
         # "It looks new" was an overclaim: this compares names, and something
@@ -1705,7 +1732,7 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
         notes.append("Co-change is unavailable: " + str(cochange_stats.get("reason", "unknown")))
     elif not companions:
         notes.append("History shows nothing that reliably changes with this file.")
-    notes.extend(_blast_radius_notes(symbol, dependents, total_edges, resolution))
+    notes.extend(_blast_radius_notes(symbol, dependents, leads, total_edges, resolution))
 
     result = {
         "project_key": storage.project_key(abs_path),
@@ -1721,12 +1748,12 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
             "dependent_files": dependents,
             "dependent_count": len(dependents),
             "resolved_edges_project_wide": total_edges,
-            # The unresolved half, kept separate rather than merged in: these are files
-            # whose text names the symbol, which is a lead, not a caller. Merging the two
-            # would be the exact inflation of confidence this tool exists to avoid.
-            "name_match_files": ([] if dependents else
-                                 resolution["name_match_files"]),
-            "name_match_count": (0 if dependents else resolution["name_match_count"]),
+            # The unresolved half, kept in its own key rather than merged in: these are
+            # files whose text names the symbol, which is a lead, not a caller. Merging
+            # the two would be the exact inflation of confidence this tool exists to
+            # avoid, so the split is structural and the renderer marks them apart.
+            "name_match_files": leads,
+            "name_match_count": len(leads),
             "resolution": {"status": resolution["status"],
                            "reason": resolution["reason"],
                            "elapsed_sec": resolution["elapsed_sec"]},
@@ -1764,22 +1791,29 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     return result
 
 
-def _blast_radius_notes(symbol: str | None, dependents: list[str], total_edges: int,
-                        resolution: dict) -> list[str]:
-    """Say which of the two empty answers this is.
+def _blast_radius_notes(symbol: str | None, dependents: list[str], leads: list[str],
+                        total_edges: int, resolution: dict) -> list[str]:
+    """Say which of the two empty answers this is, and where the full one is thin.
 
     "No callers" and "nobody has looked" print identically and mean opposite things.
-    Everything below exists to keep them apart.
+    Most of what follows exists to keep them apart. The rest exists because import
+    resolution has blind spots -- dynamic dispatch, re-exports, registries -- so even
+    a non-empty answer can be missing a caller that the sweep can still see.
     """
-    if dependents:
-        return []
     status = resolution["status"]
-    leads = resolution["name_match_count"]
-    lead_text = (f" {leads} file(s) mention the name without resolving to it; they are "
+    lead_text = (f" {len(leads)} file(s) name it without resolving to it; they are "
                  "listed as leads, not callers." if leads else "")
+    if dependents:
+        if not leads:
+            return []
+        return [f"{len(leads)} further file(s) name {symbol!r} without resolving to it. "
+                "That is usually a same-named symbol elsewhere, but it is also what a "
+                "caller reached through dynamic dispatch, a re-export or a registry "
+                "looks like, because no static resolver can follow those. They are "
+                "listed as leads; check them by reading, not by trusting either list."]
     if status in ("resolved", "cached"):
         when = ("just now" if status == "resolved" else
-                "earlier, for this exact file content")
+                "earlier, and nothing that names it has changed since")
         return [f"Nothing in this project resolves to {symbol!r} here. That is a measured "
                 f"absence, not an unasked question: references were resolved {when}."
                 + lead_text]

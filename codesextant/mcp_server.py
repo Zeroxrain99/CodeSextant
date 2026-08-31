@@ -27,13 +27,19 @@ import sys
 import urllib.error
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import __version__, render
 from .lazy_import import LazyModule
 
-# Importing the engine costs tree-sitter; the daemon path never needs it.
-engine = LazyModule(f"{__package__}.engine")
+# Importing the engine costs tree-sitter; the daemon path never needs it. The
+# TYPE_CHECKING branch never runs, and is there so static analysis can still see what
+# the name is -- a call through an unannotated proxy is invisible to reference
+# resolution, CodeSextant's own included.
+if TYPE_CHECKING:
+    from . import engine
+else:
+    engine = LazyModule(f"{__package__}.engine")
 
 SERVER_NAME = "codesextant"
 SERVER_TITLE = "CodeSextant"

@@ -812,29 +812,34 @@ class ProjectStore:
             (path, kind, content_hash),
         )
 
-    def symbol_references_resolved(self, path: str, symbol: str) -> bool:
-        """Whether ``symbol``'s references were resolved for this file's current content.
+    def symbol_references_resolved(self, path: str, symbol: str, digest: str) -> bool:
+        """Whether ``symbol``'s references were resolved against exactly this evidence.
 
-        The distinction this records is the one preflight could not previously make:
+        The distinction this records is the one preflight could not otherwise make:
         an empty blast radius because nobody calls the symbol, versus an empty blast
-        radius because nobody has looked. Reindexing a file drops its derived_state
-        rows, so an edited definition is resolved again rather than trusted.
-        """
-        return not self.paths_missing_derived(f"refs:{symbol}", [path])
+        radius because nobody has looked.
 
-    def mark_symbol_references_resolved(self, path: str, symbol: str) -> None:
-        """Record that resolution ran for this symbol at the file's current content.
+        ``digest`` is a fingerprint of every file that names the symbol, from
+        references.name_sweep -- not the defining file's content hash. Keying it to
+        the definition would be wrong in a way that is hard to notice: a new caller
+        appears in some *other* file, the definition is untouched, and the stale
+        marker keeps reporting a "measured absence" that stopped being true.
+        """
+        row = self.conn.execute(
+            "SELECT content_hash FROM derived_state WHERE path=? AND kind=?",
+            (path, f"refs:{symbol}")).fetchone()
+        return row is not None and row["content_hash"] == digest
+
+    def mark_symbol_references_resolved(self, path: str, symbol: str,
+                                        digest: str) -> None:
+        """Record that resolution ran for this symbol against this exact evidence.
 
         Marked even when resolution found nothing: "no callers" is a result worth
         keeping, and re-deriving it on every call is what would make preflight too
         expensive to call every time.
         """
-        row = self.conn.execute(
-            "SELECT content_hash FROM files WHERE path=?", (path,)).fetchone()
-        if row is None:
-            return
         with self.conn:
-            self._mark_derived(path, f"refs:{symbol}", row["content_hash"])
+            self._mark_derived(path, f"refs:{symbol}", digest)
 
     def paths_missing_derived(self, kind: str,
                               paths: list[str] | None = None) -> list[tuple[str, str]]:
