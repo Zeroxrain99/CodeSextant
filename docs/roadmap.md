@@ -99,9 +99,14 @@ with evidence under it rather than a list of plausible ideas.
 
 `exp8` counted 16–34 guards per thousand lines **reading Python only** and said the
 number was a floor. **exp10 measured the floor, and it reshaped this phase rather than
-confirming it.** Counted across seven repositories: 4–15 CI checks and 0–14 lint rules
-against 182–964 Python guards — two orders of magnitude — and **zero pre-commit
-configurations and zero `.sql` files anywhere in the corpus**.
+confirming it.** Counted across seven repositories: 4–15 CI checks, 0–14 lint rules and
+8–21 pre-commit hooks against 182–964 Python guards — two orders of magnitude — and no
+`.sql` file anywhere in the corpus.
+
+*(exp10's first run said zero pre-commit hooks everywhere, from a regex missing
+`re.MULTILINE`. It was wrong in five of seven repositories and the roadmap briefly
+carried the wrong conclusion. A column that is zero everywhere is a defect until proven
+otherwise.)*
 
 More important, exp10 found that its own statistic is the wrong one for a required
 check. "How often does a commit touch the workflow file" answers how often somebody
@@ -112,15 +117,17 @@ progressive disclosure. It wants stating.**
 
 | step | what | status |
 |---|---|---|
-| C1 · CI workflow rules | required checks, matrix entries, timeouts, `fail-fast` | **reshaped by exp10.** Not a ranked tier in `guards` — a short always-on statement, because the population is 4–15 and universally applicable |
-| C2 · lint and type configuration | ruff `select`/`ignore`, per-file ignores, mypy strictness, and the language floor beside the target version | same shape as C1, same reason. This repository's own `target-version = py311` against a 3.10 floor was exactly this class and went unnoticed until CI said so — a line stating both would have shown it, and no ranking would have |
-| C3 · pre-commit hooks | `.pre-commit-config.yaml` | **blocked on a corpus.** Zero instances in all seven repositories. Building an extractor whose score is undefined is what `guards` was doing before exp9 |
-| C4 · schema, migration and database constraints | `NOT NULL`, `UNIQUE`, migration ordering | **blocked on a corpus.** Zero `.sql` files anywhere here. These live in applications; the corpus is seven libraries |
+| C1 · CI workflow rules | the jobs that go red, and only those that fire on a branch | **done** — `codesextant/gates.py`. Not a ranked tier: one row saying what runs, because the population is 4–15 and universally applicable. A workflow triggered only by `push: tags:` is excluded, because claiming something gates you when it does not is the one direction this section must never be wrong in |
+| C2 · lint and type configuration | ruff `select`/`ignore`/`target-version`, mypy strictness, flake8, **and the language floor printed next to the lint target** | **done.** This repository's own `target-version = py311` against a 3.10 floor was exactly this class and went unnoticed until CI said so. Adjacency is the whole intervention; no ranking would have surfaced it |
+| C3 · pre-commit hooks | `.pre-commit-config.yaml` | **done.** 8–21 hooks in five of seven repositories, and the first measurement saying zero was a bug |
+| C4 · schema, migration and database constraints | `NOT NULL`, `UNIQUE`, migration ordering | **blocked on a corpus.** No `.sql` file anywhere here. These live in applications; the corpus is seven libraries. Building an extractor whose score is undefined is what `guards` was doing before exp9 |
 
-C1 and C2 still have to earn their place by moving a number, but it is not exp9's
-number — retrieval recall is meaningless for a fence that always applies. The claim they
-make is "this is what will run against your push", and the honest test of it is whether
-it is *correct and complete*, not whether it was *retrieved*.
+**What C1–C3 do not have is a corpus score,** and it is not an oversight: retrieval
+recall is meaningless for a fence that always applies, so exp9's machinery cannot judge
+them. The claim they make is "this is what will run against your push", and its honest
+test is whether it is *correct and complete* — pinned by unit tests against seven real
+repositories, which is exactly the position `guards` was in before exp9 and should be
+read with the same suspicion.
 
 ---
 

@@ -169,13 +169,16 @@ above, built as measured:
 | Two **file-level tiers** admitted anyway — history says a file moves with yours, or it imports what you changed — ranked below every fence read off its own text and labelled with the claim they rest on | both were refused by the same argument as the row above, and the argument was wrong twice. Against the symbol tiers alone the held-out difference from reading co-change instead was +0.056, **interval crossing zero** — `guards` was a longer way to an answer `check` already gives. The offline union was +0.111, because the signals hit different commits; that built the history tier. The import tier was then measured as a predictor before anything was built: +0.072 held out, positive on all six repositories. Together **+0.100 held out** over what 0.28.0 shipped |
 | The decision rule for the second tier **fixed and committed before its numbers existed** | choosing what counts as success after seeing which candidate wins is how a held-out set stops being one. Two candidates were measured; the weaker was refused even though it was real, because the stronger beat it by +0.039 and the ceiling of running both was +0.014 |
 | Reason labelled with its source (`docstring` / `comment` / `message`) | "the author said this" and "the tool derived this" are different claims |
+| The **always-on block** — CI jobs, pre-commit hooks, lint rules, language floor — printed whole and **not ranked at all** | exp10 counted the population at 4–15 CI checks, 8–21 hooks and 0–14 lint rules against 182–964 Python guards, and every one applies to every change. Relevance has the same answer each time, so asking is the waste. It has no corpus score and cannot have one: retrieval recall is meaningless for a fence that always applies |
+| A workflow triggered only by `push: tags:` **excluded** from that block | claiming something gates you when it does not sends a reader looking for a check that will never run — the cost this tool exists to remove, not to add to |
 
-Cost, warm, on this repository: 79 ms with a symbol (one name sweep plus an AST parse of
-the files it reaches), 3 ms without. The two file-level tiers add 125 ms to a full diff
-read — one cached co-change probe, one pass for importers, and a bounded number of AST
-parses — bringing `guards` to 430 ms hot. On a change whose per-guard tiers already fill
-six slots they add no output at all, which is the case they were bounded for. `check` is
-untouched at 262 ms. The first build was 316 ms; profiling put 2.4 of
+Cost, warm, on this repository, median of nine on an idle machine: `guards` 244–255 ms
+reading a full diff, `check` 309–344 ms — both under the 475 ms `check` was held to
+before any of this. The two file-level tiers are most of what `guards` spends: one cached
+co-change probe, one pass for importers, and a bounded number of AST parses. On a change
+whose per-guard tiers already fill six slots they add no *output* at all, which is the
+case they were bounded for. The always-on block costs **0.6 ms** and about 50 tokens,
+which is what makes printing it whole the cheap option rather than the reckless one. The first build was 316 ms; profiling put 2.4 of
 3.1 seconds in `ast.get_source_segment`, which re-splits the whole file on every call.
 Slicing from lines already in hand is a quarter of the cost and the same output.
 

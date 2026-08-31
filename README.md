@@ -192,6 +192,17 @@ python -m codesextant guards . --target pkg/limits.py --symbol encode
 ```
 
 ```
+In force on every push: 3
+
+  CI           on push   .github/workflows/tests.yml
+    runs     3 job(s) in tests.yml: test, lint, package
+
+  LINT         ruff   pyproject.toml
+    runs     select E, F, W, I +3 more; ignore E501; target-version py310
+
+  FLOOR        requires-python   pyproject.toml
+    runs     >=3.10
+
 Guards: 5 in reach of this change
 
   TEST         test_an_unknown_format_is_refused_rather_than_guessed   tests/test_limits.py:4
@@ -218,6 +229,8 @@ Three layers, because hundreds of guards will not fit in any answer: which fence
 **Measured, on 360 real commits.** ([`exp9`](experiments/README.md)) Hold out a file that actually holds a fence, apply the rest of the commit, and ask `guards` what the change is about to meet: it names the held-out file in **0.306 of cases held out** while printing under five fences, and it beats all four controls — the per-file design it replaced by +0.189, reading co-change history instead by +0.156, the directories you touched by +0.139, the project's most-changed files by +0.128. Every interval excludes zero.
 
 Two of those four tiers reach a fence through a claim about its *file* rather than about the fence — history says it moves with yours, or it imports what you changed. Both were written down as refused, on the argument that per-file relevance is what made an earlier version unreadable, and both were then measured: together they are +0.100 held out over the version that shipped in 0.28.0. They are ranked below every fence read off its own text and labelled with the claim they rest on, so a lead never reads as a hit.
+
+**The block above the fences is deliberately not ranked.** [`exp10`](experiments/README.md) counted what a Python reader cannot see and found the shape of that answer is different: 4–15 CI checks, 8–21 pre-commit hooks and 0–14 lint rules per repository, against 182–964 Python guards — and every one of them applies to every change, so asking "is this relevant" has the same answer each time. A handful that always applies wants stating, not retrieving. The language floor is printed next to the lint target on purpose: this repository shipped `target-version = py311` against a 3.10 floor and nothing said so until a CI job did. A workflow that fires only on a tag is left out, because saying something gates you when it does not is worse than saying nothing.
 
 **And there is a shape of repository it is wrong for.** On jinja it is still last, beaten by simply reading the most-changed files (−0.167), because a template engine's tests drive their subjects through indirection and never spell the names a per-guard rule matches on. `experiments/README.md` carries the full table including every row where it loses.
 

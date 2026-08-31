@@ -724,24 +724,32 @@ with the fraction of sampled commits that *touch a file holding* each kind:
 | | Python guards | ci_check | lint_rule | hook | db_constraint |
 |---|---|---|---|---|---|
 | CodeSextant | 964 · 0.676 | 4 · 0.056 | 11 · 0.268 | 0 | 0 |
-| requests | 411 · 0.129 | 13 · 0.075 | 14 · 0.024 | 0 | 0 |
-| click | 630 · 0.395 | 10 · 0.072 | 10 · 0.034 | 0 | 0 |
-| tqdm | 182 · 0.265 | 8 · 0.065 | 0 | 0 | 0 |
-| jinja | 779 · 0.255 | 7 · 0.057 | 10 · 0.007 | 0 | 0 |
+| requests | 411 · 0.129 | 13 · 0.075 | 14 · 0.024 | 9 · 0.014 | 0 |
+| click | 630 · 0.395 | 10 · 0.072 | 10 · 0.034 | 9 · 0.047 | 0 |
+| tqdm | 182 · 0.265 | 8 · 0.065 | 0 | 21 · 0.024 | 0 |
+| jinja | 779 · 0.255 | 7 · 0.057 | 10 · 0.007 | 8 · 0.043 | 0 |
 | httpie | 505 · 0.297 | 15 · 0.043 | 2 · 0.014 | 0 | 0 |
-| rich | 834 · 0.548 | 6 · 0.032 | 2 · 0.090 | 0 | 0 |
+| rich | 834 · 0.548 | 6 · 0.032 | 2 · 0.090 | 19 · 0.011 | 0 |
 
 *(count · fraction of commits touching a file that holds one)*
 
-**Two of the four kinds do not exist in this corpus at all.** Not one of the seven
-repositories has a pre-commit configuration, and not one has a `.sql` file. C3 and C4
-were on the roadmap because they block people — which they do — but nothing here can
-measure them, and building an extractor whose corpus score is undefined is exactly what
-`guards` was doing before exp9. They need an application corpus or they stay speculative,
-and that is now written down rather than assumed.
+**The hook column is a correction.** Its first version read `0` everywhere, from a regex
+missing `re.MULTILINE` — without it `^` anchors to the start of the string, so `findall`
+over a whole file returns at most one match. The conclusion drawn from that zero, that
+the kind does not exist in this corpus, was false in five of seven repositories. It was
+caught by an unrelated reading: `click` and `jinja` both run a job *named* `pre-commit`
+in CI, which cannot be true of a repository with no pre-commit configuration. A number
+that is zero everywhere deserves that suspicion before it is published, and this one did
+not get it.
 
-**The other two are tiny.** Four to fifteen CI checks and zero to fourteen lint rules,
-against 182 to 964 Python guards. Two orders of magnitude.
+**One kind is genuinely absent.** Not one of the seven repositories has a `.sql` file.
+C4 was on the roadmap because database constraints block people — which they do, at the
+most expensive moment — but nothing here can measure it, and building an extractor whose
+corpus score is undefined is exactly what `guards` was doing before exp9. It needs an
+application corpus; the corpus is seven libraries.
+
+**The three that exist are small.** 4–15 CI checks, 0–14 lint rules and 8–21 pre-commit
+hooks, against 182–964 Python guards. Two orders of magnitude.
 
 ### The measurement's own flaw, and what it changes
 
@@ -751,15 +759,18 @@ statistic for a required check**, which blocks every push whether or not you hav
 opened its workflow file. The number above says how often a commit *moves* a CI fence,
 not how often one *stops* somebody. The true rate for the second is 1.0.
 
-That is the finding. A required check is not a needle to retrieve out of hundreds; it is
-a fixed set of four to fifteen entries that applies to everything. It does not want
-ranking, relevance or progressive disclosure — the machinery `guards` exists to provide.
-It wants stating. This repository's own `target-version = py311` against a 3.10 floor was
-exactly this class, and it went unnoticed until CI said so; a line naming the lint rule
-and the floor would have shown it, and no amount of relevance ranking would have.
+That is the finding, and it holds for pre-commit hooks and lint rules identically. A
+required check is not a needle to retrieve out of hundreds; it is a fixed set that applies
+to everything. It does not want ranking, relevance or progressive disclosure — the
+machinery `guards` exists to provide. It wants stating. This repository's own
+`target-version = py311` against a 3.10 floor was exactly this class, and it went
+unnoticed until CI said so; a line naming the lint rule and the floor next to each other
+would have shown it, and no amount of relevance ranking would have.
 
-So Phase C is not "four more guard kinds behind the same ranked section". It is a small
-always-on statement for two kinds, and two kinds waiting for a corpus that contains them.
+So Phase C is not "four more guard kinds behind the same ranked section". It is
+`codesextant/gates.py`: a short always-on statement of what runs against a push, printed
+whole above the ranked answer, for three kinds — and a fourth waiting for a corpus that
+contains it.
 
 ## What these experiments do not establish
 
@@ -768,8 +779,10 @@ because a results section that only lists wins is an advertisement.
 
 - **Guards outside Python.** exp9 scores `guards` only on what an `ast` walk can see.
   exp10 counted what it misses and found the population small (4-15 CI checks, 0-14 lint
-  rules) and two kinds absent from this corpus entirely — but "small" is not "harmless",
-  and nothing here measures how often one of them is what actually blocked somebody.
+  rules, 8-21 pre-commit hooks) — but "small" is not "harmless", and nothing here
+  measures how often one of them is what actually blocked somebody. The always-on
+  section built from it is pinned by unit tests against seven real repositories and has
+  no corpus score, which is the position `guards` itself was in before exp9.
 - **Whether a required check needs retrieving at all.** exp10 argues it does not, from
   a population count and one anecdote about this repository. That is an argument, not a
   measurement, and it is the kind this directory exists to be suspicious of.

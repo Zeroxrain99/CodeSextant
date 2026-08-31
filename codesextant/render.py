@@ -212,19 +212,42 @@ def index_lines(result: dict, root: str | None = None) -> list[str]:
 def guards_lines(result: dict, root: str | None = None) -> list[str]:
     """The fences this change meets, in the two layers that are cheap to read.
 
-    Layer one is the heading line -- kind, name, where. Layer two is the rule beneath
-    it, and the reason when the author left one, marked with where it came from: a
-    docstring is the author speaking and a derived rule is the tool speaking, and a
-    reader deciding whether to satisfy a fence or move it needs to know which. Layer
-    three is the source, printed only when it was asked for.
+    Two things, in the order a reader needs them. First what runs against every push --
+    the CI jobs, the pre-commit hooks, the lint rules, the language floor -- which is
+    short, always true, and the one place this tool does not rank anything, because
+    relevance has the same answer every time.
+
+    Then the fences this particular change reaches. Layer one is the heading line --
+    kind, name, where. Layer two is the rule beneath it, and the reason when the author
+    left one, marked with where it came from: a docstring is the author speaking and a
+    derived rule is the tool speaking, and a reader deciding whether to satisfy a fence
+    or move it needs to know which. Layer three is the source, printed only when it was
+    asked for.
     """
+    lines: list[str] = []
+    forced = result.get("in_force") or []
+    if forced:
+        # Printed first and printed whole. It is short, it is true of every change, and
+        # a reader who is about to be stopped by a lint rule or a Python floor is helped
+        # more by seeing it than by seeing a sixth ranked test. exp10 measured the
+        # population at 4-15 per repository, which is what makes "print it all" the
+        # cheap option rather than the reckless one.
+        lines.append(f"In force on every push: {len(forced)}")
+        for gate in forced:
+            # Same two-line shape as a guard below -- what and where on the heading,
+            # the rule beneath it -- so the eye reads one block, not two formats.
+            lines.append(f"\n  {gate['kind'].upper():11}  {gate['name']}"
+                         f"   {gate['path']}")
+            lines.append(f"    runs     {gate['rule']}")
+        lines.append("")
+
     found = result.get("guards") or []
     total = result.get("total_in_reach", len(found))
     if not found:
-        lines = ["Guards: none in reach of this change"]
+        lines.append("Guards: none in reach of this change")
     else:
         more = f", showing {len(found)}" if total > len(found) else ""
-        lines = [f"Guards: {total} in reach of this change{more}"]
+        lines.append(f"Guards: {total} in reach of this change{more}")
     for entry in found:
         lines.append(f"\n  {entry['kind'].upper():11}  {entry['name'] or '—'}"
                      f"   {entry['path']}:{entry['line']}")

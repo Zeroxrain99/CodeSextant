@@ -56,7 +56,11 @@ from experiments import corpus  # noqa: E402
 KINDS = ("ci_check", "lint_rule", "hook", "db_constraint")
 
 _JOB = re.compile(r"^  ([A-Za-z_][\w-]*):\s*$")
-_HOOK = re.compile(r"^\s*-\s*id:\s*(\S+)")
+# MULTILINE is load-bearing and was missing in the first version: without it ``^`` only
+# matches the start of the string, so ``findall`` over a whole file returns at most one
+# hook. It reported zero pre-commit hooks in every repository and the conclusion drawn
+# from that -- "this kind does not exist in the corpus" -- was false in five of seven.
+_HOOK = re.compile(r"^\s*-\s*id:\s*(\S+)", re.MULTILINE)
 _CONSTRAINT = re.compile(
     r"\b(NOT\s+NULL|UNIQUE|CHECK\s*\(|PRIMARY\s+KEY|FOREIGN\s+KEY)\b", re.IGNORECASE)
 

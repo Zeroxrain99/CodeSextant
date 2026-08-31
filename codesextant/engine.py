@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 from . import (
     cochange,
     diffscan,
+    gates,
     namegraph,
     project_state,
     storage,
@@ -2435,11 +2436,13 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
         found_changes = diffscan.changed_files(abs_path, base=base, staged=staged)
         if found_changes is None:
             return {"project_key": storage.project_key(abs_path), "guards": [],
+                    "in_force": [gate.as_row() for gate in gates.in_force(abs_path)],
                     "notes": ["guards needs a Git worktree, or a --target to ask about."],
                     "approx_tokens": 0, "truncated_by_budget": False}
         changed = found_changes
         if not changed:
             return {"project_key": storage.project_key(abs_path), "guards": [],
+                    "in_force": [gate.as_row() for gate in gates.in_force(abs_path)],
                     "notes": ["Nothing has changed, so there is no fence to meet yet. "
                               "Pass --target to ask about a file before editing it."],
                     "approx_tokens": 0, "truncated_by_budget": False}
@@ -2456,6 +2459,7 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
                         item["name"] for item
                         in _changed_definitions(store, abs_file, ranges["added"]))
 
+    in_force = [gate.as_row() for gate in gates.in_force(abs_path)]
     reach = _guard_reach(abs_path, changed, symbols_changed, notes)
     history = _guard_history_reach(abs_path, changed)
     importers = _guard_importer_reach(abs_path, changed, notes)
@@ -2478,6 +2482,12 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
     result = {
         "project_key": storage.project_key(abs_path),
         "changed_files": sorted(changed),
+        # Everything that runs against a push, whatever the change is. Kept apart from
+        # `guards` rather than merged into it because the claim is different in kind:
+        # these are not retrieved, ranked or filtered for relevance -- exp10 found the
+        # population is 4-15 per repository and applies to everything, so relevance has
+        # the same answer every time and asking the question is the waste.
+        "in_force": in_force,
         "guards": ranked[:_GUARDS_SHOWN],
         "total_in_reach": total,
         "notes": notes,
