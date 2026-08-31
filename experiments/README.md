@@ -15,6 +15,7 @@ python -m experiments.exp3_reuse          # is the equivalent definition surface
 python -m experiments.exp4_check          # hold a file out of a commit: does check name it?
 python -m experiments.exp5_caller_gap     # where does the caller section lose?
 python -m experiments.exp6_caller_candidates   # which repair for it is worth building?
+python -m experiments.exp7_preflight_dependents # does preflight want the same repair?
 ```
 
 The corpus is cloned on first run into `~/.cache/codesextant-corpus`, or wherever
@@ -137,6 +138,31 @@ Every candidate is scored at the length `check` already prints. A predictor nami
 files reaches three times the recall and stops being read — exp1's finding, and the
 ground exp4 rejected a caller candidate on.
 
+## exp7 — does preflight want the same repair?
+
+`check` gained a module-level tier in 0.26.0 on measured grounds. preflight had not, and
+the result does not transfer for free: `check` reads a diff and knows every symbol that
+moved, while preflight is asked before the edit, about one file and one name, and the
+name may not exist yet.
+
+exp2 asked this first and answered half of it. As a *tier*, module dependents are more
+precise than the leads tier they would replace; as a *whole answer*, exp2 could not
+separate swapping from adding from doing nothing. exp2 also says plainly that its ground
+truth is loose — it scores against "files that changed in the same commit".
+
+So exp7 asks the same question on exp4's protocol, which was built for exactly this
+reason. One file of a real commit is held out as the thing the author forgot. The
+repository is checked out at the parent and **nothing is applied**, because that is where
+preflight runs. preflight is then asked about the files the commit did change, with the
+symbols it changed in them, and scored on whether it names the held-out file. Three whole
+answers are compared, because a ship decision is between whole answers: what preflight
+prints today, the same with the leads tier swapped for module dependents, and the same
+with both.
+
+Sampling requires **two** Python files in a commit rather than exp4's one: one is held
+out and the rest are what preflight gets asked about, so a commit touching a single
+module contains no query.
+
 ## What these experiments changed
 
 Two defects and one improvement came out of running them, which is the reason to have
@@ -167,13 +193,19 @@ run them:
    0.094 for resolved callers — so `check` grew a DEPENDENTS tier, marked `?` and kept
    apart from the resolved callers. exp6 measured it before it was built, and again
    afterwards through the shipped code path.
+6. **preflight then wanted the same tier, added rather than swapped in.** exp7 asked
+   the held-out-file question of preflight and separated three whole answers that exp2
+   could not: adding module dependents beside the leads is +0.036 [+0.018, +0.065] held
+   out, while replacing the leads with them is +0.004 and not established. The leads
+   stay, and the third tier is the only one of the three that says anything about a
+   symbol that does not exist yet.
 
 ---
 
 # Results
 
 Run on 2026-08-31. exp1 to exp3 on CodeSextant 0.24.0, exp4 on 0.25.0, exp5 and
-exp6 on 0.26.0. Reproduce with the commands at the top.
+exp6 on 0.26.0, exp7 on 0.27.0. Reproduce with the commands at the top.
 
 ## exp1 — co-change against three baselines
 
@@ -514,6 +546,46 @@ Its effect on retrieval, measured paired on the same 176 cases before and after:
 cases gained, 0 lost, +0.017 [+0.000, +0.040], not established.** It is justified as a
 correctness fix, not as a recall improvement, and the difference between those two
 claims is the kind this directory exists to keep straight.
+
+## exp7 — preflight, asked the held-out-file question
+
+150 commits sampled per repository, 525 scored cases, all six repositories. `now` is
+what preflight prints today (resolved callers plus the leads tier as the token budget
+leaves it); `swap` replaces the leads with module dependents; `both` adds them beside;
+`shipped` is what the code now actually returns, which differs from `both` only in
+passing over files the symbol-level tiers already named.
+
+| | derivation (247) | held out (278) | all six (525) |
+|---|---|---|---|
+| blast radius, `now` | 0.344 | 0.183 | 0.259 |
+| blast radius, `shipped` | 0.405 | 0.230 | 0.312 |
+| paired difference | **+0.061** [+0.032, +0.093] | **+0.047** [+0.025, +0.072] | **+0.053** [+0.034, +0.074] |
+| whole answer, `now` | 0.506 | 0.385 | 0.442 |
+| whole answer, `shipped` | 0.538 | 0.421 | 0.476 |
+| paired difference | **+0.032** [+0.012, +0.057] | **+0.036** [+0.018, +0.061] | **+0.034** [+0.019, +0.051] |
+| files named, whole answer | 4.3 → 5.3 | 5.3 → 6.2 | 4.8 → 5.7 |
+
+**Add, do not swap, and the corpus is clear about which.** Replacing the leads tier is
++0.004 held out and −0.010 pooled, neither established; adding beside it is established
+on both halves of the corpus. As a tier on its own, `dependents@2` beats `leads@3` by
+**+0.072** [+0.025, +0.119] held out at the same length — but the leads still earn their
+place in the union, which is what a ship decision is about, and jinja is on record as the
+repository where the unconfirmed symbol-level tier is the useful one.
+
+The `shipped` row was produced by the code that runs, not by the prototype: it reproduces
+`both` to within a thousandth on both halves.
+
+**One caveat, stated rather than buried.** The whole-answer rows model the two blast-radius
+tiers at the lengths preflight really prints, but the run used a large token budget, so
+co-change was never trimmed by it. The blast-radius rows carry no such assumption and point
+the same way, which is why the conclusion does not rest on the whole-answer rows alone.
+
+**Cost.** +2.3 ms on a 10 ms warm preflight, one byte-level pass over the project's Python
+files with the same early rejection as `name_sweep`.
+
+**Where it matters most is the case the other two tiers cannot reach at all.** Ask preflight
+about a function you are about to add and both symbol-level tiers are empty by construction
+— nothing to resolve, nothing to name — while the file's importers are there to be read.
 
 ## What these experiments do not establish
 

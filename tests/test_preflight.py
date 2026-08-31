@@ -1007,3 +1007,82 @@ def test_below_that_threshold_every_match_is_listed_not_sampled(repo):
 
     found = engine.preflight(str(repo), "mod0.py", symbol="__init__")["already_exists"]
     assert len(found) == 6, "all of them, or none of them, never an arbitrary subset"
+
+
+# The module-level half of "who breaks", added in 0.27.0 after check gained it in 0.26.0.
+#
+# Measured over 525 held-out-file cases in six repositories: adding this tier beside
+# the two symbol-level ones is +0.050 [+0.029, +0.076] on the blast radius and +0.040
+# [+0.018, +0.065] on the whole answer, while *replacing* the leads tier with it is
+# +0.004 and not established. So it is added, and the leads stay.
+
+def test_a_file_importing_the_module_is_named_when_nothing_resolves(repo):
+    """``report`` reaches ``parse`` through getattr, so no resolver can confirm it.
+
+    That is the case this tier is for. The import is still there to be read, and the
+    file still has to change when the module does.
+    """
+    _commit(repo, "seed", {
+        "pkg/__init__.py": "",
+        "pkg/parser.py": "def parse(raw):\n    return raw\n",
+        "pkg/report.py": "from pkg import parser\n\n\ndef report(raw, name):\n"
+                         "    return getattr(parser, name)(raw)\n",
+    })
+    engine.index_project(str(repo), force=True)
+
+    blast = engine.preflight(str(repo), "pkg/parser.py",
+                             symbol="parse")["blast_radius"]
+
+    assert blast["dependent_files"] == [], "getattr resolves to nothing, correctly"
+    assert [entry["path"] for entry in blast["module_dependents"]] == ["pkg/report.py"]
+
+
+def test_the_three_tiers_stay_three_claims_in_the_rendering(repo):
+    """Resolved, named, imported: marked apart, because they are not the same claim."""
+    _commit(repo, "seed", {
+        "pkg/__init__.py": "",
+        "pkg/parser.py": "def parse(raw):\n    return raw\n",
+        "pkg/user.py": "from pkg import parser\n\n\ndef go(raw, name):\n"
+                       "    return getattr(parser, name)(raw)\n",
+    })
+    engine.index_project(str(repo), force=True)
+
+    result = engine.preflight(str(repo), "pkg/parser.py", symbol="parse")
+    text = "\n".join(render.preflight_lines(result, str(repo)))
+
+    assert "BLAST RADIUS" in text
+    assert "import the module" in text
+    assert "?  pkg/user.py   (imports this module)" in text
+
+
+def test_a_module_everything_imports_lists_nothing_and_says_so(repo):
+    """Two of forty importers would be an arbitrary two, as with the common-name cutoff."""
+    files = {"pkg/__init__.py": "", "pkg/core.py": "def run():\n    return 1\n"}
+    for n in range(25):
+        files[f"pkg/user{n}.py"] = f"import pkg.core\n\nX{n} = {n}\n"
+    _commit(repo, "seed", files)
+    engine.index_project(str(repo), force=True)
+
+    result = engine.preflight(str(repo), "pkg/core.py", symbol="run")
+
+    assert result["blast_radius"]["module_dependents"] == []
+    assert any("import this module" in note for note in result["notes"])
+
+
+def test_the_weakest_tier_is_the_first_one_the_budget_takes(repo):
+    """A resolved caller outlives a lead, and a lead outlives an importer."""
+    _commit(repo, "seed", {
+        "pkg/__init__.py": "",
+        "pkg/parser.py": "def parse(raw):\n    return raw\n",
+        "pkg/user.py": "from pkg import parser\n\n\ndef go(raw, name):\n"
+                       "    return getattr(parser, name)(raw)\n",
+    })
+    engine.index_project(str(repo), force=True)
+
+    roomy = engine.preflight(str(repo), "pkg/parser.py", symbol="parse",
+                             token_budget=100_000)
+    assert roomy["blast_radius"]["module_dependents"], "the tier is there to be trimmed"
+
+    tight = engine.preflight(str(repo), "pkg/parser.py", symbol="parse", token_budget=60)
+    assert tight["blast_radius"]["module_dependents"] == []
+    assert tight["truncated_by_budget"] is True

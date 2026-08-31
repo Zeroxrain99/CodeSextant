@@ -1727,6 +1727,42 @@ def _ensure_blast_radius(abs_path: str, abs_target: str, symbol: str | None, *,
     return decided("resolved", "")
 
 
+def _module_dependents_for(abs_path: str, relative: str | None, named,
+                           notes: list) -> list[dict]:
+    """Files importing the module being edited, for preflight's blast radius.
+
+    check asks this of a whole diff and this asks it of one file, but it is the same
+    claim and it is bounded the same way: at most ``_DEPENDENTS_SHOWN``, and none at all
+    past ``_DEPENDENTS_MAX`` importers, where any two would be an arbitrary two.
+
+    Files the symbol-level tiers already named are passed over. They are the stronger
+    statement about the same file, and a slot spent repeating one is a slot not spent on
+    a file neither tier reached -- which is the whole reason this tier is here.
+    """
+    if not relative or not relative.endswith(".py"):
+        return []
+    try:
+        found = references.module_dependents(
+            abs_path, [relative], skip={relative}, limit=_DEPENDENTS_MAX + 1)
+    except OSError as exc:
+        notes.append(f"Module dependents could not be scanned ({type(exc).__name__}).")
+        return []
+    if not found:
+        return []
+    if len(found) > _DEPENDENTS_MAX:
+        notes.append(
+            f"More than {_DEPENDENTS_MAX} files import this module, so no dependents "
+            "are listed: at that width any two of them would be an arbitrary two.")
+        return []
+    already = {os.path.normcase(os.path.abspath(p)) for p in named}
+    ranked = sorted((path for path in found
+                     if os.path.normcase(os.path.abspath(os.path.join(abs_path, path)))
+                     not in already),
+                    key=lambda path: (-found[path], path))
+    return [{"path": path, "imports": found[path]}
+            for path in ranked[:_DEPENDENTS_SHOWN]]
+
+
 def _read_blast_radius(store, abs_target: str, symbol: str | None) -> tuple[list[str], int]:
     """Files with resolved references into the target, and the project-wide edge total."""
     if symbol:
@@ -1809,6 +1845,15 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     leads = [m for m in resolution["name_match_files"]
              if os.path.normcase(os.path.abspath(m)) not in resolved_set]
 
+    # The same module-level question check asks, asked here about the file rather than
+    # about a diff. Added beside the two symbol-level tiers rather than replacing the
+    # leads: measured over 525 held-out-file cases, adding it is +0.050 [+0.029, +0.076]
+    # on the blast radius and +0.040 [+0.018, +0.065] on the whole answer, while
+    # swapping it for the leads is +0.004 and not established. The leads earn their
+    # place -- jinja is the evidence -- and this earns a place beside them.
+    module_dependents = _module_dependents_for(
+        abs_path, relative, {*dependents, *leads}, notes)
+
     if symbol and shared_name_count > _common_name_max():
         notes.append(
             f"{shared_name_count} definitions in this project are named {symbol!r}. "
@@ -1850,6 +1895,10 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
             # avoid, so the split is structural and the renderer marks them apart.
             "name_match_files": leads,
             "name_match_count": len(leads),
+            # A third tier and a third kind of claim: not "calls this symbol" and not
+            # "names this symbol", but "imports this module". Its own key so the
+            # renderer can mark it apart, for the reason directly above.
+            "module_dependents": module_dependents,
             "resolution": {"status": resolution["status"],
                            "reason": resolution["reason"],
                            "elapsed_sec": resolution["elapsed_sec"]},
@@ -1870,7 +1919,11 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     # because a lead is the weaker thing to lose.
     while result["approx_tokens"] > token_budget:
         blast = result["blast_radius"]
-        if len(blast["name_match_files"]) > 3:
+        if blast["module_dependents"]:
+            # Trimmed before either symbol-level tier: "imports this module" is the
+            # weakest of the three claims, so it is the cheapest one to lose.
+            blast["module_dependents"].pop()
+        elif len(blast["name_match_files"]) > 3:
             blast["name_match_files"].pop()
         elif len(blast["dependent_files"]) > 3:
             blast["dependent_files"].pop()

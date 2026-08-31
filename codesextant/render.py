@@ -69,11 +69,14 @@ def preflight_lines(result: dict, root: str | None = None) -> list[str]:
              if resolution.get("status") == "resolved" and resolution.get("elapsed_sec")
              else "")
     leads = blast.get("name_match_files") or []
-    if blast.get("dependent_files") or leads:
+    importers = blast.get("module_dependents") or []
+    if blast.get("dependent_files") or leads or importers:
         headline = (f"{blast['dependent_count']} file(s) with resolved references"
                     if blast.get("dependent_files") else "nothing resolved")
         if leads:
             headline += f"; {blast['name_match_count']} more name it"
+        if importers:
+            headline += f"; {len(importers)} import the module"
         lines.append(f"\n  BLAST RADIUS     {headline}{spent}")
         for dependent in blast.get("dependent_files") or []:
             lines.append(f"    {short(dependent, root)}")
@@ -82,6 +85,10 @@ def preflight_lines(result: dict, root: str | None = None) -> list[str]:
         # to avoid.
         for lead in leads:
             lines.append(f"    ?  {short(lead, root)}")
+        # A third claim again: these name the module, not the symbol. Marked and
+        # labelled rather than folded into the leads above them.
+        for importer in importers:
+            lines.append(f"    ?  {importer['path']}   (imports this module)")
 
     for note in result.get("notes") or []:
         lines.append(f"\n  Note: {note}")

@@ -94,10 +94,11 @@ python -m codesextant preflight . codesextant/storage.py --symbol project_key
      80%  (4/5 commits)  codesextant/engine.py
      60%  (3/5 commits)  codesextant/daemon.py
 
-  BLAST RADIUS     10 file(s) with resolved references; 2 more name it  (resolved in 1.4s)
+  BLAST RADIUS     10 file(s) with resolved references; 2 more name it; 1 imports the module  (resolved in 1.4s)
     codesextant/engine.py
     ...
     ?  codesextant/daemon.py
+    ?  codesextant/panel.py   (imports this module)
 ```
 
 The last section used to be empty on the call where it mattered most. Resolved references only accumulate as `references` runs, so on a fresh index there were none, and "no callers" and "nobody has looked" printed identically. With `--symbol`, preflight now resolves that one symbol itself — but only after measuring what it would cost, because a check worth running before every edit has to be one you never stop to think about. A text sweep counts the files naming the symbol first, at about seven microseconds each; resolution costs roughly a tenth of a second per file, so 25 files is the default ceiling for doing it inline. Above that preflight declines, reports the files that name the symbol as leads rather than callers, and says which limit it hit.
@@ -105,6 +106,8 @@ The last section used to be empty on the call where it mattered most. Resolved r
 That same sweep is what makes caching the expensive half safe, and it is the reason the cache is not keyed to the file being edited. **A caller has to name the symbol**, so the files naming it are a complete superset of the possible callers: if none of them has changed and no new one has appeared, no caller can have appeared either. Keying the cache to the definition instead — the obvious choice — goes stale silently the moment a caller is added in some *other* file, and keeps reporting a measured absence that stopped being true.
 
 Lines marked `?` are files that name the symbol without resolving to it. They are reported beside the confirmed callers, never merged into one list. Usually they are a same-named symbol elsewhere — but they are also what a caller reached through dynamic dispatch, a re-export or a registry looks like, because no static resolver can follow those.
+
+The last `?` line is a third claim again: a file that imports the *module*, which is weaker still than naming the symbol and is the only one of the three that says anything when the symbol does not exist yet. Ask preflight about a function you are about to add and both symbol-level tiers are empty by construction — there is nothing to resolve and nothing to name — while the file's importers are there to be read. Measured by holding one file out of 525 real commits and asking preflight what the change forgot, adding this tier takes the blast radius from 0.183 to 0.230 and the whole answer from 0.385 to 0.421 on three repositories nothing was tuned against. *Replacing* the leads with it was measured too and is not supported: +0.004, not established. So it is added, and the leads stay.
 
 `--resolve yes` spends whatever it takes for the exact answer; `--resolve no` reads only what is already stored, and is the one mode that skips the sweep.
 

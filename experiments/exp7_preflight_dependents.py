@@ -52,7 +52,12 @@ from experiments import corpus  # noqa: E402
 from experiments.exp4_check import paired_difference  # noqa: E402
 
 PREDICTORS = ("resolved", "leads@3", "dependents@2", "now", "swap", "both",
-              "whole_now", "whole_swap", "whole_both")
+              "whole_now", "whole_swap", "whole_both",
+              # What preflight really returns, so the candidate is scored as the code
+              # that runs rather than as the prototype that argued for it. It differs
+              # from "both" in passing over files the symbol-level tiers already named,
+              # which can only add, and the two are reported side by side.
+              "shipped", "whole_shipped")
 # The same shape exp2 samples, so the two are describing one workload.
 MAX_FILES = 3
 MAX_SYMBOLS = 2
@@ -122,6 +127,10 @@ def _score_one(repo: str, home: str, sha: str, files: set[str],
                 predicted["whole_now"] |= resolved | leads | companions
                 predicted["whole_swap"] |= resolved | dependents | companions
                 predicted["whole_both"] |= resolved | leads | dependents | companions
+                shipped = {entry["path"] for entry
+                           in blast.get("module_dependents") or []}
+                predicted["shipped"] |= resolved | leads | shipped
+                predicted["whole_shipped"] |= resolved | leads | shipped | companions
                 asked = True
         if not asked:
             return 0
@@ -194,7 +203,9 @@ def _print(report: dict) -> None:
               f"{report['sizes'][name] / total:8.1f}")
     print("  paired differences (same cases, so the difference is the statistic):")
     for left, right in (("dependents@2", "leads@3"), ("swap", "now"), ("both", "now"),
-                        ("whole_swap", "whole_now"), ("whole_both", "whole_now")):
+                        ("shipped", "now"),
+                        ("whole_swap", "whole_now"), ("whole_both", "whole_now"),
+                        ("whole_shipped", "whole_now")):
         delta = paired_difference(report["outcomes"][left], report["outcomes"][right])
         if not delta:
             continue
