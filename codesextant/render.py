@@ -62,11 +62,24 @@ def preflight_lines(result: dict, root: str | None = None) -> list[str]:
                 f"({entry['support']}/{entry['changes']} commits)  {marker}-> {entry['path']}")
 
     blast = result.get("blast_radius") or {}
+    resolution = blast.get("resolution") or {}
+    # When preflight spent real time resolving, say how much. A cost that only shows up
+    # as the call feeling slow is a cost nobody can decide about.
+    spent = (f"  (resolved in {resolution['elapsed_sec']}s)"
+             if resolution.get("status") == "resolved" and resolution.get("elapsed_sec")
+             else "")
     if blast.get("dependent_files"):
         lines.append(f"\n  BLAST RADIUS     {blast['dependent_count']} file(s) with "
-                     "resolved references")
+                     f"resolved references{spent}")
         for dependent in blast["dependent_files"]:
             lines.append(f"    {short(dependent, root)}")
+    elif blast.get("name_match_files"):
+        # Leads are marked so they cannot be read as callers. Merging the two lists
+        # would be the inflation of confidence this tool exists to avoid.
+        lines.append(f"\n  BLAST RADIUS     nothing resolved{spent}; "
+                     f"{blast['name_match_count']} file(s) name it")
+        for lead in blast["name_match_files"]:
+            lines.append(f"    ?  {short(lead, root)}")
 
     for note in result.get("notes") or []:
         lines.append(f"\n  Note: {note}")

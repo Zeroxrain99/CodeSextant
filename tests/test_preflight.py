@@ -14,7 +14,7 @@ import textwrap
 
 import pytest
 
-from codesextant import cochange, engine, storage
+from codesextant import cochange, engine, render, storage
 
 
 def _run(repo, *args):
@@ -138,7 +138,12 @@ def test_a_genuinely_new_name_is_reported_as_new(repo):
     result = engine.preflight(str(repo), "app.py", symbol="quantum_flux_capacitor")
 
     assert result["already_exists"] == []
-    assert any("looks new" in note for note in result["notes"])
+    # And the note says what kind of check that was. "It looks new" was an overclaim:
+    # nothing here compared shape, so an equivalent under an unrelated name would have
+    # passed the same check.
+    note = next(n for n in result["notes"] if "quantum_flux_capacitor" in n)
+    assert "name check" in note
+    assert "find_duplicates" in note
 
 
 def test_one_shared_common_word_is_not_a_reuse_candidate(repo):
@@ -179,8 +184,11 @@ def test_each_section_reports_the_evidence_behind_it(repo):
     assert rule["support"] == 3 and rule["changes"] == 3 and rule["confidence"] == 1.0
     assert result["cochange_stats"]["commits_used"] >= 3
     # Blast radius must not imply "nothing calls this" when nothing has been resolved yet.
+    # Without a symbol there is nothing bounded to resolve, so the note has to say that
+    # the section is empty for lack of asking rather than for lack of callers.
     assert result["blast_radius"]["resolved_edges_project_wide"] == 0
-    assert any("only fills in as find_references runs" in n for n in result["notes"])
+    assert result["blast_radius"]["resolution"]["status"] == "no-symbol"
+    assert any("lack of asking rather than lack of callers" in n for n in result["notes"])
 
 
 def test_a_project_without_git_still_answers(tmp_path, monkeypatch):
@@ -588,3 +596,256 @@ def test_thresholds_apply_without_re_reading_history(repo, monkeypatch):
 
     monkeypatch.setattr(cochange, "read_commits", refuse)
     assert engine.preflight(str(repo), "mod.py")["co_change"] == []
+
+
+# The blast radius, on the call where it matters: the first one.
+
+def _blast(result) -> dict:
+    return result["blast_radius"]
+
+
+def _seed_caller_and_callee(repo):
+    """core.py defines load_settings; app.py and web.py import and call it."""
+    _commit(repo, "seed", {
+        "core.py": "def load_settings(path):\n    return {'path': path}\n",
+        "app.py": ("from core import load_settings\n\n\n"
+                   "def main():\n    return load_settings('x')\n"),
+        "web.py": ("from core import load_settings\n\n\n"
+                   "def serve():\n    return load_settings('y')\n"),
+    })
+    engine.index_project(str(repo), force=True)
+
+
+def test_the_first_ask_resolves_instead_of_reporting_an_empty_radius(repo):
+    """The refs table starts empty, so this section used to be worthless when it mattered.
+
+    A blast radius that is only populated after you have separately run find_references
+    is a blast radius that is empty on the one call that happens before the edit.
+    """
+    _seed_caller_and_callee(repo)
+
+    result = engine.preflight(str(repo), "core.py", symbol="load_settings")
+
+    blast = _blast(result)
+    assert blast["resolution"]["status"] == "resolved"
+    assert sorted(os.path.basename(p) for p in blast["dependent_files"]) == [
+        "app.py", "web.py"]
+    assert blast["dependent_count"] == 2
+
+
+def test_a_resolved_absence_reads_differently_from_an_unasked_question(repo):
+    """"Nothing calls this" and "nobody looked" print the same and mean opposites."""
+    _commit(repo, "seed", {
+        "core.py": "def orphan_helper():\n    return 1\n",
+        "app.py": "def main():\n    return 2\n",
+    })
+    engine.index_project(str(repo), force=True)
+
+    result = engine.preflight(str(repo), "core.py", symbol="orphan_helper")
+
+    blast = _blast(result)
+    assert blast["resolution"]["status"] == "resolved"
+    assert blast["dependent_files"] == []
+    note = next(n for n in result["notes"] if "orphan_helper" in n)
+    assert "measured absence" in note
+
+
+def test_the_second_ask_does_not_pay_for_resolution_again(repo, monkeypatch):
+    """Cheap enough to call every time is the property that makes it get called."""
+    _commit(repo, "seed", {"core.py": "def orphan_helper():\n    return 1\n"})
+    engine.index_project(str(repo), force=True)
+    assert engine.preflight(str(repo), "core.py",
+                            symbol="orphan_helper")["blast_radius"]["resolution"][
+                                "status"] == "resolved"
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("an answer already resolved must not be resolved again")
+
+    monkeypatch.setattr(engine, "find_references", refuse)
+    again = engine.preflight(str(repo), "core.py", symbol="orphan_helper")
+    assert _blast(again)["resolution"]["status"] == "cached"
+    assert "measured absence" in next(n for n in again["notes"] if "orphan_helper" in n)
+
+
+def test_editing_the_definition_makes_it_resolve_again(repo):
+    """A cached "no callers" describes one revision of the file, not the file."""
+    _commit(repo, "seed", {"core.py": "def orphan_helper():\n    return 1\n"})
+    engine.index_project(str(repo), force=True)
+    engine.preflight(str(repo), "core.py", symbol="orphan_helper")
+
+    _commit(repo, "edit", {"core.py": "def orphan_helper():\n    return 99\n"})
+    engine.index_project(str(repo))
+
+    result = engine.preflight(str(repo), "core.py", symbol="orphan_helper")
+    assert _blast(result)["resolution"]["status"] == "resolved"
+
+
+def test_a_symbol_that_does_not_exist_yet_costs_nothing(repo, monkeypatch):
+    """The commonest preflight of all: about to add something. There is nothing to resolve."""
+    _commit(repo, "seed", {"core.py": "def load_settings(path):\n    return 1\n"})
+    engine.index_project(str(repo), force=True)
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a symbol with no definition has no callers to resolve")
+
+    monkeypatch.setattr(engine, "find_references", refuse)
+    result = engine.preflight(str(repo), "core.py", symbol="brand_new_thing")
+
+    blast = _blast(result)
+    assert blast["resolution"]["status"] == "undefined-in-target"
+    assert blast["name_match_count"] == 0, "no sweep is worth paying for either"
+    assert any("not defined in this file yet" in n for n in result["notes"])
+
+
+def test_a_name_in_too_many_files_is_declined_and_says_what_it_cost(repo, monkeypatch):
+    """The cost is measured before it is spent, and the measurement is the reason given."""
+    _seed_caller_and_callee(repo)
+    monkeypatch.setenv("CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES", "1")
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("resolution must not run once it has been declined")
+
+    monkeypatch.setattr(engine, "find_references", refuse)
+    result = engine.preflight(str(repo), "core.py", symbol="load_settings")
+
+    blast = _blast(result)
+    assert blast["resolution"]["status"] == "declined"
+    assert "above the inline limit of 1" in blast["resolution"]["reason"]
+    # Declining must still leave something usable behind, or the section is worth
+    # nothing again -- which was the whole complaint.
+    assert sorted(os.path.basename(p) for p in blast["name_match_files"]) == [
+        "app.py", "web.py"]
+    note = next(n for n in result["notes"] if "not resolved" in n)
+    assert "leads, not callers" in note
+
+
+def test_leads_are_never_presented_as_callers(repo, monkeypatch):
+    """Merging the two lists would be the exact inflation this tool exists to avoid."""
+    _seed_caller_and_callee(repo)
+    monkeypatch.setenv("CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES", "1")
+    result = engine.preflight(str(repo), "core.py", symbol="load_settings")
+
+    blast = _blast(result)
+    assert blast["dependent_files"] == [] and blast["dependent_count"] == 0
+    assert blast["name_match_files"], "the leads are still reported, just separately"
+    text = "\n".join(render.preflight_lines(result, str(repo)))
+    assert "nothing resolved" in text
+    assert "?  app.py" in text
+
+
+def test_a_lead_list_never_includes_the_file_being_edited(repo, monkeypatch):
+    """A file naming the symbol it defines is not a lead about itself."""
+    _seed_caller_and_callee(repo)
+    monkeypatch.setenv("CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES", "1")
+    blast = _blast(engine.preflight(str(repo), "core.py", symbol="load_settings"))
+    assert not any(os.path.basename(p) == "core.py" for p in blast["name_match_files"])
+
+
+def test_resolve_yes_spends_what_the_limit_would_have_saved(repo, monkeypatch):
+    """A caller who wants the exact answer can say so and pay for it."""
+    _seed_caller_and_callee(repo)
+    monkeypatch.setenv("CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES", "0")
+
+    declined = engine.preflight(str(repo), "core.py", symbol="load_settings")
+    assert _blast(declined)["resolution"]["status"] == "declined"
+
+    forced = engine.preflight(str(repo), "core.py", symbol="load_settings",
+                              resolve="yes")
+    assert _blast(forced)["resolution"]["status"] == "resolved"
+    assert sorted(os.path.basename(p) for p in _blast(forced)["dependent_files"]) == [
+        "app.py", "web.py"]
+
+
+def test_resolve_no_does_no_extra_work_at_all(repo, monkeypatch):
+    """The escape hatch has to actually be an escape, sweep included."""
+    _seed_caller_and_callee(repo)
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("resolve=no must not resolve")
+
+    monkeypatch.setattr(engine, "find_references", refuse)
+    monkeypatch.setattr(engine.references, "candidate_files", refuse)
+    blast = _blast(engine.preflight(str(repo), "core.py", symbol="load_settings",
+                                   resolve="no"))
+    assert blast["resolution"]["status"] == "off"
+    assert blast["name_match_files"] == []
+
+
+def test_a_language_without_import_resolution_says_so(repo, monkeypatch):
+    """Running a resolver that cannot resolve would spend the time and change nothing."""
+    _commit(repo, "seed", {
+        "core.go": "package main\n\nfunc LoadSettings() int {\n\treturn 1\n}\n",
+        "app.go": "package main\n\nfunc main() {\n\t_ = LoadSettings()\n}\n",
+    })
+    engine.index_project(str(repo), force=True)
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a language with no resolver must not be resolved")
+
+    monkeypatch.setattr(engine, "find_references", refuse)
+    result = engine.preflight(str(repo), "core.go", symbol="LoadSettings")
+
+    blast = _blast(result)
+    assert blast["resolution"]["status"] == "unsupported"
+    assert "go" in blast["resolution"]["reason"]
+    assert [os.path.basename(p) for p in blast["name_match_files"]] == ["app.go"]
+
+
+def test_a_resolution_failure_costs_the_section_not_the_answer(repo):
+    """Three sections; the expensive one failing must not take the other two down."""
+    for n in range(4):
+        _commit(repo, f"pair {n}", {
+            "core.py": f"def load_settings():\n    return {n}\n",
+            "settings.toml": f"value = {n}\n",
+        })
+    engine.index_project(str(repo), force=True)
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("jedi fell over")
+
+    original = engine.find_references
+    engine.find_references = explode
+    try:
+        result = engine.preflight(str(repo), "core.py", symbol="load_settings")
+    finally:
+        engine.find_references = original
+
+    assert _blast(result)["resolution"]["status"] == "failed"
+    assert "jedi fell over" in _blast(result)["resolution"]["reason"]
+    assert result["already_exists"], "the reuse check still answered"
+    assert result["co_change"], "and so did co-change"
+
+
+def test_leads_and_confirmed_callers_are_never_reported_together(repo):
+    """Leads exist to fill an empty answer, not to pad a real one.
+
+    Listing "these two files call it, and these five mention it" invites reading the
+    seven as one set, which is the confidence inflation the split was meant to prevent.
+    """
+    _seed_caller_and_callee(repo)
+    blast = _blast(engine.preflight(str(repo), "core.py", symbol="load_settings"))
+    assert blast["dependent_files"] and not blast["name_match_files"]
+
+
+def test_the_budget_spends_the_lead_list_before_the_explanations(repo, monkeypatch):
+    """A budget must shorten evidence, never the account of what the evidence is."""
+    files = {"core.py": "def load_settings():\n    return 1\n"}
+    for n in range(12):
+        files[f"user{n}.py"] = ("from core import load_settings\n\n\n"
+                                f"def use{n}():\n    return load_settings()\n")
+    _commit(repo, "seed", files)
+    engine.index_project(str(repo), force=True)
+
+    monkeypatch.setenv("CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES", "1")
+    full = engine.preflight(str(repo), "core.py", symbol="load_settings",
+                            token_budget=10_000)
+    assert len(_blast(full)["name_match_files"]) == 12, "12 leads before any trimming"
+
+    trimmed = engine.preflight(str(repo), "core.py", symbol="load_settings",
+                               token_budget=300)
+
+    assert trimmed["truncated_by_budget"] is True
+    assert trimmed["approx_tokens"] < full["approx_tokens"]
+    # Leads are spent down to nothing before a confirmed caller is touched. Here there
+    # are none to protect, so the check is that the leads are what paid for the budget.
+    assert _blast(trimmed)["name_match_files"] == []

@@ -100,16 +100,25 @@ reuses it rather than starting anything.
      `file` entry for the same companion. Symbol scope needs a definition that has been
      edited a few times, so a new or rarely touched one falls back to file scope, which
      is never worse than having asked nothing.
-   - `blast_radius` — files with resolved references into this one.
+   - `blast_radius` — files with resolved references into this one. When nothing has
+     been resolved for the symbol yet, preflight resolves it on the spot if a cost
+     measurement says that is cheap, and otherwise reports the files that *name* it as
+     leads with the reason it stopped short. Read `blast_radius.resolution.status`:
+     `resolved` and `cached` mean an empty list is a measured absence, while
+     `declined`, `unsupported` and `off` mean the question is still open and
+     `find_references` is the way to close it. `name_match_files` are leads, never
+     callers — they are kept in their own key precisely so they cannot be read as one
+     list with the confirmed ones.
 
    Every section states its own evidence, and a claim with weak evidence says so.
    Treat co-change as advice, not law: history records what people did, and a rule at
    100% over three commits is still three commits.
 
-5. Before changing a symbol in particular, call `cs.find_references(symbol, def_path=...)`
-   and `cs.impact(symbol, def_path=...)`. preflight's blast radius reads only edges
-   already resolved, so it under-reports until find_references has run; these two do the
-   real resolution.
+5. Before changing a symbol in particular, call `cs.impact(symbol, def_path=...)` for the
+   transitive picture: preflight resolves one hop, and impact follows the caller chain
+   and separates production code from tests. Call `cs.find_references(symbol,
+   def_path=...)` when preflight's resolution status was `declined`, `unsupported` or
+   `off` — that is preflight telling you the question is still open.
 
 ## Why preflight rather than remembering
 

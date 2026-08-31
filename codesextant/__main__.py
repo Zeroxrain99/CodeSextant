@@ -124,7 +124,7 @@ def cmd_map(args) -> int:
 
 def cmd_preflight(args) -> int:
     r = engine.preflight(args.path, args.file, symbol=args.symbol,
-                         token_budget=args.budget)
+                         token_budget=args.budget, resolve=args.resolve)
     if args.json:
         _emit(r, True)
         return 0
@@ -571,6 +571,10 @@ def _build_parser() -> argparse.ArgumentParser:
     pf.add_argument("--symbol", default=None,
                     help="the name you are about to add or change (enables the reuse check)")
     pf.add_argument("--budget", type=int, default=1200, help="token budget")
+    pf.add_argument("--resolve", choices=("auto", "yes", "no"), default="auto",
+                    help="resolve the symbol's references when none are recorded yet: "
+                         "auto measures the cost first and resolves when it is small, "
+                         "yes always resolves (slower, exact), no never does")
     pf.set_defaults(func=cmd_preflight)
 
     pmcp = sub.add_parser(

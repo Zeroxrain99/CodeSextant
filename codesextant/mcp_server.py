@@ -315,12 +315,15 @@ def _t_preflight(backend: Backend, arguments: dict) -> dict:
     target = _require_str(arguments, "file")
     symbol = _optional_str(arguments, "symbol")
     budget = _optional_int(arguments, "budget", 1200)
+    # Passed through uncoerced: the engine normalizes it, so "auto", true and "yes"
+    # cannot come to mean three different things on three surfaces.
+    resolve = arguments.get("resolve")
     return backend.execute(
         arguments,
         lambda client, project: client.preflight(
-            target, symbol=symbol, budget=budget, project=project),
+            target, symbol=symbol, budget=budget, project=project, resolve=resolve),
         lambda project: engine.preflight(
-            project, target, symbol=symbol, token_budget=budget),
+            project, target, symbol=symbol, token_budget=budget, resolve=resolve),
     )
 
 
@@ -417,7 +420,9 @@ TOOLS: tuple[Tool, ...] = (
             "with this one (tests, allowlists, fixtures, config: the obligations nothing "
             "in the source mentions), so you do not leave half the change undone;\n"
             "3. BLAST RADIUS - which files hold resolved references to it, so you know "
-            "what a change here breaks.\n"
+            "what a change here breaks. When nothing is recorded for the symbol yet, "
+            "preflight resolves it on the spot if that is cheap, and otherwise lists the "
+            "files that name it as leads and says why it stopped short.\n"
             "Pass `symbol` whenever you are adding or renaming a named thing; the reuse "
             "check is the half that has to happen before the code is written. Every claim "
             "comes with its evidence (similarity, commits supporting the rule, number of "
@@ -437,6 +442,12 @@ TOOLS: tuple[Tool, ...] = (
                            "description": "Approximate token ceiling for the answer "
                                           "(default 1200). Longest lists are trimmed "
                                           "first and the answer says when it trimmed."},
+                "resolve": {"type": "string", "enum": ["auto", "yes", "no"],
+                            "description": "What to do when the symbol has no resolved "
+                                           "references recorded. 'auto' (default) "
+                                           "measures the cost and resolves when it is "
+                                           "small; 'yes' always resolves, which is exact "
+                                           "but can take seconds; 'no' never does."},
                 "project": _PROJECT_ARG,
             },
             "required": ["file"],

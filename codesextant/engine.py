@@ -1454,8 +1454,185 @@ def _ensure_symbol_cochange(abs_path: str, relative: str) -> dict:
                 "reason": f"symbol mining failed ({type(exc).__name__}: {exc})"}
 
 
+# How many files may name a symbol before resolving it inline is too expensive.
+# Resolution costs on the order of a tenth of a second per file that names the symbol
+# (jedi resolves every occurrence back to the definition), while the sweep that counts
+# those files costs a fraction of a millisecond each. 25 keeps the worst case to a few
+# seconds and covers the overwhelming majority of symbols; 0 turns inline resolution off.
+_RESOLVE_MAX_FILES_DEFAULT = 25
+# Beyond this the sweep stops counting. A name in four hundred files is not a name a
+# per-symbol blast radius can say anything useful about, and finishing the count would
+# only make the answer slower without making it better.
+_SWEEP_LIMIT = 400
+
+
+def _resolve_max_files() -> int:
+    raw = os.environ.get("CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES", "").strip()
+    if not raw:
+        return _RESOLVE_MAX_FILES_DEFAULT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _RESOLVE_MAX_FILES_DEFAULT
+
+
+def _normalize_resolve(value) -> bool | str:
+    """Coerce a caller's resolve flag to True, False or "auto".
+
+    Normalized here rather than at each surface so the CLI flag, the query parameter
+    and the MCP argument cannot come to mean three slightly different things.
+    """
+    if value is None or value == "":
+        return "auto"
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    return "auto"
+
+
+def _resolvable_language(abs_target: str) -> str | None:
+    """The language name if this file's references can really be resolved, else None.
+
+    Everything outside this set degrades to name matching inside find_references, which
+    persists nothing: running it would spend the time and leave the blast radius exactly
+    where it started, which is worse than declining and saying why.
+    """
+    lang = symbols.language_for_file(abs_target)
+    if lang in (None, "python"):
+        return "python"
+    if lang in ("typescript", "javascript") and references.ts_morph_available():
+        return lang
+    return None
+
+
+def _ensure_blast_radius(abs_path: str, abs_target: str, symbol: str | None, *,
+                         resolve, has_edges: bool, already_resolved: bool,
+                         defined_here: bool) -> dict:
+    """Make the blast radius mean something on the first ask.
+
+    An empty blast radius used to carry two readings a caller could not tell apart:
+    nothing depends on this symbol, or nobody has resolved it yet. The refs table only
+    fills in as find_references runs, so on a fresh index the second reading was always
+    the true one -- the section was worth least on the call where it mattered most.
+
+    Resolution is not simply run every time, because preflight is only worth calling
+    before every edit if calling it is never a decision. The cost is driven by how many
+    files name the symbol, and that is measurable beforehand with a text sweep costing a
+    fraction of a millisecond per file. So: measure, resolve when the measurement says it
+    is cheap, and when it is not, hand back the sweep as leads and say what was not done.
+
+    ``resolve`` is True to resolve regardless of the measurement, False never, and
+    "auto" to let the measurement decide.
+
+    Returns {status, reason, name_match_files, name_match_count, name_match_truncated,
+    elapsed_sec}.
+    """
+    outcome: dict = {"status": "", "reason": "", "name_match_files": [],
+                     "name_match_count": 0, "name_match_truncated": False,
+                     "elapsed_sec": 0.0}
+
+    def decided(status: str, reason: str = "") -> dict:
+        outcome["status"] = status
+        outcome["reason"] = reason
+        return outcome
+
+    if has_edges:
+        return decided("recorded", "resolved edges are already stored for this file")
+    if symbol is None:
+        return decided("no-symbol", "resolution needs a symbol; without one every "
+                                    "definition in the file would have to be resolved")
+    if not defined_here:
+        # The common case for a new symbol. There is nothing to resolve yet, and saying
+        # so is more useful than an empty section that looks like a finding.
+        return decided("undefined-in-target",
+                       f"{symbol!r} is not defined in this file yet, so it has no callers "
+                       "to resolve")
+    if resolve is False:
+        # The escape hatch for a caller who wants preflight to do nothing beyond
+        # reading what is stored. It buys nothing else, including the sweep.
+        return decided("off", "resolution was turned off for this call")
+
+    # The sweep runs before the branch on whether resolution has already happened,
+    # because it is the fallback evidence in both cases. Without that, the first ask
+    # would list leads and the second -- answering from the same empty result -- would
+    # list none, which reads as the leads having gone away.
+    language = _resolvable_language(abs_target)
+    sweep_language = language or symbols.language_for_file(abs_target)
+    try:
+        matches = references.candidate_files(
+            abs_path, symbol, lang=sweep_language, limit=_SWEEP_LIMIT)
+    except Exception as exc:
+        return decided("failed", f"the name sweep failed ({type(exc).__name__}: {exc})")
+    # The file being edited names the symbol by definition; listing it as a lead to
+    # itself is noise.
+    matches = [m for m in matches
+               if os.path.normcase(os.path.abspath(m)) != os.path.normcase(abs_target)]
+    outcome["name_match_files"] = matches
+    outcome["name_match_count"] = len(matches)
+    outcome["name_match_truncated"] = len(matches) >= _SWEEP_LIMIT - 1
+
+    if already_resolved:
+        return decided("cached", "references were resolved for this exact file content")
+    if language is None:
+        return decided(
+            "unsupported",
+            f"CodeSextant has no import resolution for {sweep_language or 'this language'}"
+            + (", and the ts-morph bridge is not installed"
+               if sweep_language in ("typescript", "javascript") else ""))
+    cap = _resolve_max_files()
+    if resolve is not True and cap == 0:
+        return decided("declined", "inline resolution is switched off by "
+                                   "CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES=0")
+    if resolve is not True and len(matches) > cap:
+        counted = f"{len(matches)}{'+' if outcome['name_match_truncated'] else ''}"
+        return decided(
+            "declined",
+            f"{counted} file(s) name {symbol!r}, above the inline limit of {cap} "
+            "(CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES); resolving them would cost "
+            "seconds, and preflight is only worth calling if calling it is never a "
+            "decision")
+
+    started = time.perf_counter()
+    try:
+        find_references(abs_path, symbol, def_path=abs_target,
+                        include_low_confidence=False, persist=True)
+    except Exception as exc:
+        outcome["elapsed_sec"] = round(time.perf_counter() - started, 3)
+        # One of three sections, and the expensive one. A failure here costs the section,
+        # never the answer.
+        return decided("failed", f"resolution failed ({type(exc).__name__}: {exc})")
+    outcome["elapsed_sec"] = round(time.perf_counter() - started, 3)
+    try:
+        with storage.ProjectStore.open(abs_path) as store:
+            store.mark_symbol_references_resolved(abs_target, symbol)
+    except sqlite3.OperationalError:
+        # A busy index costs the marker, not the answer: the next call resolves again.
+        return decided("resolved", "resolved, but the result could not be marked as "
+                                   "current because the index was busy")
+    return decided("resolved", "")
+
+
+def _read_blast_radius(store, abs_target: str, symbol: str | None) -> tuple[list[str], int]:
+    """Files with resolved references into the target, and the project-wide edge total."""
+    if symbol:
+        rows = store.conn.execute(
+            "SELECT DISTINCT src_path FROM refs WHERE def_path=? AND symbol_name=? "
+            "AND confidence='high' ORDER BY src_path", (abs_target, symbol)).fetchall()
+    else:
+        rows = store.conn.execute(
+            "SELECT DISTINCT src_path FROM refs WHERE def_path=? AND confidence='high' "
+            "ORDER BY src_path", (abs_target,)).fetchall()
+    total = store.conn.execute(
+        "SELECT COUNT(*) AS n FROM refs WHERE confidence='high'").fetchone()["n"]
+    return [r["src_path"] for r in rows], total
+
+
 def preflight(path: str, target: str, *, symbol: str | None = None,
-              token_budget: int = 1200) -> dict:
+              token_budget: int = 1200, resolve="auto") -> dict:
     """Everything worth knowing before editing ``target``, in one answer.
 
     Parameters
@@ -1464,12 +1641,17 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     target : the file about to be changed.
     symbol : the name about to be added or changed. Supplying it turns on the reuse
              check, which is the half that has to happen before the code is written.
+    resolve : whether to resolve this symbol's references when none are recorded yet.
+             "auto" (the default) measures the cost first and resolves when it is
+             small; True resolves regardless; False never does. See
+             :func:`_ensure_blast_radius`.
 
     Returns {target, symbol, already_exists, co_change, blast_radius, notes,
     approx_tokens}. Each section states its own evidence, because all three are
     heuristics and a caller that cannot see the strength of a claim cannot weigh it.
     """
     abs_path = os.path.abspath(path)
+    resolve = _normalize_resolve(resolve)
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
         raise RuntimeError(
@@ -1496,35 +1678,34 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
         symbol_companions = (
             store.symbol_cochange_for(relative, symbol)
             if symbol and relative and symbol_stats.get("available") else [])
-        if symbol:
-            rows = store.conn.execute(
-                "SELECT DISTINCT src_path FROM refs WHERE def_path=? AND symbol_name=? "
-                "AND confidence='high' ORDER BY src_path", (abs_target, symbol)).fetchall()
-        else:
-            rows = store.conn.execute(
-                "SELECT DISTINCT src_path FROM refs WHERE def_path=? AND confidence='high' "
-                "ORDER BY src_path", (abs_target,)).fetchall()
-        dependents = [r["src_path"] for r in rows]
-        total_edges = store.conn.execute(
-            "SELECT COUNT(*) AS n FROM refs WHERE confidence='high'").fetchone()["n"]
+        dependents, total_edges = _read_blast_radius(store, abs_target, symbol)
+        defined_here = bool(symbol) and store.conn.execute(
+            "SELECT 1 FROM symbols WHERE path=? AND name=? LIMIT 1",
+            (abs_target, symbol)).fetchone() is not None
+        already_resolved = bool(symbol) and store.symbol_references_resolved(
+            abs_target, symbol)
+
+    resolution = _ensure_blast_radius(
+        abs_path, abs_target, symbol, resolve=resolve, has_edges=bool(dependents),
+        already_resolved=already_resolved, defined_here=defined_here)
+    if resolution["status"] == "resolved":
+        with storage.ProjectStore.open_readonly(abs_path) as store:
+            dependents, total_edges = _read_blast_radius(store, abs_target, symbol)
 
     if symbol and not already:
-        notes.append(f"No existing definition resembles {symbol!r}; it looks new.")
+        # "It looks new" was an overclaim: this compares names, and something
+        # equivalent under an unrelated name never had a chance of showing up.
+        notes.append(
+            f"No indexed definition has a name resembling {symbol!r}. That is a name "
+            "check; an equivalent under an unrelated name would not appear here, and "
+            "find_duplicates is the one that compares shape.")
     elif not symbol:
         notes.append("Pass symbol= to check whether the thing you are adding already exists.")
     if not cochange_stats.get("available"):
         notes.append("Co-change is unavailable: " + str(cochange_stats.get("reason", "unknown")))
     elif not companions:
         notes.append("History shows nothing that reliably changes with this file.")
-    if not dependents:
-        notes.append(
-            "No resolved callers are recorded. That is not the same as none existing: "
-            "the refs table only fills in as find_references runs, and it currently holds "
-            f"{total_edges} resolved edges for the whole project. Run find_references on "
-            "the symbol for a real blast radius."
-            if total_edges == 0 else
-            "No resolved caller reaches this file, out of "
-            f"{total_edges} resolved edges project-wide.")
+    notes.extend(_blast_radius_notes(symbol, dependents, total_edges, resolution))
 
     result = {
         "project_key": storage.project_key(abs_path),
@@ -1540,6 +1721,15 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
             "dependent_files": dependents,
             "dependent_count": len(dependents),
             "resolved_edges_project_wide": total_edges,
+            # The unresolved half, kept separate rather than merged in: these are files
+            # whose text names the symbol, which is a lead, not a caller. Merging the two
+            # would be the exact inflation of confidence this tool exists to avoid.
+            "name_match_files": ([] if dependents else
+                                 resolution["name_match_files"]),
+            "name_match_count": (0 if dependents else resolution["name_match_count"]),
+            "resolution": {"status": resolution["status"],
+                           "reason": resolution["reason"],
+                           "elapsed_sec": resolution["elapsed_sec"]},
         },
         "cochange_stats": dict(cochange_stats, symbol=symbol_stats),
         "notes": notes,
@@ -1551,18 +1741,65 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     result["approx_tokens"] = _json_tokens(result)
     # Trim the longest lists rather than the explanations: a caller told nothing about
     # why a section is short cannot tell it from a section that was genuinely empty.
+    # The two blast-radius lists are never both populated -- leads are reported only
+    # when nothing resolved -- so the first two branches trim whichever one this answer
+    # has. Leads alone may be drained below the floor the confirmed callers keep,
+    # because a lead is the weaker thing to lose.
     while result["approx_tokens"] > token_budget:
-        if len(result["blast_radius"]["dependent_files"]) > 3:
-            result["blast_radius"]["dependent_files"].pop()
+        blast = result["blast_radius"]
+        if len(blast["name_match_files"]) > 3:
+            blast["name_match_files"].pop()
+        elif len(blast["dependent_files"]) > 3:
+            blast["dependent_files"].pop()
         elif len(result["co_change"]) > 3:
             result["co_change"].pop()
         elif result["already_exists"]:
             result["already_exists"].pop()
+        elif blast["name_match_files"]:
+            blast["name_match_files"].pop()
         else:
             break  # the envelope alone exceeds the budget; say so rather than lie
         result["truncated_by_budget"] = True
         result["approx_tokens"] = _json_tokens(result)
     return result
+
+
+def _blast_radius_notes(symbol: str | None, dependents: list[str], total_edges: int,
+                        resolution: dict) -> list[str]:
+    """Say which of the two empty answers this is.
+
+    "No callers" and "nobody has looked" print identically and mean opposite things.
+    Everything below exists to keep them apart.
+    """
+    if dependents:
+        return []
+    status = resolution["status"]
+    leads = resolution["name_match_count"]
+    lead_text = (f" {leads} file(s) mention the name without resolving to it; they are "
+                 "listed as leads, not callers." if leads else "")
+    if status in ("resolved", "cached"):
+        when = ("just now" if status == "resolved" else
+                "earlier, for this exact file content")
+        return [f"Nothing in this project resolves to {symbol!r} here. That is a measured "
+                f"absence, not an unasked question: references were resolved {when}."
+                + lead_text]
+    if status == "undefined-in-target":
+        return [f"{symbol!r} is not defined in this file yet, so it has no callers to "
+                "find. The blast radius describes code that already exists."]
+    if status in ("declined", "unsupported", "off", "failed"):
+        return [f"The blast radius was not resolved: {resolution['reason']}."
+                + lead_text
+                + " Run find_references on the symbol, or ask preflight again with "
+                  "resolve=true, for the confirmed answer."]
+    if status == "no-symbol":
+        return ["No resolved caller reaches this file. Pass symbol= to have preflight "
+                "resolve one symbol's callers rather than reading only what is stored."
+                if total_edges else
+                "No references have been resolved for this project yet, so this section "
+                "is empty for lack of asking rather than lack of callers. Pass symbol= "
+                "and preflight will resolve that one symbol."]
+    return [f"No resolved caller reaches this file, out of {total_edges} resolved edges "
+            "project-wide."]
 
 
 def status(path: str, *, check_freshness: bool = False) -> dict:

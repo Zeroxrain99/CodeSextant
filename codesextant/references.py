@@ -41,22 +41,63 @@ def _iter_python_files(root: str):
                 yield os.path.join(dirpath, fn)
 
 
-def _prefilter_candidate_files(src_root: str, symbol: str) -> list[str]:
-    """Stage 1 (coarse filter): which files does the name appear in. Cheap and loose, so it is better to over-include a few.
+# Every language's noise directories, for the sweeps that are not Python-only.
+_SKIP_DIRS_MULTI = (".git", "__pycache__", ".venv", "venv", "node_modules",
+                    ".mypy_cache", ".pytest_cache", "build", "dist", "target", ".tox")
 
-    Returns every .py file that contains the symbol name (as a standalone word). jedi only does precise resolution on these.
+
+def _iter_files_by_ext(root: str, exts):
+    """Scan files under root with the given extensions (skipping noise directories). Used by cross-language name matching."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS_MULTI]
+        for fn in filenames:
+            if os.path.splitext(fn)[1].lower() in exts:
+                yield os.path.join(dirpath, fn)
+
+
+def candidate_files(src_root: str, symbol: str, *, lang: str | None = None,
+                    limit: int | None = None) -> list[str]:
+    """Files whose text names ``symbol`` as a standalone word: stage one, without jedi.
+
+    This is the cheap half of reference finding -- a text sweep costing well under a
+    millisecond per file, against roughly a tenth of a second per file for
+    per-occurrence resolution. It is therefore also the honest way to decide whether
+    the expensive half is worth starting: the number of files a name appears in is
+    the thing that drives that cost, and it can be measured before committing to it.
+
+    ``lang`` restricts the scan to one language's extensions; None scans every
+    supported extension. ``limit`` stops the walk once that many files have matched,
+    so a caller asking only "is this cheap?" does not pay for the whole repository to
+    find out that it is not.
     """
+    if lang == "python":
+        paths = _iter_python_files(src_root)
+    elif lang and lang in symbols.LANGUAGE_SPECS:
+        paths = _iter_files_by_ext(
+            src_root, frozenset(symbols.LANGUAGE_SPECS[lang]["exts"]))
+    else:
+        paths = _iter_files_by_ext(src_root, symbols.SUPPORTED_EXTENSIONS)
     pat = _word_re(symbol)
-    candidates: list[str] = []
-    for fp in _iter_python_files(src_root):
+    found: list[str] = []
+    for fp in paths:
         try:
             with open(fp, encoding="utf-8", errors="replace") as f:
                 text = f.read()
         except OSError:
             continue
         if pat.search(text):
-            candidates.append(fp)
-    return candidates
+            found.append(fp)
+            if limit is not None and len(found) >= limit:
+                break
+    return found
+
+
+def _prefilter_candidate_files(src_root: str, symbol: str) -> list[str]:
+    """Stage 1 (coarse filter): which files does the name appear in. Cheap and loose, so it is better to over-include a few.
+
+    Returns every .py file that contains the symbol name (as a standalone word). jedi only does precise resolution on these.
+    """
+    return candidate_files(src_root, symbol, lang="python")
 
 
 def _make_project(src_root: str) -> jedi.Project:
@@ -240,20 +281,6 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
 
     result["name_match_hit_count"] = total_hits
     return result
-
-
-# Low-confidence reference lookup for languages without an import resolver.
-_SKIP_DIRS_MULTI = (".git", "__pycache__", ".venv", "venv", "node_modules",
-                    ".mypy_cache", ".pytest_cache", "build", "dist", "target", ".tox")
-
-
-def _iter_files_by_ext(root: str, exts):
-    """Scan files under root with the given extensions (skipping noise directories). Used by cross-language name matching."""
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS_MULTI]
-        for fn in filenames:
-            if os.path.splitext(fn)[1].lower() in exts:
-                yield os.path.join(dirpath, fn)
 
 
 def name_match_references(src_root: str, symbol: str, *, def_path: str | None = None,

@@ -208,6 +208,11 @@ def test_the_mcp_text_is_the_cli_text(repo):
     """One renderer, two surfaces: they cannot describe a result differently."""
     from codesextant import engine
     engine.index_project(str(repo), force=True)
+    # Warm the reference resolution first. Otherwise whichever of the two calls runs
+    # first resolves and reports what that cost, and the second -- correctly -- does
+    # not, so the texts would differ over something other than the renderer.
+    engine.preflight(str(repo), "core.py", symbol="load_settings")
+
     result = engine.preflight(str(repo), "core.py", symbol="load_settings")
     reply = _call(_initialized(str(repo)), "preflight",
                   file="core.py", symbol="load_settings")

@@ -389,7 +389,7 @@ CREATE TABLE IF NOT EXISTS cochange_symbol_state (
 -- have zero rows.
 CREATE TABLE IF NOT EXISTS derived_state (
     path         TEXT NOT NULL,
-    kind         TEXT NOT NULL,   -- 'fingerprints' | 'comments'
+    kind         TEXT NOT NULL,   -- 'fingerprints' | 'comments' | 'refs:<symbol>'
     content_hash TEXT NOT NULL,
     PRIMARY KEY (path, kind)
 );
@@ -811,6 +811,30 @@ class ProjectStore:
             "ON CONFLICT(path,kind) DO UPDATE SET content_hash=excluded.content_hash",
             (path, kind, content_hash),
         )
+
+    def symbol_references_resolved(self, path: str, symbol: str) -> bool:
+        """Whether ``symbol``'s references were resolved for this file's current content.
+
+        The distinction this records is the one preflight could not previously make:
+        an empty blast radius because nobody calls the symbol, versus an empty blast
+        radius because nobody has looked. Reindexing a file drops its derived_state
+        rows, so an edited definition is resolved again rather than trusted.
+        """
+        return not self.paths_missing_derived(f"refs:{symbol}", [path])
+
+    def mark_symbol_references_resolved(self, path: str, symbol: str) -> None:
+        """Record that resolution ran for this symbol at the file's current content.
+
+        Marked even when resolution found nothing: "no callers" is a result worth
+        keeping, and re-deriving it on every call is what would make preflight too
+        expensive to call every time.
+        """
+        row = self.conn.execute(
+            "SELECT content_hash FROM files WHERE path=?", (path,)).fetchone()
+        if row is None:
+            return
+        with self.conn:
+            self._mark_derived(path, f"refs:{symbol}", row["content_hash"])
 
     def paths_missing_derived(self, kind: str,
                               paths: list[str] | None = None) -> list[tuple[str, str]]:

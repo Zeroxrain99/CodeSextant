@@ -1248,7 +1248,8 @@ def _ep_preflight(parsed, body):
     except (TypeError, ValueError):
         raise _HttpError(400, f"budget must be an integer, got '{raw_budget}'") from None
     return 200, engine.preflight(project, target, symbol=_q(parsed, "symbol"),
-                                 token_budget=budget)
+                                 token_budget=budget,
+                                 resolve=_q(parsed, "resolve"))
 
 
 def _ep_comment_overview(parsed, body):

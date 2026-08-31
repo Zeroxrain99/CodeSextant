@@ -256,11 +256,16 @@ class CodesextantClient:
             timeout=map_timeout)
 
     def preflight(self, file: str, *, symbol: str | None = None, budget: int = 1200,
-                  project: str | None = None) -> dict:
-        """Before editing ``file``: what already exists, what changes with it, who breaks."""
+                  project: str | None = None, resolve=None) -> dict:
+        """Before editing ``file``: what already exists, what changes with it, who breaks.
+
+        ``resolve`` decides what happens when no references are recorded for the symbol
+        yet: None/"auto" measures the cost and resolves when it is small, True resolves
+        regardless (slower, exact), False never does.
+        """
         return self._get("/preflight", {
             "project": self._proj(project), "file": file, "symbol": symbol,
-            "budget": budget},
+            "budget": budget, "resolve": resolve},
             timeout=self._interactive_timeout())
 
     def find_references(self, symbol: str, *, def_path: str | None = None,
