@@ -55,11 +55,14 @@ def killed_by_signal(exitcode: int | None) -> int | None:
     return -exitcode
 
 
-# Windows has no SIGKILL, and nothing there can send one. Resolved once, here, rather
-# than named at each call site: a bare ``signal.SIGKILL`` raises AttributeError on
-# Windows, and every call site is inside an exception handler -- the one place where a
-# second failure is hardest to see and most expensive to diagnose.
-_SIGKILL = getattr(signal, "SIGKILL", None)
+# Windows has no ``signal.SIGKILL`` to name, and naming it there raises AttributeError
+# -- inside an exception handler, which is the worst place for a second failure. What is
+# being compared is a *number*, though, not the platform's symbol: multiprocessing
+# encodes a signal death as the negated signal number, and SIGKILL is 9 on every POSIX
+# platform, fixed by the standard. So the fallback is 9 rather than None, which keeps
+# the predicate total and meaningful everywhere instead of quietly answering False on
+# one platform for a reason that has nothing to do with the question.
+_SIGKILL = int(getattr(signal, "SIGKILL", 9))
 
 
 def killed_externally(exitcode: int | None) -> bool:
@@ -70,9 +73,10 @@ def killed_externally(exitcode: int | None) -> bool:
     but nothing about it was wrong and retrying is the caller's move. A worker that took
     SIGSEGV or SIGABRT crashed, which is a defect and has to reach the caller as one.
 
-    False on Windows for every exitcode, which is correct rather than a degradation:
-    multiprocessing there reports a terminated process with a non-negative code, so no
-    exitcode can mean "killed by a signal" in the first place.
+    The answer depends on the exitcode alone and not on the platform reading it. Windows
+    never produces a negative exitcode, so in production there it is always False -- but
+    that is a fact about what Windows reports, not a different definition of the
+    question, and a definition that changed by platform would be a second thing to know.
     """
     killed = killed_by_signal(exitcode)
     return killed is not None and killed == _SIGKILL

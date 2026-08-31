@@ -18,7 +18,7 @@ the machine.
 |---|---|
 | branch | `claude/codesextant-handoff-us93o7`, 34 commits ahead of master. Last commit touching `codesextant/` is `a382e99`; anything after it is this document. |
 | version | 0.27.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
-| tests | `python -m pytest -q` → 728 passed, 6 skipped |
+| tests | `python -m pytest -q` → 729 passed, 6 skipped |
 | lint | `python -m ruff check codesextant tests experiments` → 12 errors, all pre-existing. **12 is the baseline; 13 means you added one.** |
 | experiments | `experiments/README.md` — protocol, results, and what they do not establish |
 
@@ -252,6 +252,16 @@ or the word `posix-only` in the function's docstring when the caller guarantees 
 platform. The distinction between what an import raises and what an attribute raises is
 load-bearing — the first version of that checker treated `except OSError` as a guard and
 therefore passed over the very hole it was written for.
+
+**Removing a crash is not the same as keeping the behaviour.** The first repair of
+`signal.SIGKILL` resolved it to `None`, which stopped the AttributeError and quietly
+made `killed_externally` answer False on Windows — a *different definition of the
+question* by platform, which only Windows CI could report, one push later. What is
+compared is a number: multiprocessing encodes a signal death as the negated signal
+number and SIGKILL is 9 wherever POSIX defines it, so the fallback is 9 and the reading
+holds with or without the symbol. `test_the_kill_reading_survives_a_platform_without_SIGKILL`
+deletes `signal.SIGKILL` and reloads the module, so the Windows path is now exercised
+from whichever platform you have.
 
 **`render.py` is the only renderer.** The CLI and the MCP server print the same lines
 from the same function, with a test pinning it, so the two surfaces cannot describe a

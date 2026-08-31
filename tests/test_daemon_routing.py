@@ -165,3 +165,38 @@ def test_signal_reading_separates_a_kill_from_a_clean_exit():
     assert worker_process.killed_by_signal(0) is None
     assert worker_process.killed_by_signal(1) is None
     assert worker_process.killed_by_signal(None) is None
+
+
+def test_the_kill_reading_survives_a_platform_without_SIGKILL():
+    """Windows, exercised from wherever you happen to be.
+
+    `signal.SIGKILL` does not exist there, and naming it raised AttributeError out of
+    the very exception handler meant to turn a killed worker into a retryable 503 --
+    on four of thirteen CI jobs, for a fault no Linux run could reproduce. The first
+    repair swapped the crash for a quieter mistake: resolving the constant to None made
+    the predicate answer False on Windows, which is a *different definition of the
+    question* by platform, and only Windows CI could say so.
+
+    What is compared is a number. multiprocessing encodes a signal death as the negated
+    signal number and SIGKILL is 9 everywhere POSIX defines it, so the reading holds
+    with or without the symbol. This removes the symbol and checks that it does, which
+    is the difference between a fix and a fix nobody has to push to verify.
+    """
+    import importlib
+    import signal as signal_module
+
+    from codesextant import worker_process
+
+    saved = signal_module.SIGKILL
+    del signal_module.SIGKILL
+    try:
+        windows_like = importlib.reload(worker_process)
+        assert windows_like._SIGKILL == 9, "SIGKILL's number is fixed by POSIX"
+        assert windows_like.killed_externally(-9) is True
+        assert windows_like.killed_externally(-11) is False, "a crash is still a defect"
+        assert windows_like.killed_externally(None) is False
+    finally:
+        signal_module.SIGKILL = saved
+        importlib.reload(worker_process)
+
+    assert worker_process.killed_externally(-9) is True
