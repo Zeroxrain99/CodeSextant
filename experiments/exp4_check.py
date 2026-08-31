@@ -12,11 +12,17 @@ history older than the commit being scored. For a sampled subset the repository 
 checked out at the commit's parent, every file of the commit *except* the held-out one
 is applied, and check runs on the result.
 
-    check           what ships: rebuilt + companions + callers, unioned
-    companions      the co-change section alone -- what preflight already had
-    callers         the resolved-caller section alone
-    same_dir@k      the most-changed neighbours of the files that did change
-    frequency@k     the most-changed files in the project
+    check            what ships: rebuilt + companions + callers, unioned
+    companions       the co-change section alone -- what preflight already had
+    callers          the resolved-caller section alone
+    callers_ceiling  every file that *names* a changed symbol, resolved or not
+    same_dir@k       the most-changed neighbours of the files that did change
+    frequency@k      the most-changed files in the project
+
+`callers_ceiling` is not a candidate for shipping -- it is a text sweep and would bury
+a reader. It is here to separate two explanations for a weak caller section: import
+resolution missing real callers, or the held-out file simply not being one. The gap
+between it and `callers` is the first; the gap between it and 1.0 is the second.
 
 The two section-only rows exist to answer the question the union cannot: does reading
 the diff add anything over mining history, or is check just co-change with extra steps?
@@ -38,10 +44,11 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from codesextant import engine  # noqa: E402
+from codesextant import engine, references, storage  # noqa: E402
 from experiments import corpus  # noqa: E402
 
-PREDICTORS = ("check", "companions", "callers", "same_dir@k", "frequency@k")
+PREDICTORS = ("check", "companions", "callers", "callers_ceiling",
+              "same_dir@k", "frequency@k")
 
 
 def _git(root: str, *args: str) -> tuple[int, str]:
@@ -127,6 +134,33 @@ def evaluate(repo: str, *, limit: int = 60, seed: int = 0,
             "results": {name: tally.row() for name, tally in tallies.items()}}
 
 
+def _naming_files(tree: str, applied: list[str]) -> set[str]:
+    """Every file naming a symbol defined in a changed file, outside the change.
+
+    The ceiling the resolved caller section is working against: a caller has to name
+    the symbol, so nothing outside this set can ever be found by any amount of
+    resolution.
+    """
+    named: set[str] = set()
+    changed_abs = {os.path.normcase(os.path.abspath(os.path.join(tree, f)))
+                   for f in applied}
+    with storage.ProjectStore.open_readonly(tree) as store:
+        for relative in applied:
+            if not relative.endswith(".py"):
+                continue
+            absolute = os.path.abspath(os.path.join(tree, relative))
+            rows = store.conn.execute(
+                "SELECT DISTINCT name FROM symbols WHERE path=? AND kind IN "
+                "('function','method','class') LIMIT 40", (absolute,)).fetchall()
+            for row in rows:
+                for hit in references.candidate_files(
+                        tree, row["name"], lang="python", limit=60):
+                    if os.path.normcase(os.path.abspath(hit)) in changed_abs:
+                        continue
+                    named.add(os.path.relpath(hit, tree).replace(os.sep, "/"))
+    return named
+
+
 def _score_one(repo: str, home: str, sha: str, files: set[str],
                changed_total: Counter, directory_files: dict, tallies: dict) -> int:
     code, parent = _git(repo, "rev-parse", f"{sha}^")
@@ -154,6 +188,7 @@ def _score_one(repo: str, home: str, sha: str, files: set[str],
         engine.index_project(tree, force=True)
         result = engine.check(tree, token_budget=100_000)
         predicted = _predicted_files(result)
+        predicted["callers_ceiling"] = _naming_files(tree, applied)
 
         changed = set(applied)
         neighbours = {p for f in applied
