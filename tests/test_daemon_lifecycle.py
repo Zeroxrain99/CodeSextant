@@ -108,6 +108,15 @@ def test_existing_index_recovers_once_on_first_real_query(tmp_path, monkeypatch)
     manager.stop_all()
 
 
+# How long the fake recovery is held. The assertion below is derived from it rather
+# than written as a constant, because what this test is about is "the query did not wait
+# for the recovery" and the only number that expresses that is the length of the wait.
+# An absolute threshold expresses something else -- how fast the machine is -- and this
+# test failed on a CI runner running at half speed while the behaviour it guards was
+# perfectly correct.
+_RECOVERY_HOLD_SEC = 2.0
+
+
 def test_interactive_query_schedules_one_recovery_without_waiting(
         tmp_path, monkeypatch):
     from codesextant import daemon
@@ -130,7 +139,7 @@ def test_interactive_query_schedules_one_recovery_without_waiting(
         def ensure_ready(self, project, *, deadline=None):
             calls.append(("recover", project, deadline))
             entered.set()
-            release.wait(timeout=2)
+            release.wait(timeout=_RECOVERY_HOLD_SEC)
             return {"indexed": 0}
 
     manager = Manager()
@@ -149,10 +158,17 @@ def test_interactive_query_schedules_one_recovery_without_waiting(
         second = daemon._prepare_project(
             "/get_map", urlparse(target), None)
 
-        assert elapsed < 0.2
+        # The behavioural half, and the one that actually pins the design: the second
+        # call sees the recovery still running, so the first returned while it was in
+        # flight rather than after it. That holds at any speed.
         assert first == {"recovery": "scheduled", "stale_possible": True}
         assert second == {"recovery": "running", "stale_possible": True}
         assert [call[0] for call in calls].count("recover") == 1
+        # The timing half. An implementation that waited would take the whole hold, so
+        # half of it separates the two cases with room for a slow filesystem in between.
+        assert elapsed < _RECOVERY_HOLD_SEC / 2, (
+            f"the interactive query took {elapsed:.3f}s while a recovery held for "
+            f"{_RECOVERY_HOLD_SEC}s was in flight, which is the shape of waiting for it")
     finally:
         release.set()
         daemon._join_recovery_threads()

@@ -279,12 +279,12 @@ class CodesextantClient:
     def guards(self, *, base: str | None = None, staged: bool = False,
                target: str | None = None, symbol: str | None = None,
                full: bool = False, budget: int = 1500,
-               project: str | None = None) -> dict:
+               limit: int | None = None, project: str | None = None) -> dict:
         """Which fences this change meets, and what each one checks."""
         return self._get("/guards", {
             "project": self._proj(project), "base": base,
             "staged": "1" if staged else None, "target": target, "symbol": symbol,
-            "full": "1" if full else None, "budget": budget},
+            "full": "1" if full else None, "budget": budget, "limit": limit},
             timeout=self._interactive_timeout())
 
     def find_references(self, symbol: str, *, def_path: str | None = None,

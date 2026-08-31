@@ -1280,12 +1280,17 @@ def _ep_guards(parsed, body):
         budget = int(raw_budget) if raw_budget else 1500
     except (TypeError, ValueError):
         raise _HttpError(400, f"budget must be an integer, got '{raw_budget}'") from None
+    raw_limit = _q(parsed, "limit")
+    try:
+        limit = int(raw_limit) if raw_limit else None
+    except (TypeError, ValueError):
+        raise _HttpError(400, f"limit must be an integer, got '{raw_limit}'") from None
     truthy = ("1", "true", "yes", "on")
     return 200, engine.guards(
         project, base=_q(parsed, "base"),
         staged=_q(parsed, "staged") in truthy,
         target=_q(parsed, "target"), symbol=_q(parsed, "symbol"),
-        full=_q(parsed, "full") in truthy, token_budget=budget)
+        full=_q(parsed, "full") in truthy, token_budget=budget, limit=limit)
 
 
 def _ep_comment_overview(parsed, body):

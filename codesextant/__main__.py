@@ -137,7 +137,7 @@ def cmd_preflight(args) -> int:
 def cmd_guards(args) -> int:
     r = engine.guards(args.path, base=args.base, staged=args.staged,
                       target=args.target, symbol=args.symbol,
-                      full=args.full, token_budget=args.budget)
+                      full=args.full, token_budget=args.budget, limit=args.limit)
     if args.json:
         _emit(r, True)
         return 0
@@ -631,6 +631,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="also print each fence's own source (the third layer, which "
                          "is not fetched unless asked for)")
     pg.add_argument("--budget", type=int, default=1500, help="token budget")
+    pg.add_argument("--limit", type=int, default=None,
+                    help="show more than the default six. Measured: twenty finds 0.088 "
+                         "more of the fence a change had to touch than six does "
+                         "(experiments/exp9_guards.py, held out)")
     pg.set_defaults(func=cmd_guards)
 
     pmcp = sub.add_parser(

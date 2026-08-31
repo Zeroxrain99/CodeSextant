@@ -398,3 +398,34 @@ def test_a_file_level_lead_never_outranks_the_fence_that_names_you(repo):
                      else 2 if why.startswith("history")
                      else 3 if why.startswith("imports") else 1)
     assert tiers == sorted(tiers)
+
+
+# The cap. Six was set by argument -- exp1's finding that a section naming twenty things
+# stops being read -- and stayed unmeasured through three versions of this command.
+# exp9 priced it: recall at k over 180 held-out commits is 0.233 @1, 0.306 @6, 0.394 @20
+# and 0.506 uncapped. Six is not free, so it is a default with a way past it rather than
+# a wall, and the number is in the help text where the person paying it can see it.
+
+
+def test_the_six_shown_is_a_default_and_not_a_ceiling(repo):
+    capped = engine.guards(str(repo), target="pkg/limits.py", symbol="encode",
+                           token_budget=100_000)
+    raised = engine.guards(str(repo), target="pkg/limits.py", symbol="encode",
+                           token_budget=100_000, limit=20)
+    assert len(capped["guards"]) <= engine._GUARDS_SHOWN
+    assert len(raised["guards"]) >= len(capped["guards"])
+    # Raising it must not reorder what was already there: the extra rows go on the end,
+    # or the default answer was not the top of the same list.
+    kept = [(row["path"], row["line"]) for row in raised["guards"]][:len(capped["guards"])]
+    assert kept == [(row["path"], row["line"]) for row in capped["guards"]]
+
+
+def test_a_limit_cannot_be_used_to_ask_for_the_whole_repository(repo):
+    """A cap a caller can remove is not a cap. The ceiling is what exp9 measured out to,
+    and past fifty the section is a second codebase again -- the thing exp8 refused."""
+    huge = engine.guards(str(repo), target="pkg/limits.py", symbol="encode",
+                         token_budget=1_000_000, limit=100_000)
+    assert len(huge["guards"]) <= engine._GUARDS_LIMIT_MAX
+    zero = engine.guards(str(repo), target="pkg/limits.py", symbol="encode",
+                         token_budget=100_000, limit=0)
+    assert len(zero["guards"]) >= 1, "asking for none is a mistake, not an instruction"

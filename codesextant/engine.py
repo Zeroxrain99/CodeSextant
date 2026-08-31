@@ -2100,10 +2100,18 @@ def _module_dependents_tier(abs_path: str, supported: dict, changed: dict,
             for path in ranked[:_DEPENDENTS_SHOWN]]
 
 
-# How many fences layer one shows. Six is a glance; the seventh is a list, and a list
-# is what a reader learns to skip -- exp1's finding, and the reason every candidate in
-# experiments/ is scored at the length the tool actually prints.
+# How many fences layer one shows *by default*. Six is a glance; the seventh is a list,
+# and a list is what a reader learns to skip -- exp1's finding, and the reason every
+# candidate in experiments/ is scored at the length the tool actually prints.
+#
+# exp9 put a number on what that costs, which it had never had. Recall at k, held out
+# over 180 commits: @1 0.233, @3 0.272, **@6 0.306**, @10 0.339, @20 0.394, and 0.506
+# with no cap at all. So six is not free -- twenty would find 0.088 more, which is more
+# than the import tier was built for. It stays the default because exp1's finding is
+# about whether a section is *read*, and recall a reader skips is not recall; but it is
+# now a default rather than a wall, and `limit` is how you buy the rest.
 _GUARDS_SHOWN = 6
+_GUARDS_LIMIT_MAX = 50
 
 # The history tier's three bounds, and the order they apply in matters. The first
 # version truncated the *companion list* to three files and then looked for fences in
@@ -2393,7 +2401,8 @@ def _guards_in_reach(abs_path: str, reach: set[str], changed: dict,
 
 def guards(path: str, *, base: str | None = None, staged: bool = False,
            target: str | None = None, symbol: str | None = None,
-           full: bool = False, token_budget: int = 1500) -> dict:
+           full: bool = False, token_budget: int = 1500,
+           limit: int | None = None) -> dict:
     """The fences your change is about to meet, with what each one checks.
 
     The failure this answers is the one a diff cannot: a guard written months ago blocks
@@ -2421,8 +2430,15 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
       answers "what would satisfy it".
     * **Layer three** -- ``full=True``, the guard's own source. Not fetched otherwise,
       which is the point: it is the expensive layer and it is rarely the one needed.
+
+    ``limit`` raises the six. The section already says how many it is withholding; until
+    it was measured there was no way to ask for them, which made a default look like a
+    ceiling. exp9 says twenty finds 0.088 more held out than six, so the reader who wants
+    that is not being unreasonable.
     """
     abs_path = os.path.abspath(path)
+    shown = _GUARDS_SHOWN if limit is None else max(1, min(int(limit),
+                                                          _GUARDS_LIMIT_MAX))
     notes: list[str] = []
     symbols_changed: set[str] = set()
 
@@ -2468,7 +2484,7 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
 
     ranked = _rank_guards(collected)
     if full:
-        for row in ranked[:_GUARDS_SHOWN]:
+        for row in ranked[:shown]:
             row["source"] = _guard_source(abs_path, row)
     if not ranked:
         notes.append(
@@ -2488,12 +2504,12 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
         # population is 4-15 per repository and applies to everything, so relevance has
         # the same answer every time and asking the question is the waste.
         "in_force": in_force,
-        "guards": ranked[:_GUARDS_SHOWN],
+        "guards": ranked[:shown],
         "total_in_reach": total,
         "notes": notes,
         "approx_tokens": 0,
     }
-    result["truncated_by_budget"] = total > _GUARDS_SHOWN
+    result["truncated_by_budget"] = total > shown
     result["approx_tokens"] = _json_tokens(result)
     while result["approx_tokens"] > token_budget and result["guards"]:
         result["guards"].pop()

@@ -57,6 +57,14 @@ because truncating a baseline arbitrarily is how this directory once turned a re
 Recall is the statistic and ``mean n`` sits beside it. Differences are bootstrapped per
 case, paired, because every predictor sees the same cases.
 
+**The cap.** Six shown is the last knob in this section set by argument rather than by a
+number -- exp1's finding that a predictor naming twenty files stops being read. That
+finding is about whether a section is read, which this cannot measure. What it can
+measure is what the cap *costs*: the rank at which the held-out file first appears in the
+untruncated ranked list, which gives recall at every k in one run. A cap that leaves
+nothing on the table is free whatever exp1 says; one that leaves a lot is a trade
+somebody should have to make on purpose.
+
     python -m experiments.exp9_guards --limit 60
 """
 from __future__ import annotations
@@ -120,9 +128,29 @@ def _key(row: dict) -> tuple[str, int]:
     return (row["path"], row["line"])
 
 
+def _full_rank(tree: str, applied: list[str], held_out: str,
+               symbols: set[str]) -> int | None:
+    """Where the held-out file first appears in the *untruncated* ranked list.
+
+    Runs the same four tiers `guards` runs and stops before the cap, which is the only
+    part of the pipeline this is asking about. It duplicates the assembly rather than
+    calling `guards`, because `guards` returns six rows by construction and six rows
+    cannot answer a question about the seventh.
+    """
+    changed_map = {f: "M" for f in applied}
+    notes: list[str] = []
+    ranked = engine._rank_guards(engine._guards_in_reach(
+        tree, engine._guard_reach(tree, changed_map, symbols, notes), changed_map,
+        symbols, engine._guard_history_reach(tree, changed_map),
+        engine._guard_importer_reach(tree, changed_map, notes)))
+    return next((index for index, row in enumerate(ranked)
+                 if row["path"] == held_out), None)
+
+
 def _score_one(repo: str, home: str, sha: str, files: set[str], holders: list[str],
                changed_total: Counter, directory_files: dict,
-               outcomes: dict, sizes: Counter, kinds: Counter) -> int:
+               outcomes: dict, sizes: Counter, kinds: Counter,
+               ranks: list) -> int:
     code, parent = _git(repo, "rev-parse", f"{sha}^")
     if code != 0:
         return 0
@@ -209,6 +237,8 @@ def _score_one(repo: str, home: str, sha: str, files: set[str], holders: list[st
         frequent = [p for p, _n in changed_total.most_common(60)
                     if p.endswith(".py") and p not in set(applied)]
         predicted["frequency@k"] = _extract_from(tree, frequent)[:budget]
+
+        ranks.append(_full_rank(tree, applied, held_out, symbols))
 
         for name in PREDICTORS:
             rows = predicted[name]
@@ -298,6 +328,7 @@ def evaluate(repo: str, *, limit: int = 60, seed: int = 0,
     outcomes = {name: [] for name in PREDICTORS}
     sizes: Counter = Counter()
     kinds: Counter = Counter()
+    ranks: list[int | None] = []
     scored = 0
     considered = 0
     wanted = set(candidates)
@@ -312,13 +343,14 @@ def evaluate(repo: str, *, limit: int = 60, seed: int = 0,
                 # and counting it as a miss would score the sampler rather than the tool.
                 if holders and len(files) - len(holders) >= 1:
                     scored += _score_one(repo, home, sha, files, holders, changed_total,
-                                         directory_files, outcomes, sizes, kinds)
+                                         directory_files, outcomes, sizes, kinds, ranks)
             for path in files:
                 changed_total[path] += 1
                 directory_files.setdefault(os.path.dirname(path), set()).add(path)
 
     return {"repo": os.path.basename(repo), "scored": scored, "considered": considered,
-            "outcomes": outcomes, "sizes": dict(sizes), "kinds": dict(kinds)}
+            "outcomes": outcomes, "sizes": dict(sizes), "kinds": dict(kinds),
+            "ranks": ranks}
 
 
 def _print(report: dict) -> None:
@@ -331,6 +363,12 @@ def _print(report: dict) -> None:
               f"{report['sizes'].get(name, 0) / total:8.1f}")
     if report["kinds"]:
         print(f"  kinds of fence found: {report['kinds']}")
+    found = [rank for rank in report.get("ranks", []) if rank is not None]
+    if found:
+        print("  what the six-shown cap costs -- recall at k, untruncated:")
+        print("    " + "  ".join(
+            f"@{k}:{sum(1 for r in found if r < k) / total:.3f}"
+            for k in (1, 3, 6, 10, 20, 50)))
     print("  paired differences (same cases, so the difference is the statistic):")
     for left, right in (("guards+filemention", "guards"), ("guards+importer", "guards"),
                         ("guards", "guards_symbols"), ("guards", "guards_perfile"),

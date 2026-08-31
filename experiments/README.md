@@ -693,6 +693,27 @@ difference excludes zero and the held-out difference is positive — and committ
 separately, because choosing the criterion after seeing which candidate wins is how a
 held-out set stops being one.
 
+### What the six-shown cap costs
+
+Six was set by argument — exp1's finding that a predictor naming twenty files stops being
+read — and stayed unmeasured through three versions of the command. Recording the rank at
+which the held-out file first appears in the *untruncated* list prices it in one run:
+
+| k | 1 | 3 | **6** | 10 | 20 | 50 | uncapped |
+|---|---|---|---|---|---|---|---|
+| derivation | 0.372 | 0.439 | **0.483** | 0.506 | 0.544 | 0.572 | 0.611 |
+| **held out** | 0.233 | 0.272 | **0.306** | 0.339 | 0.394 | 0.428 | 0.506 |
+
+**Six is not free.** Twenty finds 0.088 more held out — more than the import tier that
+was built for +0.072. Half the answer is in the first row and three-quarters in the first
+three, so the ranking is doing most of the work, but the tail is real.
+
+It stays the default, because exp1's finding is about whether a section is *read* and
+recall a reader skips is not recall — a claim this experiment cannot test either way. What
+changed is that it is now a default with a way past it: `--limit` on the CLI, `limit` on
+the MCP tool, capped at 50, with the number above in the help text so whoever pays the
+cost can see what they are paying. A default nobody could raise looked like a ceiling.
+
 ### Where it loses, and why
 
 **On jinja `guards` is still last.** It began three real losses down — against co-change,
