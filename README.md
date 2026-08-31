@@ -136,8 +136,16 @@ prediction is made from a state that contains the commit it is predicting.
   claim; it does mean the blast radius is not a reliable predictor of what else you
   have to edit, and it is why both tiers are printed and labelled rather than one.
 
-The experiments also found two defects in preflight and paid for themselves doing it;
-both are described in `experiments/README.md`.
+- **`check`**, given a real commit with one file hidden, names the hidden file 2 to 3
+  times as often as the strongest control at the same list length, in all three
+  repositories, every interval excluding zero. Reading the diff adds a further +0.03 to
+  +0.05 over mining history alone — small, consistent, and established only once the
+  comparison is done as a paired difference, which is what applies when both predictors
+  score the same cases.
+
+The experiments found two defects in preflight, rejected one feature before it was
+built, and refuted two of the author's own explanations; all of it is in
+`experiments/README.md`.
 
 ## After you change a file
 

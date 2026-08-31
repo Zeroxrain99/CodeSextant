@@ -267,15 +267,94 @@ to list at all was found. The remaining same-name gap is the tool declining to o
 arbitrary sample of a name the project uses as a convention, which the metric scores as
 a miss and which is the right behaviour anyway.
 
+## exp4 — hold a file out of a real commit and see whether check names it
+
+120 commits sampled per repository, 351 scored cases. One file of each commit is
+hidden, the rest is applied to a worktree at the parent, and `check` runs on the
+result. The hidden file is the answer.
+
+| repo | predictor | recall | recall 95% CI | speaks | mean n |
+|---|---|---|---|---|---|
+| requests | **check** | **0.220** | [0.153, 0.305] | 0.619 | 1.5 |
+| requests | companions | 0.169 | [0.110, 0.246] | 0.542 | 1.1 |
+| requests | callers | 0.068 | [0.025, 0.119] | 0.169 | 0.5 |
+| requests | callers_named@2 | 0.271 | [0.195, 0.356] | 0.356 | 5.3 |
+| requests | callers_named@k | 0.161 | [0.102, 0.229] | 0.314 | 0.9 |
+| requests | callers_ceiling | 0.305 | [0.220, 0.390] | 0.356 | 8.2 |
+| requests | same_dir@k | 0.068 | [0.025, 0.119] | 0.619 | 1.5 |
+| requests | frequency@k | 0.025 | [0.000, 0.059] | 0.619 | 1.5 |
+| click | **check** | **0.284** | [0.198, 0.371] | 0.707 | 1.8 |
+| click | companions | 0.250 | [0.172, 0.328] | 0.638 | 1.4 |
+| click | callers | 0.086 | [0.043, 0.138] | 0.250 | 0.6 |
+| click | callers_named@2 | 0.681 | [0.595, 0.759] | 0.793 | 21.1 |
+| click | callers_named@k | 0.259 | [0.181, 0.336] | 0.655 | 1.8 |
+| click | callers_ceiling | 0.759 | [0.681, 0.836] | 0.802 | 34.7 |
+| click | same_dir@k | 0.129 | [0.078, 0.198] | 0.707 | 1.8 |
+| click | frequency@k | 0.086 | [0.043, 0.138] | 0.707 | 1.8 |
+| jinja | **check** | **0.274** | [0.197, 0.359] | 0.521 | 1.5 |
+| jinja | companions | 0.239 | [0.162, 0.316] | 0.487 | 0.9 |
+| jinja | callers | 0.068 | [0.026, 0.120] | 0.205 | 0.6 |
+| jinja | callers_named@2 | 0.350 | [0.265, 0.436] | 0.564 | 12.0 |
+| jinja | callers_named@k | 0.111 | [0.060, 0.171] | 0.470 | 1.4 |
+| jinja | callers_ceiling | 0.419 | [0.333, 0.513] | 0.667 | 19.5 |
+| jinja | same_dir@k | 0.094 | [0.043, 0.145] | 0.521 | 1.5 |
+| jinja | frequency@k | 0.094 | [0.043, 0.145] | 0.521 | 1.5 |
+
+### Paired differences, which are the statistic that applies
+
+Every predictor sees the same cases, so comparing their separate intervals
+understates the evidence — two intervals can overlap while every case moves the same
+way. Bootstrapped per case:
+
+| difference | requests | click | jinja |
+|---|---|---|---|
+| check − companions | **+0.051** [+0.017, +0.093] | **+0.034** [+0.009, +0.069] | **+0.034** [+0.009, +0.068] |
+| check − same_dir@k | **+0.153** [+0.076, +0.229] | **+0.155** [+0.069, +0.241] | **+0.179** [+0.094, +0.265] |
+| callers_named@k − check | −0.059 [−0.127, +0.008] | −0.026 [−0.121, +0.060] | **−0.162** [−0.248, −0.085] |
+
+**check beats the strongest matched control in all three repositories**, by 0.15 to
+0.18, every interval excluding zero, while naming 1.5 to 1.8 files per case.
+
+**Reading the diff adds to mining history, and the paired test is what shows it.** The
+lift over co-change alone is +0.03 to +0.05 and every interval excludes zero. Compared
+as two separate intervals it looked like noise; it is not.
+
+### A candidate measured and rejected
+
+The caller section is the weak one — recall 0.068 to 0.086 — and the ceiling shows why
+it matters: 0.305 to 0.759 of held-out files *name* a symbol the change touched, so the
+information is there and resolution is not reaching it. Two mechanical explanations were
+checked and are both wrong. requests' `src/` layout does not degrade jedi (the same
+symbol resolves identically with and without an explicit `src_root`), and the cost gate
+is not swallowing the work either (of 116 changed symbols in click, 89.7% resolve and
+7.8% are declined).
+
+So a name-level signal was proposed on the intuition that a file naming *several*
+changed symbols is more likely to be using them than one naming a single symbol.
+Measured before it was built:
+
+`callers_named@2` recalls far more than the resolved tier — 0.681 against 0.086 on
+click — but names 5 to 21 files per case, which is the "twenty files every query"
+problem exp1 criticised the unbounded baselines for. Truncated to what `check` already
+prints, it is *worse* on all three and significantly worse on jinja.
+
+**Nothing was built on it.** The gap between resolution and naming is real and still
+open; ranking by name count is not the way across it.
+
 ## What these experiments do not establish
 
 Written down because the gaps are easier to see now than they will be later, and
 because a results section that only lists wins is an advertisement.
 
 - **Prevention.** Every experiment here measures retrieval — given a query, is the
-  right thing returned. None measures whether an author who saw the answer went on to
-  make a better change. That needs agents doing tasks with and without the tool, and a
-  task set nobody involved wrote.
+  right thing returned. exp4 comes closest, since a held-out file is a thing that was
+  genuinely forgotten, but it still does not measure whether an author who saw the
+  answer went on to make a better change. That needs agents doing tasks with and
+  without the tool, and a task set nobody involved wrote.
+- **Why resolution reaches so much less than naming.** exp4 puts a number on the gap
+  and rules out two explanations for it. The remaining one is presumably that jedi
+  resolves conservatively and a lot of real use is dynamic, but that is a hypothesis,
+  not a finding.
 - **Symbol-level co-change is unmeasured.** preflight mines per-symbol rules from hunk
   headers as well as per-file ones, and exp1 scores only the file-level rules. The
   symbol-level claim — that changing `serve` brings a different companion set than
