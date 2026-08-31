@@ -25,6 +25,12 @@ Precision is the comparison that means something here. Recall is reported but mu
 read carefully: a caller is not obliged to change when a callee does, so no predictor
 can reach 1.0, and a predictor that names half the repository will always lead on
 recall while being useless to a reader.
+
+Intervals are bootstrapped over commits rather than queries, because the queries inside
+one commit share its ground truth and are not independent. They exist because the first
+run of this experiment produced one repository where the resolved tier was *less*
+precise than the leads tier, and a surprising result without error bars is not a result
+either way.
 """
 from __future__ import annotations
 
@@ -84,13 +90,43 @@ class Score:
         self.tp = self.fp = self.fn = 0
         self.cases = 0
         self.predicted = 0
+        # (tp, fp) per commit, so an interval can be resampled over the unit that is
+        # actually independent.
+        self.by_commit: list[tuple[int, int]] = []
+        self._commit_tp = self._commit_fp = 0
+
+    def start_commit(self) -> None:
+        self._commit_tp = self._commit_fp = 0
+
+    def end_commit(self) -> None:
+        self.by_commit.append((self._commit_tp, self._commit_fp))
 
     def add(self, predicted: set[str], truth: set[str]) -> None:
-        self.tp += len(predicted & truth)
-        self.fp += len(predicted - truth)
+        hit, miss = len(predicted & truth), len(predicted - truth)
+        self.tp += hit
+        self.fp += miss
         self.fn += len(truth - predicted)
         self.cases += 1
         self.predicted += len(predicted)
+        self._commit_tp += hit
+        self._commit_fp += miss
+
+    def precision_interval(self, *, seed: int = 0, rounds: int = 2000) -> tuple[float, float]:
+        records = [r for r in self.by_commit if r[0] + r[1]]
+        if not records:
+            return (0.0, 0.0)
+        rng = random.Random(seed)
+        size = len(records)
+        values = []
+        for _ in range(rounds):
+            tp = fp = 0
+            for _i in range(size):
+                hit, miss = records[rng.randrange(size)]
+                tp += hit
+                fp += miss
+            values.append(tp / (tp + fp) if tp + fp else 0.0)
+        values.sort()
+        return (values[int(rounds * 0.025)], values[int(rounds * 0.975)])
 
     def row(self) -> dict:
         precision = self.tp / (self.tp + self.fp) if self.tp + self.fp else 0.0
@@ -135,6 +171,8 @@ def evaluate(repo: str, *, limit: int = 120, seed: int = 0) -> dict:
                 continue
             try:
                 engine.index_project(tree, force=True)
+                for score in scores.values():
+                    score.start_commit()
                 scored_here = False
                 with storage.ProjectStore.open_readonly(tree) as store:
                     python_files = [f for f in files if f.endswith(".py")
@@ -157,12 +195,16 @@ def evaluate(repo: str, *, limit: int = 120, seed: int = 0) -> dict:
                             scores["leads_only"].add(named - resolved, truth)
                             scores["name_match"].add(named, truth)
                             scored_here = True
+                for score in scores.values():
+                    score.end_commit()
                 used_commits += scored_here
             finally:
                 subprocess.run(["git", "-C", repo, "worktree", "remove", "--force",
                                 tree], check=False, capture_output=True)
     return {"repo": os.path.basename(repo), "commits_scored": used_commits,
-            "results": {name: score.row() for name, score in scores.items()}}
+            "results": {name: dict(score.row(),
+                                   precision_ci=score.precision_interval())
+                        for name, score in scores.items()}}
 
 
 def main() -> int:
@@ -174,11 +216,13 @@ def main() -> int:
     for repo in repos:
         report = evaluate(repo, limit=args.limit)
         print(f"\n=== {report['repo']}  ({report['commits_scored']} commits scored)")
-        print(f"{'predictor':12} {'prec':>7} {'recall':>7} {'F1':>7} "
-              f"{'mean n':>8} {'cases':>7}")
+        print(f"{'predictor':12} {'prec':>7} {'prec 95% CI':>16} {'recall':>7} "
+              f"{'F1':>7} {'mean n':>8} {'cases':>7}")
         for name in ("resolved", "leads_only", "name_match"):
             row = report["results"][name]
-            print(f"{name:12} {row['precision']:7.3f} {row['recall']:7.3f} "
+            low, high = row["precision_ci"]
+            print(f"{name:12} {row['precision']:7.3f} "
+                  f"{f'[{low:.3f},{high:.3f}]':>16} {row['recall']:7.3f} "
                   f"{row['f1']:7.3f} {row['mean_predictions']:8.1f} {row['cases']:7}")
     return 0
 

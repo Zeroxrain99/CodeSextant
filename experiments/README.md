@@ -73,6 +73,14 @@ Precision is the comparison that means something. Recall must be read carefully:
 caller is not obliged to change when a callee does, so nothing can reach 1.0, and a
 predictor naming half the repository leads on recall while being useless.
 
+**What this actually measures, stated plainly.** The blast radius claims to answer *who
+breaks*. The ground truth available here is *who changed in the same commit*, which is
+a proxy and not a tight one: a caller need not change, and files change together for
+reasons that have nothing to do with calls. Measuring breakage directly would mean
+running each commit's test suite against the parent tree with the change applied, which
+this corpus cannot support. So exp2 scores the blast radius as a predictor of
+co-change, and a perfect blast radius would not score 1.0 on it.
+
 ## exp3 — is the equivalent definition surfaced?
 
 Ground truth is `find_duplicates`' structural groups: units of the same shape, which
