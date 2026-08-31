@@ -97,18 +97,30 @@ with evidence under it rather than a list of plausible ideas.
 
 ### Phase C — cover the guards that actually block people
 
-`exp8` counted 16–34 guards per thousand lines **reading Python only**. That number is a
-floor, and the kinds it omits are conspicuously the ones that stop a build:
+`exp8` counted 16–34 guards per thousand lines **reading Python only** and said the
+number was a floor. **exp10 measured the floor, and it reshaped this phase rather than
+confirming it.** Counted across seven repositories: 4–15 CI checks and 0–14 lint rules
+against 182–964 Python guards — two orders of magnitude — and **zero pre-commit
+configurations and zero `.sql` files anywhere in the corpus**.
 
-| step | what | why it is on the list |
+More important, exp10 found that its own statistic is the wrong one for a required
+check. "How often does a commit touch the workflow file" answers how often somebody
+*moves* that fence. A required check blocks every push whether or not you have opened
+it, so the rate that matters is 1.0. A CI check is not a needle in hundreds; it is a
+fixed handful that applies to everything. **It does not want ranking, relevance or
+progressive disclosure. It wants stating.**
+
+| step | what | status |
 |---|---|---|
-| C1 · CI workflow rules | required checks, matrix entries, timeouts, `fail-fast` | a red required check is the single most common hard block, and it is invisible to every Python-only reader |
-| C2 · lint and type configuration | ruff `select`/`ignore`, per-file ignores, mypy strictness | this repository's own `target-version = py311` against a 3.10 floor was exactly this class, and it went unnoticed until CI said so |
-| C3 · pre-commit hooks | `.pre-commit-config.yaml` | fires before the author can even push |
-| C4 · schema, migration and database constraints | `NOT NULL`, `UNIQUE`, migration ordering | the failure arrives at runtime, in production, which is the most expensive place |
+| C1 · CI workflow rules | required checks, matrix entries, timeouts, `fail-fast` | **reshaped by exp10.** Not a ranked tier in `guards` — a short always-on statement, because the population is 4–15 and universally applicable |
+| C2 · lint and type configuration | ruff `select`/`ignore`, per-file ignores, mypy strictness, and the language floor beside the target version | same shape as C1, same reason. This repository's own `target-version = py311` against a 3.10 floor was exactly this class and went unnoticed until CI said so — a line stating both would have shown it, and no ranking would have |
+| C3 · pre-commit hooks | `.pre-commit-config.yaml` | **blocked on a corpus.** Zero instances in all seven repositories. Building an extractor whose score is undefined is what `guards` was doing before exp9 |
+| C4 · schema, migration and database constraints | `NOT NULL`, `UNIQUE`, migration ordering | **blocked on a corpus.** Zero `.sql` files anywhere here. These live in applications; the corpus is seven libraries |
 
-Each step reruns B1: a guard kind earns its place by moving the number, not by being
-plausible.
+C1 and C2 still have to earn their place by moving a number, but it is not exp9's
+number — retrieval recall is meaningless for a fence that always applies. The claim they
+make is "this is what will run against your push", and the honest test of it is whether
+it is *correct and complete*, not whether it was *retrieved*.
 
 ---
 

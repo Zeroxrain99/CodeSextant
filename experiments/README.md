@@ -18,6 +18,7 @@ python -m experiments.exp6_caller_candidates   # which repair for it is worth bu
 python -m experiments.exp7_preflight_dependents # does preflight want the same repair?
 python -m experiments.exp8_guard_inventory    # can the guards be found, and do they say why?
 python -m experiments.exp9_guards             # does `guards` name the fence that would have blocked you?
+python -m experiments.exp10_invisible_guards  # how much blocks people outside what a Python reader sees?
 ```
 
 The corpus is cloned on first run into `~/.cache/codesextant-corpus`, or wherever
@@ -710,14 +711,68 @@ this one, and no number here says which case a new repository is before the fact
 baseline and worth keeping in mind: it is beaten by +0.128 held out, but it wins outright
 on tqdm and jinja, and it costs nothing to compute.
 
+## exp10 — how much of what blocks people is outside what a Python reader sees?
+
+`exp8` said its own count was a floor: it reads Python, and the kinds it cannot see are
+conspicuously the ones that stop a build. Phase C of the roadmap proposed covering four
+of them. This measures whether that is worth doing, and the answer reshaped the phase
+rather than confirming it.
+
+Counted at HEAD across seven repositories, beside the Python count from the same tree,
+with the fraction of sampled commits that *touch a file holding* each kind:
+
+| | Python guards | ci_check | lint_rule | hook | db_constraint |
+|---|---|---|---|---|---|
+| CodeSextant | 964 · 0.676 | 4 · 0.056 | 11 · 0.268 | 0 | 0 |
+| requests | 411 · 0.129 | 13 · 0.075 | 14 · 0.024 | 0 | 0 |
+| click | 630 · 0.395 | 10 · 0.072 | 10 · 0.034 | 0 | 0 |
+| tqdm | 182 · 0.265 | 8 · 0.065 | 0 | 0 | 0 |
+| jinja | 779 · 0.255 | 7 · 0.057 | 10 · 0.007 | 0 | 0 |
+| httpie | 505 · 0.297 | 15 · 0.043 | 2 · 0.014 | 0 | 0 |
+| rich | 834 · 0.548 | 6 · 0.032 | 2 · 0.090 | 0 | 0 |
+
+*(count · fraction of commits touching a file that holds one)*
+
+**Two of the four kinds do not exist in this corpus at all.** Not one of the seven
+repositories has a pre-commit configuration, and not one has a `.sql` file. C3 and C4
+were on the roadmap because they block people — which they do — but nothing here can
+measure them, and building an extractor whose corpus score is undefined is exactly what
+`guards` was doing before exp9. They need an application corpus or they stay speculative,
+and that is now written down rather than assumed.
+
+**The other two are tiny.** Four to fifteen CI checks and zero to fourteen lint rules,
+against 182 to 964 Python guards. Two orders of magnitude.
+
+### The measurement's own flaw, and what it changes
+
+"Commits touching a file that holds one" is the right statistic for a Python guard — the
+fence lives next to the code and you meet it by editing near it. **It is the wrong
+statistic for a required check**, which blocks every push whether or not you have ever
+opened its workflow file. The number above says how often a commit *moves* a CI fence,
+not how often one *stops* somebody. The true rate for the second is 1.0.
+
+That is the finding. A required check is not a needle to retrieve out of hundreds; it is
+a fixed set of four to fifteen entries that applies to everything. It does not want
+ranking, relevance or progressive disclosure — the machinery `guards` exists to provide.
+It wants stating. This repository's own `target-version = py311` against a 3.10 floor was
+exactly this class, and it went unnoticed until CI said so; a line naming the lint rule
+and the floor would have shown it, and no amount of relevance ranking would have.
+
+So Phase C is not "four more guard kinds behind the same ranked section". It is a small
+always-on statement for two kinds, and two kinds waiting for a corpus that contains them.
+
 ## What these experiments do not establish
 
 Written down because the gaps are easier to see now than they will be later, and
 because a results section that only lists wins is an advertisement.
 
 - **Guards outside Python.** exp9 scores `guards` only on what an `ast` walk can see.
-  A required CI check, a ruff rule, a pre-commit hook and a `NOT NULL` constraint are all
-  fences that stop people, and every one of them is invisible to the number above.
+  exp10 counted what it misses and found the population small (4-15 CI checks, 0-14 lint
+  rules) and two kinds absent from this corpus entirely — but "small" is not "harmless",
+  and nothing here measures how often one of them is what actually blocked somebody.
+- **Whether a required check needs retrieving at all.** exp10 argues it does not, from
+  a population count and one anecdote about this repository. That is an argument, not a
+  measurement, and it is the kind this directory exists to be suspicious of.
 - **Which repositories `guards` is wrong for.** It loses to every control on jinja, and
   the reason — tests that never spell the symbol they exercise — is visible only after
   the fact. Nothing here predicts it in advance from a repository.
