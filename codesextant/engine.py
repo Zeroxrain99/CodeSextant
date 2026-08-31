@@ -2117,6 +2117,10 @@ _GUARDS_HISTORY_SCAN = 10
 _GUARDS_HISTORY_PER_FILE = 2
 _GUARDS_HISTORY_SHOWN = 6
 
+# The importer tier, bounded the same way and for the same reason.
+_GUARDS_IMPORTER_PER_FILE = 2
+_GUARDS_IMPORTER_SHOWN = 6
+
 
 def _guard_reach(abs_path: str, changed: dict, symbols_changed: set[str],
                  notes: list) -> dict[str, str]:
@@ -2204,28 +2208,70 @@ def _guard_history_reach(abs_path: str, changed: dict) -> dict[str, dict]:
     return {path: best[path] for path in ordered[:_GUARDS_HISTORY_SCAN]}
 
 
+def _guard_importer_reach(abs_path: str, changed: dict, notes: list) -> dict[str, int]:
+    """Files importing a module the change touched, most of them first.
+
+    This is the tier that was built, rejected by eye, and then scored -- and the
+    measurement reversed the rejection. It was thrown out for being per-*file* relevance
+    with no per-guard evidence, which it is. exp9 put it against the shipped answer over
+    360 commits: **+0.072 held out [+0.039,+0.111]**, taking recall from 0.228 to 0.300.
+    The argument was sound and the conclusion was wrong, which is the case this
+    repository writes experiments for.
+
+    It is where it is because a test can import the module it exercises and never write
+    the name of the function inside it -- through a fixture, a template, a CLI runner --
+    and every tier above reads names. On jinja, the one repository `guards` loses on,
+    this is what narrows the loss.
+
+    Unlike check's DEPENDENTS section this is not shut off past twenty importers. There
+    the claim is "these files are at risk" and any two of forty would be an arbitrary
+    two; here the files are ranked by how much of the change they import and the tier
+    only fills slots per-guard evidence left empty. That is the version that was
+    measured, so it is the version that ships.
+    """
+    python_changed = [relative for relative in sorted(changed)
+                      if relative.endswith(".py")]
+    if not python_changed:
+        return {}
+    try:
+        found = references.module_dependents(abs_path, python_changed,
+                                             skip=set(changed))
+    except OSError as exc:
+        notes.append(f"Module dependents could not be scanned ({type(exc).__name__}); "
+                     "fences reachable only through an import are not listed.")
+        return {}
+    ordered = sorted(found, key=lambda path: (-found[path], path))
+    return {path: found[path] for path in ordered}
+
+
 def _rank_guards(found: list) -> list:
     """Order fences by how directly this change meets them.
 
-    Three tiers, strongest evidence first. A guard naming a symbol you just edited is
-    the one about to fail; a guard sitting in a file you touched is context; a guard in
-    a file history merely says moves with yours is a lead. The third never displaces the
-    first two -- it is ordered last, so with six slots it fills only what they left
-    empty, which is the case exp9 measured it on.
+    Four tiers, strongest evidence first. A guard naming a symbol you just edited is the
+    one about to fail; a guard sitting in a file you touched is context; a guard in a
+    file history says moves with yours is a lead; a guard in a file that imports what you
+    changed is a weaker lead still. The last two never displace the first two -- they are
+    ordered below, so with six slots they fill only what the fence's own text left empty,
+    which is the arrangement exp9 measured.
 
     Within a tier, the one whose author left no reason comes first, because that is the
-    one that will cost the most to work out when it fires. Within the history tier,
-    strongest agreement first, since there the confidence *is* the evidence.
+    one that will cost the most to work out when it fires. Within the two file-level
+    tiers, strongest first: co-change confidence, then how much of the change a file
+    imports, since there that number *is* the evidence.
     """
     def key(entry):
-        if entry["why"].startswith("names"):
+        why = entry["why"]
+        if why.startswith("names"):
             tier = 0
-        elif entry["why"].startswith("history"):
+        elif why.startswith("history"):
             tier = 2
+        elif why.startswith("imports"):
+            tier = 3
         else:
             tier = 1
         return (tier, -entry.get("history_confidence", 0.0),
-                entry["reason_source"] != "none", entry["path"], entry["line"])
+                -entry.get("imports", 0), entry["reason_source"] != "none",
+                entry["path"], entry["line"])
 
     return sorted(found, key=key)
 
@@ -2248,7 +2294,8 @@ def _guard_source(abs_path: str, row: dict) -> str:
 
 def _guards_in_reach(abs_path: str, reach: set[str], changed: dict,
                      symbols_changed: set[str],
-                     history: dict[str, dict] | None = None) -> list[dict]:
+                     history: dict[str, dict] | None = None,
+                     importers: dict[str, int] | None = None) -> list[dict]:
     """Guards a change reaches, decided per guard rather than per file.
 
     The distinction is the whole difference between a section worth reading and a
@@ -2262,13 +2309,15 @@ def _guards_in_reach(abs_path: str, reach: set[str], changed: dict,
     inside the fence, and which lines they touched is a matter for the ranking rather
     than for admission.
 
-    ``history`` is the one exception to per-guard evidence, and it is bounded rather
-    than argued away: at most two guards from each of at most three companion files,
-    labelled with the file-level claim they rest on, and ranked below everything above.
-    It is here because exp9 measured what it adds and the number held up out of sample;
-    the paragraph in _guard_history_reach carries it.
+    ``history`` and ``importers`` are the two exceptions to per-guard evidence, and both
+    are bounded rather than argued away: at most two guards from each file, at most six
+    from each tier, labelled with the file-level claim they rest on, and ranked below
+    everything above. Both are here because exp9 measured what each adds and both numbers
+    held up out of sample; the paragraphs in _guard_history_reach and
+    _guard_importer_reach carry them.
     """
     history = history or {}
+    importers = importers or {}
     collected: list[dict] = []
     for relative in sorted(reach):
         abs_file = os.path.abspath(os.path.join(abs_path, relative))
@@ -2300,25 +2349,44 @@ def _guards_in_reach(abs_path: str, reach: set[str], changed: dict,
     # case the loop above admitted nothing from it, and skipping the whole file here
     # would drop it twice for the same reason.
     already = {(row["path"], row["line"]) for row in collected}
-    added = 0
-    for relative, evidence in history.items():
-        if added >= _GUARDS_HISTORY_SHOWN:
-            break
-        abs_file = os.path.abspath(os.path.join(abs_path, relative))
-        if not os.path.isfile(abs_file):
-            continue
-        from_file = 0
-        for guard in guards_module.extract_file(abs_file, relative):
-            if from_file >= _GUARDS_HISTORY_PER_FILE or added >= _GUARDS_HISTORY_SHOWN:
+
+    def take(files, per_file: int, budget: int, describe):
+        added = 0
+        for relative in files:
+            if added >= budget:
                 break
-            row = guard.as_row()
-            if (row["path"], row["line"]) in already:
+            abs_file = os.path.abspath(os.path.join(abs_path, relative))
+            if not os.path.isfile(abs_file):
                 continue
-            row["why"] = f"history: changes with {evidence['because']}"
-            row["history_confidence"] = round(evidence["confidence"], 3)
-            collected.append(row)
-            from_file += 1
-            added += 1
+            from_file = 0
+            for guard in guards_module.extract_file(abs_file, relative):
+                if from_file >= per_file or added >= budget:
+                    break
+                row = guard.as_row()
+                if (row["path"], row["line"]) in already:
+                    continue
+                already.add((row["path"], row["line"]))
+                describe(row, relative)
+                collected.append(row)
+                from_file += 1
+                added += 1
+
+    def as_history(row, relative):
+        evidence = history[relative]
+        row["why"] = f"history: changes with {evidence['because']}"
+        row["history_confidence"] = round(evidence["confidence"], 3)
+
+    changed_python = [r for r in sorted(changed) if r.endswith(".py")]
+
+    def as_importer(row, relative):
+        count = importers[relative]
+        row["why"] = (f"imports {changed_python[0]}" if len(changed_python) == 1
+                      else f"imports {count} of the {len(changed_python)} modules "
+                           "you changed")
+        row["imports"] = count
+
+    take(history, _GUARDS_HISTORY_PER_FILE, _GUARDS_HISTORY_SHOWN, as_history)
+    take(importers, _GUARDS_IMPORTER_PER_FILE, _GUARDS_IMPORTER_SHOWN, as_importer)
     return collected
 
 
@@ -2341,10 +2409,11 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
     codebase and nobody would read it twice.
 
     * **Layer one** -- which fences are in reach at all: kind, name, ``path:line``. Six
-      of them, because the seventh turns a glance into a list. Three tiers of evidence,
+      of them, because the seventh turns a glance into a list. Four tiers of evidence,
       strongest first: the fence names what you changed, the fence sits in a file you
-      changed, or history says its file moves with yours. The third is a file-level
-      claim, printed with its confidence and never ahead of the other two.
+      changed, history says its file moves with yours, or its file imports what you
+      changed. The last two are file-level claims, printed with the number they rest on
+      and never ahead of a fence read off its own text.
     * **Layer two** -- the rule: what each one checks, derived from the code, plus the
       author's reason when there is one and a note saying which of the two you are
       reading. Printed with layer one because both are short; this is the layer that
@@ -2389,7 +2458,9 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
 
     reach = _guard_reach(abs_path, changed, symbols_changed, notes)
     history = _guard_history_reach(abs_path, changed)
-    collected = _guards_in_reach(abs_path, reach, changed, symbols_changed, history)
+    importers = _guard_importer_reach(abs_path, changed, notes)
+    collected = _guards_in_reach(abs_path, reach, changed, symbols_changed,
+                                 history, importers)
 
     ranked = _rank_guards(collected)
     if full:
@@ -2398,8 +2469,9 @@ def guards(path: str, *, base: str | None = None, staged: bool = False,
     if not ranked:
         notes.append(
             "No fence in reach of this change: nothing you touched holds a guard, "
-            "nothing elsewhere names a symbol you changed, and history offers no "
-            "companion that holds one. That is a search, not a clean bill of health -- "
+            "nothing elsewhere names a symbol you changed, and neither history nor "
+            "the import graph offers a file that holds one. That is a search, not a "
+            "clean bill of health -- "
             "only Python is read, and a guard living in CI configuration or a database "
             "constraint is outside what this can see.")
     total = len(ranked)

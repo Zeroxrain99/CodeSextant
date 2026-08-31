@@ -137,14 +137,27 @@ def test_a_file_mentioning_a_symbol_does_not_drag_in_its_other_guards(repo):
     `tests/test_limits.py` names `encode`, but only one of its two tests does. Letting
     a guard inherit its file's relevance put unrelated fences in front of the one that
     mattered -- eleven environment switches ahead of the three tests, on the real
-    repository. Evidence is now required per guard.
+    repository. The fix was never "never show them": exp9 scored that and the file-level
+    tiers are worth +0.072 held out where they fill slots nothing else reached. The fix
+    is that inheriting a file's relevance can never outrank reading the fence itself,
+    and can never be *labelled* as though it had.
     """
     result = engine.guards(str(repo), target="pkg/limits.py", symbol="encode",
                            token_budget=100_000)
-    named = {entry["name"] for entry in result["guards"]}
-
+    ordered = [(entry["name"], entry["why"]) for entry in result["guards"]]
+    named = {name for name, _why in ordered}
     assert "test_an_unknown_format_is_refused_rather_than_guessed" in named
-    assert "test_something_entirely_unrelated" not in named
+
+    positions = {name: index for index, (name, _why) in enumerate(ordered)}
+    assert positions["test_an_unknown_format_is_refused_rather_than_guessed"] == 0
+    unrelated = positions.get("test_something_entirely_unrelated")
+    if unrelated is not None:
+        why = dict(ordered)["test_something_entirely_unrelated"]
+        assert why.startswith("imports"), (
+            "an unrelated fence may fill a leftover slot, but never while claiming to "
+            f"name what you changed: {why!r}")
+        assert unrelated > positions[
+            "test_an_unknown_format_is_refused_rather_than_guessed"]
 
 
 # Progressive disclosure, because 182 to 935 guards will not fit and never could.
@@ -319,3 +332,69 @@ def test_a_companion_already_reached_by_name_is_not_listed_twice(repo_with_histo
     named = [row for row in found["guards"]
              if row["path"] == "tests/test_render.py" and row["why"].startswith("names")]
     assert named, "the stronger evidence is the one kept"
+
+
+# The importer tier. It was built, rejected by eye for resting on a file-level claim,
+# and then scored across 360 commits: +0.072 held out, taking `guards` from 0.228 to
+# 0.300. The argument for rejecting it was sound and the conclusion was wrong. What
+# follows pins the bounds that make it safe to keep, since the reasoning did not.
+
+
+def test_a_fence_reachable_only_through_an_import_is_still_found(repo):
+    """A test that imports the module and drives it through a helper never spells the
+    changed symbol, so every tier that reads names is empty by construction."""
+    _write(repo, "tests/test_indirect.py", """
+        import pkg.limits
+
+
+        def drive(fmt):
+            return pkg.limits.encode([], fmt)
+
+
+        def test_the_pipeline_refuses_what_it_cannot_write():
+            try:
+                drive("xml")
+            except ValueError:
+                assert True
+    """)
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-q", "-m", "indirect")
+    engine.index_project(str(repo), force=True)
+
+    found = engine.guards(str(repo), target="pkg/limits.py", symbol="nothing_by_this_name",
+                          token_budget=100_000)
+    reached = {row["path"]: row["why"] for row in found["guards"]}
+    assert "tests/test_indirect.py" in reached
+    assert reached["tests/test_indirect.py"].startswith("imports")
+
+
+def test_the_importer_tier_cannot_spend_the_whole_section(repo):
+    body = "\n\n".join(
+        f"def test_filler_{n}():\n    assert {n} == {n}" for n in range(12))
+    _write(repo, "tests/test_bulk.py", "import pkg.limits  # noqa: F401\n\n\n" + body + "\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-q", "-m", "bulk")
+    engine.index_project(str(repo), force=True)
+
+    importers = engine._guard_importer_reach(str(repo), {"pkg/limits.py": "M"}, [])
+    rows = engine._guards_in_reach(str(repo), set(), {"pkg/limits.py": "M"}, set(),
+                                   None, importers)
+    assert "tests/test_bulk.py" in importers
+    from_bulk = [row for row in rows if row["path"] == "tests/test_bulk.py"]
+    assert len(from_bulk) <= engine._GUARDS_IMPORTER_PER_FILE
+    assert len(rows) <= engine._GUARDS_IMPORTER_SHOWN
+
+
+def test_a_file_level_lead_never_outranks_the_fence_that_names_you(repo):
+    """The ordering is the whole safety argument: two file-level tiers exist only to
+    fill slots the fence's own text left empty, and a ranking that let either of them
+    rise would be the rejected per-file design with extra steps."""
+    found = engine.guards(str(repo), target="pkg/limits.py", symbol="encode",
+                          token_budget=100_000)
+    tiers = []
+    for row in found["guards"]:
+        why = row["why"]
+        tiers.append(0 if why.startswith("names")
+                     else 2 if why.startswith("history")
+                     else 3 if why.startswith("imports") else 1)
+    assert tiers == sorted(tiers)
