@@ -423,7 +423,7 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
 | `gates.py` | what runs against every push: CI jobs, pre-commit hooks, lint rules, the language floor. Deliberately none of this tool's ranking machinery |
 | `storage.py` | SQLite schema, derived-state markers, co-change counters |
 | `references.py` | name sweeps, jedi resolution, and the module-import scan behind DEPENDENTS |
-| `experiments/` | twelve experiments, three corpora, the frozen prevention task set, the results and the caveats |
+| `experiments/` | thirteen experiments, three corpora, the frozen prevention task set, the results and the caveats |
 
 ## Reproducing the experiments
 
@@ -463,11 +463,20 @@ with tokens recorded. **It needs agents, which is the only reason it is not done
 Everything cheaper is: every retrievable claim in the tool has a held-out number, and
 this is the only design that answers the question the tool exists for.
 
-**2. Tune the thresholds against the corpus.** `min_support` and `min_confidence`
+**2. Match names the way duplicates are actually named.** exp13 measured the reuse
+ceiling and it redirects the whole item: one added function in six repeats a shape
+already in the tree, and **0.994 of those are reachable from the name** — 0.661 carry the
+same name, 0.333 share a word. Exactly one duplicate in 1,052 added functions shared no
+word with what it repeated. `preflight` compares exact spellings and found 0 of 18
+differently-named duplicates on requests, so the reachable third is almost entirely
+unreached. That is the largest unexploited margin measured anywhere in `experiments/`,
+and it is a name-matching problem, not a body-comparison one.
+
+**3. Tune the thresholds against the corpus.** `min_support` and `min_confidence`
 predate any evidence. exp11 gives a second reason to look: the symbol tier is silent in
 52–78% of queries because a symbol's rules rest on less support than its file's, so the
 same floor may be wrong for the two tiers. Sweep on the derivation set, confirm on the
 held-out set, never the other way round.
 
-**3. Language coverage.** Resolution is Python-only; twelve other languages degrade to
+**4. Language coverage.** Resolution is Python-only; twelve other languages degrade to
 name matching, and exp2 says nothing about any of them.

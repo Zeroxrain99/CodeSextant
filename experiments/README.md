@@ -21,6 +21,7 @@ python -m experiments.exp9_guards             # does `guards` name the fence tha
 python -m experiments.exp10_invisible_guards  # how much blocks people outside what a Python reader sees?
 python -m experiments.exp11_symbol_cochange   # does asking about a symbol beat asking about its file?
 python -m experiments.exp12_prevention --build --limit 40   # the prevention task set, and the scorer's own baselines
+python -m experiments.exp13_reuse_ceiling --limit 60      # how much reinvention is there, and is it reachable from a name?
 ```
 
 The corpus is cloned on first run into `~/.cache/codesextant-corpus`, or wherever
@@ -915,6 +916,58 @@ build if that mode ever scores above 0.05 on unchanged content.
 
 Counting imports instead of mentions cut the mode from 62 tasks to 29. Fewer, and
 measuring something.
+
+## exp13 — how big is the reuse problem, and how much of it is reachable from a name?
+
+`preflight`'s first question is "does this already exist", and `check`'s `REBUILT`
+section exists because that question cannot be answered from a name alone. exp3 measured
+whether the check *finds* a known duplicate. Neither measured the thing that bounds the
+whole feature: **how often a function somebody just wrote was one the repository already
+had.** `docs/roadmap.md` D1 has carried "the ceiling is unknown" since it was written.
+
+Replaying real commits, every function added and whether the parent tree already held one
+with the same shape — names, literals and formatting discarded. Dunders excluded, and the
+first run is why: it put tqdm at 0.312 and 37 of those 40 "duplicates" were `__init__`
+matching another `__init__`, which measures how many classes a project has.
+
+| | added | repeat an existing shape | same name | shares a word | **shares nothing** |
+|---|---|---|---|---|---|
+| derivation | 451 | 0.111 | 0.720 | 0.260 | 0.020 |
+| held out | 601 | 0.196 | 0.636 | 0.364 | **0.000** |
+| **pooled** | **1052** | **0.160** | 0.661 | 0.333 | **0.006** |
+
+*(the last three columns are shares of the duplicates, not of everything added)*
+
+**One added function in six repeats something already there.** The failure is real and
+common — more common than expected.
+
+**And essentially all of it is reachable from the name.** Two thirds carry the same name,
+which `grep` already finds. Another third share a word: `_fast_exit` against `fast_exit`,
+`escape_control_codes` against `make_control_codes_readable`, `sync_do_join` against
+`do_join`. Across 1,052 added functions in six repositories, exactly **one** duplicate had
+a name sharing no word with what it repeated — and it was `info` repeating `information`,
+which is a tokeniser artefact rather than a semantic gap.
+
+### What that costs a claim this project has been making
+
+`README.md` argues the `REBUILT` section by example: *"`seconds_from_clock` and
+`normalise_duration` share no word at all, so the name-based reuse check cannot see the
+pair."* That case is real and comparing bodies is the only way to catch it. It is also
+**0.001 of added functions here** — one in a thousand. Body comparison is not what makes
+`REBUILT` worth having; catching the other 99.4% at no extra query is.
+
+**The actionable finding points the other way.** A third of duplicates share a word with
+what they repeat, and `preflight`'s name check — exact spellings — found **0 of 18**
+differently-named duplicates on requests. So the reachable-in-principle stratum is 0.994
+of duplicates and the reached-in-practice stratum is near zero. The gap is in name
+matching, not in body comparison, and it is the largest unexploited margin measured
+anywhere in this directory.
+
+**Caveat, and it inflates the headline rather than the conclusion.** Same node-type
+sequence is not the same meaning: `test_comppath` and `test_manpath` are two similar
+tests, not one wheel written twice, and both are counted. That makes 0.160 an upper bound
+on the prevalence. It does not move the strata, which are computed *within* the duplicates
+and are what the conclusion rests on.
 
 ## What these experiments do not establish
 
