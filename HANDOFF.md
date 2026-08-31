@@ -16,9 +16,9 @@ the machine.
 
 | | |
 |---|---|
-| branch | `claude/codesextant-handoff-us93o7`, head `49d858d`, 27 commits ahead of master |
-| version | 0.25.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
-| tests | `python -m pytest -q` → 715 passed, 6 skipped |
+| branch | `claude/codesextant-handoff-us93o7`, head `8104c57`, 31 commits ahead of master |
+| version | 0.26.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
+| tests | `python -m pytest -q` → 720 passed, 6 skipped |
 | lint | `python -m ruff check codesextant tests experiments` → 12 errors, all pre-existing. **12 is the baseline; 13 means you added one.** |
 | experiments | `experiments/README.md` — protocol, results, and what they do not establish |
 
@@ -31,7 +31,9 @@ python -m codesextant check .
 
 `preflight` runs before an edit, from a name. `check` runs after, from the diff, and
 takes no arguments. They ask the same three questions; `check` has more to work with
-and is the one that catches a helper reinvented under a different name.
+and is the one that catches a helper reinvented under a different name. `check` prints
+four sections: REBUILT, COMPANIONS, CALLERS, and DEPENDENTS — the last marked `?`,
+because importing a module you changed is not calling the thing you changed.
 
 **For agents:** `codesextant mcp` speaks MCP over stdio, nine tools, no new dependency.
 `claude mcp add codesextant -- codesextant mcp`.
@@ -60,7 +62,7 @@ The owner stated them, and they are the standard everything is judged against:
 |---|---|---|
 | 1. rebuilt wheel | `check` → `rebuilt` | **solved in principle.** Compares bodies, so a wheel reinvented *and renamed* is found. `preflight` cannot do this at all: before the code exists there is no body, only a name, and on requests its name-based reuse check finds 0 of 18 differently-named structural duplicates. |
 | 2. forgotten companion | `check` → `companions` | **usable.** Recall 0.169–0.250 across three repositories, 2–3× the strongest matched control, intervals excluding zero. A high-precision hint, **not a safety net**. |
-| 3. changed A, broke B | `check` → `callers` | **open.** Recall 0.068–0.086. The gap is quantified and two explanations for it are refuted; see below. |
+| 3. changed A, broke B | `check` → `callers` + `dependents` | **improved, still the weakest.** Resolved callers alone recall 0.094 pooled over 351 cases. The module-level tier added in 0.26.0 takes the whole of `check` from 0.280 to 0.326 on three repositories nothing was tuned against (+0.046, interval excluding zero). The mechanism of what is still lost is now measured rather than guessed. |
 
 ## Headline results
 
@@ -90,10 +92,48 @@ must not be sold as a reliable predictor of what else has to change.
 `sha256_utf8`) buys +0.077 to +0.167 on a held-out set. On the repository that
 suggested it, +0.778. The gap between those two numbers is why the held-out set exists.
 
+**exp5 (why the caller section is thin).** Two findings, and the first is a correction.
+exp4's `callers_ceiling` counted a held-out file as reachable if it named *any*
+definition living in a changed file; the caller section only resolves the definitions
+the diff wrote into. Restricted to those the ceiling is **0.153 / 0.439 / 0.350**, not
+0.305 / 0.759 / 0.419 — **about half the gap the previous handoff described was a
+difference between two questions.** Of the misses that remain, none dominates: cost gate
+32.5%, resolution budget 20%, a locator defect 17.5%, genuine resolver limits 30%. Note
+that the cost gate declines 7.8% of *symbols* and causes a third of the *misses* — the
+symbols it declines are the widely-named ones a held-out file is most likely to mention.
+
+**exp6 (which repair was worth building).** The reachable signal is at module level, not
+at changed-symbol level. Files importing a changed module beat resolved callers by
+**+0.102 to +0.183 in all six repositories**, every interval excluding zero. Shipped as
+the DEPENDENTS tier: `check` 0.305 → 0.362 pooled, **+0.046 [+0.017, +0.080] held out**,
+for 0.6 more files named per run. Four other candidates were measured and **not** built —
+see "what was tried and refuted" below.
+
+## What was tried and refuted
+
+Written down so nobody spends the hour again. Every one was measured before anything
+was built on it, and nothing was built on any of them.
+
+| candidate | result | pooled |
+|---|---|---|
+| Removing the resolution budget (resolve every changed symbol, not the first ten) | no gain, though `beyond_budget` is 20% of misses | +0.006 held out, not established |
+| Test files that name a changed symbol | worse than what it would replace, and three times longer | −0.063 [−0.094, −0.034] |
+| Name-level signal combined with co-change confidence | exactly level; finds nothing the two do not find apart | +0.000 [−0.034, +0.034] |
+| Ranking dependents by symbol mentions or co-change instead of import count | identical, so the plumbing was not built | 0.162 / 0.160 / 0.162 |
+| Ranking outside files by how many changed symbols they name (exp4) | worse than what ships once cut to a readable length | — |
+
+The first is the one worth remembering: **a mechanism's share of the failures is not
+the same as a repair's value.** The budget explains a fifth of the misses and removing
+it buys nothing, because those cases fail for other reasons too.
+
 ## What is not established
 
 - **Prevention.** Everything here measures retrieval. Whether an author who saw the
   answer made a better change needs agents doing tasks with and without the tool.
+- **Whether DEPENDENTS helps a reader.** It names 0.6 more files per run for +0.046
+  recall, so roughly one added file in thirteen is the forgotten one. Whether that
+  reads as a hint or as noise is a question about people, and belongs to the prevention
+  experiment.
 - **Symbol-level co-change.** It is mined, shipped and asserted, and never scored.
 - **Thresholds.** `min_support=3`, `min_confidence=0.5` predate the corpus that could
   justify them. Tuning must use the held-out repositories, not the derivation set.
@@ -138,6 +178,37 @@ marked with `?`. Merging them is the confidence inflation the whole tool exists 
 avoid. jinja is the independent evidence that the unconfirmed tier can be the more
 useful one.
 
+**Dependents are never merged with callers, and never counted as them.** Separate key,
+separate heading, marked `?`. A resolved reference says B calls the thing you changed; an
+import says B depends on the module it lives in. Merging them would be the same
+confidence inflation that leads are kept apart from callers to avoid, and it would make
+the caller section's measured recall a number about something else. The tier also skips
+any file another section already named — a slot spent repeating a stronger claim is a
+slot not spent on a file nothing else reached.
+
+**The dependents cutoff and the list length are one pair of numbers, chosen together.**
+Past 20 importers nothing is listed and a note says why, because two of forty would be an
+arbitrary two — the same reasoning as the common-name cutoff above. 20 was measured to
+cost no recall at all against no cutoff; 10 costs 0.012. If you raise the shown count,
+re-measure the cutoff, because the pair is what makes the section honest rather than
+either number alone.
+
+**The import scan is a regex over text with triple-quoted regions blanked, not `ast`.**
+`ast.parse` is the exact answer and costs about 2 ms a file, which is 194 ms on a 92-file
+repository — 40% of the whole check budget, and worse the larger the project. The cheap
+scanner agrees with `ast` on 676 of 682 files across the six corpus repositories, with
+**zero false positives**; the six differences are imported *member* names inside a
+parenthesised block, never the module. Blanking triple-quoted regions is what buys the
+zero: without it, every code sample in a docstring reads as an import. If you change the
+pattern, re-run the agreement check before trusting it.
+
+Measured cost of the tier, warm, on this repository: a one-file diff goes 25 ms → 38 ms
+(+13 ms, and the answer got *shorter* in tokens, because a section that says something
+replaces the long "nothing found" note). A diff wide enough to trip the cutoff costs
++1.2 ms, since `limit` stops the walk at 21 dependents. Worst case is one full pass with
+no early stop: 13 ms on a 213-file repository. `check` already walks the tree once per
+resolved symbol, so this is one more walk against up to ten.
+
 **`render.py` is the only renderer.** The CLI and the MCP server print the same lines
 from the same function, with a test pinning it, so the two surfaces cannot describe a
 result differently.
@@ -164,6 +235,22 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   difference where every single case moves the same way.
 - **A rule derived from a repository cannot be tested on it.** +0.778 on the derivation
   set, +0.08–0.17 held out. Clone the held-out repositories *before* looking.
+- **A ceiling is only a ceiling for the question it counts.** exp4's caller ceiling
+  counted a looser signal than the caller section resolves, and half of a "gap" that
+  drove a whole plan item was the difference between the two. When a number bounds
+  something, check that it bounds the thing you are about to try to improve.
+- **A mechanism's share of the failures is not a repair's value.** The resolution budget
+  causes 20% of caller misses and removing it buys nothing measurable, because those
+  cases fail for other reasons as well. Diagnose to shortlist, then measure the repair.
+- **When one predictor contains another, the paired bootstrap is degenerate.** `check ∪ X`
+  can never score below `check`, so the interval's lower bound is 0 by construction and
+  "excludes zero" stops being the right test at small n. Pool the cases across
+  repositories — 351 separates what 59 cannot — and report the count of cases gained and
+  lost beside the interval.
+- **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
+  question already asked. exp6 dumps a feature table per candidate file, so a new idea is
+  scored by `--score` on an old dump in one second instead of an hour. Four candidates
+  were rejected this way for the cost of one run.
 
 ## Where the code lives
 
@@ -175,7 +262,8 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
 | `render.py` | every result-to-text renderer, shared by the CLI and MCP |
 | `mcp_server.py` | JSON-RPC 2.0 over stdio, nine tools, no SDK |
 | `storage.py` | SQLite schema, derived-state markers, co-change counters |
-| `experiments/` | four experiments, corpus management, the results and the caveats |
+| `references.py` | name sweeps, jedi resolution, and the module-import scan behind DEPENDENTS |
+| `experiments/` | six experiments, corpus management, the results and the caveats |
 
 ## Reproducing the experiments
 
@@ -184,7 +272,14 @@ python -m experiments.exp1_cochange        # ~3 min
 python -m experiments.exp2_blast_radius    # ~15 min, checks out worktrees
 python -m experiments.exp3_reuse           # ~2 min
 python -m experiments.exp4_check --limit 120 --dump outcomes.json   # ~55 min
+python -m experiments.exp5_caller_gap --limit 60            # ~6 min
+python -m experiments.exp6_caller_candidates --limit 60 --dump features.json   # ~25 min
+python -m experiments.exp6_caller_candidates --score features.json             # instant
 ```
+
+`exp6 --score` is the one to reach for first. It re-runs every candidate over a dump
+written earlier, so a new idea costs a second; only a candidate needing a *feature the
+dump does not carry* costs another collection run.
 
 The corpus clones itself into `~/.cache/codesextant-corpus` or `$CODESEXTANT_CORPUS`.
 `--repo PATH` scores a repository of your own, which is the only way to know whether
@@ -194,21 +289,21 @@ these numbers hold for the code you actually work on.
 
 # Next steps, in order
 
-**1. Close the caller gap — the owner's third problem, still open.**
-Recall 0.068–0.086 against a ceiling of 0.305–0.759: the information is there and
-resolution is not reaching it. Two mechanical explanations are already refuted (the
-`src/` layout does not degrade jedi; the cost gate declines only 7.8% of symbols) and
-one candidate is already rejected (ranking outside files by how many changed symbols
-they name is worse than what ships once truncated to a readable length). Untried:
-combining the name-level signal with co-change confidence rather than with itself;
-targeted jedi resolution of the top name candidates rather than of the first ten
-changed symbols; treating a test file that names the changed symbol as its own signal.
-**Measure the candidate before building it** — that discipline has already saved one
-build in this directory.
-
-**2. Score symbol-level co-change.** It ships and is asserted and has never been
+**1. Score symbol-level co-change.** It ships and is asserted and has never been
 measured. An exp1 variant, cheap, and it either justifies the per-file diff mining or
-retires it.
+retires it. It is first now because the caller gap has been worked and this has not.
+
+**2. The caller side's two loose ends, both now narrow.** The gap is worked, not closed,
+and exp5 says exactly what is left. (a) The **cost gate is the largest single mechanism
+at 32.5% of misses**, and `check` currently drops a declined symbol entirely — where
+`preflight`, asked the same thing, shows its leads marked `?`. Showing ranked leads for
+declined symbols costs nothing, since the sweep has already run; the caution is that
+`names@k`, a looser relative of that signal, scored *below* `check` in all six
+repositories, so rank and truncate before believing it. (b) **`preflight` has no
+module-level tier at all.** DEPENDENTS only exists in `check`; the same
+`references.module_dependents` call would work before an edit, where there is a file but
+no diff. Both are `exp6 --score` questions first — (a) needs one new feature in the dump
+(which symbol was declined), (b) needs a preflight-shaped collection.
 
 **3. Tune the thresholds against the corpus.** `min_support` and `min_confidence`
 predate any evidence. Co-change recall is ~0.10 and there is very likely a better
