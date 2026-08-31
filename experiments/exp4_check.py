@@ -38,10 +38,17 @@ Intervals are bootstrapped over cases, which here are whole commits and so indep
 of each other. They are reported because an earlier experiment in this directory
 produced a repository whose result reversed, and a number without error bars could not
 say whether that mattered.
+
+Two predictors scored on the same cases are *paired*, and comparing their separate
+intervals understates the evidence badly -- two intervals can overlap while every case
+moves the same way. Differences that matter to a decision are therefore bootstrapped as
+differences, per case. Per-case outcomes are also written out, so a later question can
+be asked of a finished run instead of costing another hour of one.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import subprocess
@@ -138,7 +145,34 @@ def evaluate(repo: str, *, limit: int = 60, seed: int = 0,
                 directory_files.setdefault(os.path.dirname(path), set()).add(path)
 
     return {"repo": os.path.basename(repo), "scored": scored,
-            "results": {name: tally.row() for name, tally in tallies.items()}}
+            "results": {name: tally.row() for name, tally in tallies.items()},
+            "outcomes": {name: tally.outcomes for name, tally in tallies.items()}}
+
+
+def paired_difference(left: list[int], right: list[int], *, seed: int = 0,
+                      rounds: int = 4000) -> dict:
+    """Bootstrap the per-case difference in recall, resampling cases not predictors.
+
+    The two predictors saw the same cases, so the question is whether the difference
+    is real -- not whether two separately estimated rates happen to sit apart. An
+    interval on the difference that excludes zero says the first is better; one that
+    contains zero says this many cases cannot tell.
+    """
+    if not left or len(left) != len(right):
+        return {}
+    rng = random.Random(seed)
+    size = len(left)
+    values = []
+    for _ in range(rounds):
+        total = 0
+        for _i in range(size):
+            pick = rng.randrange(size)
+            total += left[pick] - right[pick]
+        values.append(total / size)
+    values.sort()
+    low, high = values[int(rounds * 0.025)], values[int(rounds * 0.975)]
+    return {"mean": sum(a - b for a, b in zip(left, right)) / size,  # noqa: B905
+            "low": low, "high": high, "excludes_zero": low > 0 or high < 0}
 
 
 def _naming_counts(tree: str, applied: list[str]) -> Counter:
@@ -224,7 +258,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", action="append", default=None)
     parser.add_argument("--limit", type=int, default=60)
+    parser.add_argument("--dump", default=None,
+                        help="write per-case outcomes here, so later questions are free")
     args = parser.parse_args()
+    dumped = {}
     repos = args.repo or [corpus.ensure(name, url) for name, url in corpus.EXTERNAL]
     for repo in repos:
         report = evaluate(repo, limit=args.limit)
@@ -236,6 +273,20 @@ def main() -> int:
             low, high = row["recall_ci"]
             print(f"{name:14} {row['recall']:8.3f} {f'[{low:.3f},{high:.3f}]':>16} "
                   f"{row['speaks']:8.3f} {row['mean_n']:8.1f} {row['cases']:7}")
+        outcomes = report["outcomes"]
+        print("  paired differences (same cases, so the difference is the statistic):")
+        for left, right in (("check", "companions"), ("check", "same_dir@k"),
+                            ("callers_named@k", "check")):
+            delta = paired_difference(outcomes[left], outcomes[right])
+            if not delta:
+                continue
+            verdict = "real" if delta["excludes_zero"] else "not established"
+            print(f"    {left} - {right:16} {delta['mean']:+.3f}  "
+                  f"[{delta['low']:+.3f},{delta['high']:+.3f}]  {verdict}")
+        dumped[report["repo"]] = outcomes
+    if args.dump:
+        with open(args.dump, "w", encoding="utf-8") as handle:
+            json.dump(dumped, handle)
     return 0
 
 
