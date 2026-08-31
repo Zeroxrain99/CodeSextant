@@ -16,6 +16,7 @@ python -m experiments.exp4_check          # hold a file out of a commit: does ch
 python -m experiments.exp5_caller_gap     # where does the caller section lose?
 python -m experiments.exp6_caller_candidates   # which repair for it is worth building?
 python -m experiments.exp7_preflight_dependents # does preflight want the same repair?
+python -m experiments.exp8_guard_inventory    # can the guards be found, and do they say why?
 ```
 
 The corpus is cloned on first run into `~/.cache/codesextant-corpus`, or wherever
@@ -586,6 +587,42 @@ files with the same early rejection as `name_sweep`.
 **Where it matters most is the case the other two tiers cannot reach at all.** Ask preflight
 about a function you are about to add and both symbol-level tiers are empty by construction
 — nothing to resolve, nothing to name — while the file's importers are there to be read.
+
+## exp8 — the guard inventory, and the design it stopped
+
+Full write-up in [`docs/guard-index.md`](../docs/guard-index.md). Two numbers decide the
+shape of a guard registry and both are cheap, so both were taken before anything was
+designed.
+
+**Guards are dense.** 16 to 34 per thousand lines, 182 to 935 per repository, of which
+72–89% are tests. A flat registry of that many entries is a second codebase, so
+progressive disclosure is the only shape that fits.
+
+**The reason is usually not written down.** `raise` and `assert` guards carry their
+message and are 94–100% self-documenting. Everything else is not: tests are 3%
+documented in jinja and 7% in httpie; thresholds and environment switches — the literal
+safety valves — sit at or near zero almost everywhere, this repository included, where
+88% of 78 environment switches say nothing about why they exist.
+
+**And the commit does not rescue them.** Sampling 250 undocumented guards per repository
+and searching the whole commit message, body included, for an explanatory clause: 0.00 to
+0.04 in the five large repositories, 0.10 here. The reason is not in history either.
+
+That result killed the obvious design before it was built — an index whose middle layer
+is prose would be empty for exactly the guards that block people. The design that
+replaces it leads with the machine-derivable *rule* and treats prose as a bonus.
+
+### A sampling bias this uncovered in exp4 and exp6
+
+Both hold out `sorted(files)`' first `.py` entry, and path sorting puts `tests/` after
+`src/` and most package directories. A guard file is present in 0.54–0.57 of sampled
+commits but is the held-out one in only 0.06–0.12 of them. Asked how often `check` names
+a held-out *guard*, the answer is 0.476 on 21 derivation cases and 0.182 on 11 held-out
+cases — opposite directions, both far too small to read.
+
+**So the numbers in this directory say very little about the guard case specifically.**
+Any experiment on it has to hold out a guard file deliberately rather than take whatever
+sorting hands it.
 
 ## What these experiments do not establish
 
