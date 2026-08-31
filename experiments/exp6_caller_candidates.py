@@ -58,7 +58,10 @@ from experiments.exp4_check import paired_difference  # noqa: E402
 CANDIDATES = ("check", "callers", "callers_unbudgeted", "check_unbudgeted",
               "importers", "importers@k", "importers_cochange@k",
               "importers_names@k", "check+importers@k", "check+importers@2",
-              "names@k", "names_imports", "names_cochange", "test_names")
+              "names@k", "names_imports", "names_cochange", "test_names",
+              "check+dependents@2", "check+importers@2/cut10",
+              "check+importers@2/cut20", "check+importers@2/cut40",
+              "check+importers@2/cut80", "shipped", "check+shipped")
 
 
 def _git(root: str, *args: str) -> tuple[int, str]:
@@ -249,6 +252,9 @@ def _collect(repo: str, home: str, sha: str, files: set[str], cases: list) -> in
             "callers_unbudgeted": sorted({path for entry in unbudgeted.get("callers") or []
                                           for path in entry.get("callers") or []}),
             "rebuilt": sorted(rebuilt),
+            # What the shipped tier really produced, so the candidate can be scored as
+            # the code that would run rather than as the prototype that measured it.
+            "dependents": [entry["path"] for entry in result.get("dependents") or []],
         })
         return 1
     finally:
@@ -316,7 +322,41 @@ def _predict(case: dict, name: str) -> set[str]:
         ranked = sorted(((row["names"], path) for path, row in features.items()
                          if row["names"]), key=lambda item: (-item[0], item[1]))
         return {path for _n, path in ranked[:budget]}
+    if name.startswith("check+importers@2/cut"):
+        # The common-name invariant, applied to dependents: past some number of
+        # importers, showing two of them is showing an arbitrary two. Where that number
+        # falls is measured here rather than chosen, because every cutoff costs recall
+        # and the question is how much.
+        cutoff = int(name.rsplit("cut", 1)[1])
+        importers = {path for path, row in features.items() if row["imports"]}
+        shown = set() if len(importers) > cutoff else _shipped_dependents(case, 2)
+        return _predict(case, "check") | shown
+    if name == "check+dependents@2":
+        return _predict(case, "check") | _shipped_dependents(case, 2)
+    if name == "check+shipped":
+        return _predict(case, "check") | set(case.get("dependents") or ())
+    if name == "shipped":
+        return set(case.get("dependents") or ())
     raise KeyError(name)
+
+
+def _shipped_dependents(case: dict, cap: int) -> set[str]:
+    """What the shipped tier would show: the top ``cap`` importers nobody else named.
+
+    Two departures from the candidate that was measured, both of which only ever help
+    and both of which are re-measured rather than assumed. Files another section
+    already names are passed over instead of spending a slot on a repeat, and the
+    ranking drops the tiebreaker on how many changed symbols a file mentions -- pooled
+    over six repositories, ranking by imports, by symbol mentions, or by co-change
+    scored 0.162, 0.162 and 0.160, so the tiebreaker bought nothing and the plumbing to
+    carry it into check would have been paid for nothing.
+    """
+    already = (set(case["companions"]) | set(case["callers"]) | set(case["rebuilt"]))
+    features = case["features"]
+    ranked = sorted((path for path, row in features.items()
+                     if row["imports"] and path not in already),
+                    key=lambda path: (-features[path]["imports"], path))
+    return set(ranked[:cap])
 
 
 def _importers_at(features: dict, budget: int, keys: tuple[str, ...]) -> set[str]:

@@ -288,3 +288,95 @@ def test_the_rendering_marks_a_rebuilt_unit_against_what_it_repeats(repo):
     assert "REBUILT" in text
     assert "seconds_from_clock  app.py:1" in text
     assert "already exists as  normalise_duration  util.py:1" in text
+
+
+# Who breaks: the file-level half of it.
+#
+# The caller section asks who calls a changed symbol and answers with jedi, which is
+# precise and, measured against real commits, silent most of the time -- it names the
+# file held out of a commit in 0.094 of cases against a ceiling of about 0.15 for the
+# question it asks. The file-level question reaches 0.217 because a module import can
+# be read off the source with no inference at all. It is a weaker claim and is kept
+# apart from the stronger one for exactly that reason.
+
+def test_a_file_importing_the_changed_module_is_named(repo):
+    """The case the tier exists for: a dependency resolution cannot confirm.
+
+    ``report`` reaches the changed function through ``getattr``, so jedi has nothing to
+    resolve and the caller section is correctly silent. The file still has to change
+    when ``parse`` does, and its import says so.
+    """
+    _commit(repo, "seed", {
+        "pkg/__init__.py": "",
+        "pkg/parser.py": "def parse(raw):\n    return raw\n",
+        "pkg/report.py": "from pkg import parser\n\n\ndef report(raw, name):\n"
+                         "    return getattr(parser, name)(raw)\n",
+    })
+    engine.index_project(str(repo), force=True)
+    _write(repo, "pkg/parser.py", "def parse(raw):\n    return raw.strip()\n")
+
+    result = engine.check(str(repo))
+
+    assert result["callers"] == [], "nothing resolves through getattr, and it should not"
+    assert [entry["path"] for entry in result["dependents"]] == ["pkg/report.py"]
+    text = "\n".join(render.check_lines(result, str(repo)))
+    assert "DEPENDENTS" in text
+    assert "?  pkg/report.py" in text, "an unconfirmed claim has to be marked as one"
+
+
+def test_a_dependent_the_caller_section_already_named_is_not_repeated(repo):
+    """Separate claims, but not two chances to say the same file.
+
+    A resolved caller is the stronger statement, so a slot spent repeating it is a slot
+    not spent on a file nothing else reached.
+    """
+    _commit(repo, "seed", {
+        "pkg/__init__.py": "",
+        "pkg/parser.py": "def parse(raw):\n    return raw\n",
+        "pkg/report.py": "from pkg.parser import parse\n\n\ndef report(raw):\n"
+                         "    return parse(raw)\n",
+    })
+    engine.index_project(str(repo), force=True)
+    _write(repo, "pkg/parser.py", "def parse(raw):\n    return raw.strip()\n")
+
+    result = engine.check(str(repo))
+
+    assert [path for entry in result["callers"] for path in entry["callers"]] == \
+        ["pkg/report.py"]
+    assert result["dependents"] == []
+
+
+def test_a_relative_import_counts_and_a_docstring_mention_does_not(repo):
+    """``from . import parser`` is the common form inside a package, and an example in
+    a docstring is not a dependency however much it looks like one."""
+    _commit(repo, "seed", {
+        "pkg/__init__.py": "",
+        "pkg/parser.py": "def parse(raw):\n    return raw\n",
+        "pkg/near.py": "from . import parser\n\n\ndef go(raw, name):\n"
+                       "    return getattr(parser, name)(raw)\n",
+        "pkg/docs.py": 'HELP = """\nUsage:\n    from pkg import parser\n"""\n',
+    })
+    engine.index_project(str(repo), force=True)
+    _write(repo, "pkg/parser.py", "def parse(raw):\n    return raw.strip()\n")
+
+    named = {entry["path"] for entry in engine.check(str(repo))["dependents"]}
+
+    assert "pkg/near.py" in named
+    assert "pkg/docs.py" not in named, "a code sample in a string is not an import"
+
+
+def test_a_module_everything_imports_lists_nothing_and_says_so(repo):
+    """The reuse check does not offer eight of thirty-eight ``__init__`` definitions,
+    and for the same reason two of forty importers would be an arbitrary two."""
+    files = {"pkg/__init__.py": "", "pkg/core.py": "def run():\n    return 1\n"}
+    for n in range(25):
+        files[f"pkg/user{n}.py"] = f"from pkg.core import run\n\nX{n} = run\n"
+    _commit(repo, "seed", files)
+    engine.index_project(str(repo), force=True)
+    _write(repo, "pkg/core.py", "def run():\n    return 2\n")
+
+    result = engine.check(str(repo))
+
+    assert result["dependents"] == []
+    assert any("import the modules you changed" in note for note in result["notes"]), (
+        "a silent empty section reads as 'nothing depends on this'")

@@ -1987,6 +1987,64 @@ def _structural_matches(store, unit: dict, abs_file: str, root: str,
     return out
 
 
+# How many dependents may be listed, and the number above which none are. These are
+# deliberately one pair of numbers rather than a length and a separate cap: past the
+# cutoff the two shown would be an arbitrary two of many, which is the same reasoning
+# that stops the reuse check offering eight of a project's thirty-eight __init__
+# definitions. Measured over 351 held-out-file cases in six repositories, a cutoff of
+# 20 costs no recall at all against no cutoff (0.362 either way) while printing less;
+# a cutoff of 10 costs 0.012.
+_DEPENDENTS_SHOWN = 2
+_DEPENDENTS_MAX = 20
+
+
+def _module_dependents_tier(abs_path: str, supported: dict, changed: dict,
+                            companions: dict, callers: list, rebuilt: list,
+                            notes: list, *, skip: bool) -> list[dict]:
+    """Files importing a module the diff changed, which nothing else already names.
+
+    The caller section asks who calls a changed *symbol* and answers with jedi, which
+    is precise and conservative. Measured against real commits, it names the file that
+    was held out of the commit in 0.094 of cases; the file-level question -- who imports
+    the module you changed -- reaches 0.217, because a module import can be read off the
+    source without inference, and because a file that depends on a module often has to
+    change with it without calling the exact function that moved.
+
+    The claim is weaker and is kept separate for that reason. What ships is the two
+    strongest dependents no other section has already named, which measured +0.046
+    recall on three repositories nothing here was tuned against (interval [+0.017,
+    +0.080]), for 0.7 more files named per run.
+    """
+    if skip:
+        return []
+    python_changed = [rel for rel in supported if rel.endswith(".py")]
+    if not python_changed:
+        return []
+    try:
+        found = references.module_dependents(
+            abs_path, python_changed, skip=set(changed), limit=_DEPENDENTS_MAX + 1)
+    except OSError as exc:
+        notes.append(f"Module dependents could not be scanned ({type(exc).__name__}).")
+        return []
+    if not found:
+        return []
+    if len(found) > _DEPENDENTS_MAX:
+        # Announced rather than silently truncated: a reader told nothing would read
+        # the empty section as "nothing depends on this".
+        notes.append(
+            f"More than {_DEPENDENTS_MAX} files import the modules you changed, so no "
+            "dependents are listed: at that width any two of them would be an "
+            "arbitrary two.")
+        return []
+    already = ({entry["path"] for entry in companions.values()}
+               | {path for entry in callers for path in entry["callers"]}
+               | {match["path"] for entry in rebuilt for match in entry["matches"]})
+    ranked = sorted((path for path in found if path not in already),
+                    key=lambda path: (-found[path], path))
+    return [{"path": path, "imports": found[path]}
+            for path in ranked[:_DEPENDENTS_SHOWN]]
+
+
 def check(path: str, *, base: str | None = None, staged: bool = False,
           token_budget: int = 1500, resolve="auto") -> dict:
     """What the change you have already made looks like it forgot.
@@ -2119,7 +2177,11 @@ def check(path: str, *, base: str | None = None, staged: bool = False,
             f"{len(changed_symbols)} symbols changed; callers were resolved for the "
             f"first {budget} (CODESEXTANT_CHECK_MAX_SYMBOLS).")
 
-    if not rebuilt and not companions and not callers:
+    dependents = _module_dependents_tier(
+        abs_path, supported, changed, companions, callers, rebuilt, notes,
+        skip=truncated_diff)
+
+    if not rebuilt and not companions and not callers and not dependents:
         notes.append("Nothing found: no changed unit repeats a shape already in the "
                      "index, no companion this history considers reliable was left "
                      "out, and no resolved caller sits outside the diff. Each of the "
@@ -2135,6 +2197,10 @@ def check(path: str, *, base: str | None = None, staged: bool = False,
         "companions": sorted(companions.values(),
                              key=lambda c: (-c["confidence"], -c["support"])),
         "callers": sorted(callers, key=lambda c: -c["count"]),
+        # A separate key, never folded into callers: importing a module is not calling
+        # the function that changed, and merging the two is the confidence inflation
+        # this tool exists to avoid.
+        "dependents": dependents,
         "notes": notes,
         "approx_tokens": 0,
     }
@@ -2143,6 +2209,11 @@ def check(path: str, *, base: str | None = None, staged: bool = False,
     while result["approx_tokens"] > token_budget:
         if len(result["changed_files"]) > 5:
             result["changed_files"].pop()
+        elif result["dependents"]:
+            # The weakest claim in the answer goes first when the budget bites: an
+            # unconfirmed dependent is worth less than a resolved caller or a companion
+            # history vouches for.
+            result["dependents"].pop()
         elif len(result["callers"]) > 2:
             result["callers"].pop()
         elif len(result["companions"]) > 3:

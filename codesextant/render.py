@@ -232,6 +232,18 @@ def check_lines(result: dict, root: str | None = None) -> list[str]:
             more = (f" (+{entry['count'] - 4} more)" if entry["count"] > 4 else "")
             lines.append(f"    {entry['symbol']}  ({entry['defined_in']})  -> {shown}{more}")
 
+    if result.get("dependents"):
+        # Marked, and under its own heading, because importing a module you changed is
+        # not the same claim as calling a function you changed. Printing the two in one
+        # list would read as more confirmation than there is -- the same reason
+        # preflight marks its leads.
+        lines.append(f"\n  DEPENDENTS       {len(result['dependents'])} file(s) import "
+                     "what you changed; unconfirmed, nothing resolved to them")
+        for entry in result["dependents"]:
+            imports = (f"  ({entry['imports']} of the changed modules)"
+                       if entry.get("imports", 0) > 1 else "")
+            lines.append(f"    ?  {entry['path']}{imports}")
+
     for note in result.get("notes") or []:
         lines.append(f"\n  Note: {note}")
     return lines

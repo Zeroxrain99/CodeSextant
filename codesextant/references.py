@@ -360,6 +360,170 @@ def find_references(src_root: str, symbol: str, def_path: str | None = None,
     return result
 
 
+# An import statement, anchored to the start of a line so a mention inside an
+# expression cannot match. Indentation is allowed on purpose: an import inside a
+# function or a TYPE_CHECKING block is exactly the kind of dependency a
+# top-of-file-only scan would miss, and this project's own lazy modules are written
+# that way.
+#
+# The parenthesised alternative is not a nicety. ``from . import (\n cochange,\n ... )``
+# is how a package imports several of its own submodules, and there the imported names
+# *are* the modules -- so a pattern stopping at the newline loses precisely the
+# intra-package dependencies this is for, while losing nothing but member names in the
+# ``from .cookies import (...)`` case where the module is on the first line anyway.
+_IMPORT_LINE = re.compile(
+    r"^[ \t]*(?:from[ \t]+(?P<dots>\.*)(?P<module>[\w.]*)[ \t]+import[ \t]+"
+    r"(?:\((?P<block>[^)]*)\)|(?P<names>[^\n#]+))"
+    r"|import[ \t]+(?P<plain>[\w.]+(?:[ \t]*,[ \t]*[\w.]+)*))", re.M)
+_TRIPLE_QUOTE = re.compile(r'"""' + "|" + r"'''")
+
+
+def _without_triple_quoted(text: str) -> str:
+    """The same text with triple-quoted regions blanked, keeping the line structure.
+
+    Docstrings and test fixtures are full of example code, and every ``import`` inside
+    one would otherwise read as the enclosing file importing it -- which is how a
+    dependents list fills up with files that merely *document* the module. Regions
+    become newlines rather than disappearing, so the line-anchored import pattern still
+    sees real statements at the starts of the lines that follow.
+
+    This is a heuristic and not a parse: a triple quote inside a single-quoted string
+    opens a region that is not there. It is the cheap half of a trade made on purpose.
+    Parsing each file with ``ast`` is the exact answer and costs about two milliseconds
+    a file, which across a project is more than the whole check is allowed to take.
+    """
+    if '"""' not in text and "'''" not in text:
+        return text
+    out: list[str] = []
+    position = 0
+    while True:
+        opened = _TRIPLE_QUOTE.search(text, position)
+        if opened is None:
+            out.append(text[position:])
+            break
+        out.append(text[position:opened.start()])
+        # The closer must be the same kind of quote, or a ''' inside a \"\"\" block
+        # would end a region that has not started.
+        closed = text.find(opened.group(0), opened.end())
+        body_end = len(text) if closed == -1 else closed + 3
+        out.append("\n" * text.count("\n", opened.start(), body_end))
+        if closed == -1:
+            break
+        position = body_end
+    return "".join(out)
+
+
+def imported_modules(text: str, relative: str) -> set[str]:
+    """Every module name a Python file imports, with relative imports made absolute.
+
+    ``relative`` is the file's path from the project root, and it is what makes
+    ``from . import x`` and ``from ..pkg import y`` resolvable at all: the leading dots
+    count upwards from the file's own package, so without knowing where the file sits
+    there is no way to say what they name. Both forms are the common case inside a
+    package, and a scanner skipping them would be blind to exactly the intra-project
+    dependencies this exists to find.
+
+    Prefixes count as well as full names -- ``import a.b.c`` also depends on ``a`` and
+    ``a.b`` -- because importing a submodule executes every package above it.
+    """
+    package = relative.split("/")[:-1]
+    found: set[str] = set()
+    for match in _IMPORT_LINE.finditer(_without_triple_quoted(text)):
+        plain = match.group("plain")
+        if plain:
+            for piece in plain.split(","):
+                name = piece.strip()
+                if not name:
+                    continue
+                found.add(name)
+                found.update(name.rsplit(".", index)[0]
+                             for index in range(1, name.count(".") + 1))
+            continue
+        dots, module = match.group("dots") or "", match.group("module") or ""
+        if dots:
+            # One dot means "this package", two means the one above it.
+            base = package[:len(package) - len(dots) + 1]
+            prefix = ".".join([*base, module]) if module else ".".join(base)
+        else:
+            prefix = module
+        if not prefix:
+            continue
+        found.add(prefix)
+        # ``from pkg import mod`` names a module when mod is one, which is how a
+        # package exposes its submodules. The caller intersects against real files, so
+        # offering the longer name costs nothing on the occasions it is not one.
+        for piece in (match.group("names") or match.group("block") or "").split(","):
+            name = piece.strip().split(" as ")[0].strip().strip("()").strip()
+            if name and name != "*" and name.isidentifier():
+                found.add(f"{prefix}.{name}")
+    return found
+
+
+def module_names_for(relative: str) -> set[str]:
+    """Every dotted name under which a file could be imported.
+
+    A project keeping its package under ``src/`` imports ``src/requests/sessions.py``
+    as ``requests.sessions`` and never as ``src.requests.sessions``; a project without
+    that layout does the opposite. Rather than detect the layout -- which needs
+    packaging metadata that need not be present -- every suffix of the path is offered,
+    and the importing file decides which one it actually wrote.
+    """
+    if not relative.endswith(".py"):
+        return set()
+    parts = relative[:-3].split("/")
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return {".".join(parts[index:]) for index in range(len(parts))} if parts else set()
+
+
+def module_dependents(src_root: str, relatives, *, skip=frozenset(),
+                      limit: int = 200) -> dict[str, int]:
+    """Files importing any of ``relatives``, and how many of them each one imports.
+
+    This is the blast radius asked one level up from :func:`find_references`. A Python
+    caller of a changed function has to import the module defining it, and module
+    imports are recoverable without a resolver: no inference, no type propagation, no
+    conservative refusal on a dynamically dispatched call. It is a weaker claim than a
+    resolved reference -- importing a module is not calling the function that changed --
+    and it is one that can still be made where the stronger claim comes back empty,
+    which measurement says is most of the time.
+
+    Cost is one pass over the project's Python files with a byte-level rejection before
+    anything is decoded, the same shape and the same reason as :func:`name_sweep`.
+    ``limit`` stops the walk once that many dependents are found, because a module two
+    hundred files import is not one whose dependents are worth listing.
+    """
+    targets: set[str] = set()
+    for relative in relatives:
+        targets |= module_names_for(relative)
+    if not targets:
+        return {}
+    # Importing one of these means containing its last component as text, so the
+    # overwhelming majority of files are rejected without ever being decoded.
+    needles = {name.rsplit(".", 1)[-1].encode("utf-8") for name in targets}
+    skipped = {os.path.normcase(os.path.abspath(os.path.join(src_root, path)))
+               for path in skip}
+
+    dependents: dict[str, int] = {}
+    for path in _iter_python_files(src_root):
+        if os.path.normcase(os.path.abspath(path)) in skipped:
+            continue
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        if not any(needle in data for needle in needles):
+            continue
+        relative = os.path.relpath(path, src_root).replace(os.sep, "/")
+        count = len(imported_modules(data.decode("utf-8", "replace"), relative) & targets)
+        if count:
+            dependents[relative] = count
+            if len(dependents) >= limit:
+                break
+    return dependents
+
+
 def name_match_references(src_root: str, symbol: str, *, def_path: str | None = None,
                           lang: str | None = None, include_low_confidence: bool = True,
                           max_candidate_files: int = 400) -> dict:
