@@ -120,6 +120,48 @@ Name matching cannot distinguish same-named symbols in different scopes. In coll
 
 ## Give CodeSextant to your agent
 
+### As MCP tools (recommended)
+
+CodeSextant speaks the Model Context Protocol over stdio, so an agent calls it directly
+instead of writing a client:
+
+```text
+preflight(file="codesextant/storage.py", symbol="project_key")
+```
+
+Register it once. Claude Code:
+
+```bash
+claude mcp add codesextant -- codesextant mcp
+```
+
+Or, for any client that reads an `mcpServers` block (Codex, Cursor, Claude Desktop):
+
+```json
+{
+  "mcpServers": {
+    "codesextant": {
+      "command": "codesextant",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Eight tools, and deliberately no more, because every tool description is context the agent
+pays for on every turn: `preflight`, `code_map`, `find_references`, `impact`, `symbols`,
+`find_duplicates`, `index`, `status`. Each one takes an optional `project` argument and
+otherwise works in the directory the server was started in.
+
+Calls are served by the shared local daemon, so several agents on one machine use one index
+and one process rather than one each. If the daemon will not start, the same call runs
+in-process and the answer says so instead of failing. A project that has never been indexed
+is indexed on the first call, and the answer says that too.
+
+`codesextant mcp --no-daemon` (or `CODESEXTANT_MCP_NO_DAEMON=1`) always answers in-process.
+
+### As an Agent Skill
+
 The PyPI package includes the [CodeSextant SKILL.md](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/skills/codesextant/SKILL.md). Install it after `pip install codesextant`:
 
 ```bash
@@ -165,6 +207,7 @@ python -m codesextant preflight  <repo> <file> [--symbol S]  # before editing: r
 python -m codesextant references <repo> <symbol> [--src-root R] [--def-path D]
 python -m codesextant symbols    <repo> [--file F]
 python -m codesextant status     <repo>
+python -m codesextant mcp        [repo]                     # serve the index to an MCP client over stdio
 python -m codesextant cache                                 # managed index cache usage
 # any command takes --json for machine-readable output
 ```
@@ -230,6 +273,8 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 | `CODESEXTANT_COCHANGE_MAX_COMMITS` | `2000` | how far back history is read |
 | `CODESEXTANT_COCHANGE_MIN_SUPPORT` | `3` | commits a pair must share before it is reported as a rule |
 | `CODESEXTANT_COCHANGE_MIN_CONFIDENCE` | `0.5` | how often the companion must follow before the rule is worth showing |
+| `CODESEXTANT_MCP_NO_DAEMON` | unset | make `codesextant mcp` answer in its own process instead of sharing the local daemon |
+| `CODESEXTANT_PROJECT` | unset | default project root for `codesextant mcp` when no path is given |
 | `CODESEXTANT_PREFLIGHT_NAME_SIMILARITY` | `0.5` | word overlap at which an existing definition counts as a reuse candidate |
 | `CODESEXTANT_NAMEGRAPH_MAX_UNIQUE_EDGES` | `250000` | hard cap so generated code cannot exhaust memory |
 | `CODESEXTANT_WATCH_ENABLED` | on | filesystem watcher for proactive incremental indexing |

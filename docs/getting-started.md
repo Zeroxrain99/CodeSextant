@@ -104,6 +104,20 @@ Run `codesextant cache` to inspect managed index usage without exposing reposito
 
 To remove all indexes, browser sessions, and the local API token, stop the daemon and delete `~/.codesextant`. CodeSextant does not upload the index or send telemetry.
 
+## Connect it to an agent over MCP
+
+```bash
+claude mcp add codesextant -- codesextant mcp
+```
+
+For any client that reads an `mcpServers` block — Codex, Cursor, Claude Desktop — the equivalent entry is `{"command": "codesextant", "args": ["mcp"]}`.
+
+The agent then calls `preflight(file="path/to/file.py", symbol="name")` as a tool, rather than importing a client and writing the error handling around it. That difference decides whether the index gets consulted at all: an agent weighing fifteen lines of setup against one `rg` call picks `rg`, and then rebuilds something that already existed.
+
+Eight tools are exposed and no more — `preflight`, `code_map`, `find_references`, `impact`, `symbols`, `find_duplicates`, `index`, `status` — because every tool description is context the agent carries on every turn.
+
+Calls go through the same shared daemon the CLI uses, so several agents on one machine share one index and one process. If the daemon will not start, the same query runs inside the MCP server and the answer says so rather than failing; `--no-daemon` makes that the default. A project that has never been indexed is indexed on the first call, and the answer says that too.
+
 ## Install the agent skill
 
 ```bash

@@ -9,6 +9,27 @@ Use the installed `codesextant` package as an opportunistic navigation accelerat
 text search. It is never a prerequisite for modifying code. It runs locally, and all agents on
 the machine share one active daemon and one persistent index per project.
 
+## First: are the CodeSextant tools already in your tool list?
+
+Look for `preflight`, `code_map`, `find_references`, `impact`, `symbols`, `find_duplicates`,
+`index`, and `status`. If they are there, CodeSextant is connected over MCP — call them
+directly and skip the Python entirely:
+
+```text
+preflight(file="codesextant/storage.py", symbol="project_key")
+```
+
+Everything else in this skill still applies: *when* to call preflight (before writing, not
+after), how to read the three sections, and what each confidence label means. Only the
+transport differs, and the tool names are the same as the client methods below without the
+`cs.` prefix. An unindexed project is indexed on the first call, so there is nothing to set
+up first.
+
+If those tools are not in your list, the user can add them once with
+`claude mcp add codesextant -- codesextant mcp` (or the equivalent `mcpServers` entry for
+their client). Until then, use the Python client below — it reaches the same daemon and the
+same index.
+
 ## Start a task
 
 1. Resolve the repository root to an absolute path.

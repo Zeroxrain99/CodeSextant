@@ -13,7 +13,7 @@ import sys
 
 sys.stdout.reconfigure(encoding="utf-8")  # Preserve paths and symbols on Windows.
 
-from . import engine  # noqa: E402
+from . import engine, render  # noqa: E402
 from . import fieldread_lite as fl  # noqa: E402
 
 
@@ -128,45 +128,22 @@ def cmd_preflight(args) -> int:
     if args.json:
         _emit(r, True)
         return 0
-
-    def short(p: str) -> str:
-        try:
-            return os.path.relpath(p, os.path.abspath(args.path))
-        except ValueError:
-            return p
-
-    print(f"Preflight {short(r['target'])}"
-          + (f"  symbol={r['symbol']}" if r["symbol"] else ""))
-
-    if r["already_exists"]:
-        print(f"\n  ALREADY EXISTS   {len(r['already_exists'])} similar definition(s)")
-        for entry in r["already_exists"]:
-            here = "  (this file)" if entry["same_file"] else ""
-            print(f"    {entry['similarity']:.2f}  [{entry['kind']:8}] {entry['name']:28} "
-                  f"{short(entry['path'])}:{entry['line']}{here}")
-    elif r["symbol"]:
-        print("\n  ALREADY EXISTS   nothing resembles it; it looks new")
-
-    if r["co_change"]:
-        scoped = sum(1 for e in r["co_change"] if e["scope"] == "symbol")
-        headline = f"{len(r['co_change'])} file(s) usually change with this one"
-        if scoped:
-            headline += f"; {scoped} keyed to {r['symbol']} rather than the whole file"
-        print(f"\n  CO-CHANGE        {headline}")
-        for entry in r["co_change"]:
-            marker = f"{r['symbol']}  " if entry["scope"] == "symbol" else ""
-            print(f"    {entry['confidence'] * 100:3.0f}%  ({entry['support']}/{entry['changes']} commits)"
-                  f"  {marker}-> {entry['path']}")
-
-    blast = r["blast_radius"]
-    if blast["dependent_files"]:
-        print(f"\n  BLAST RADIUS     {blast['dependent_count']} file(s) with resolved references")
-        for dependent in blast["dependent_files"]:
-            print(f"    {short(dependent)}")
-
-    for note in r["notes"]:
-        print(f"\n  Note: {note}")
+    # The MCP tool prints these same lines, so the two surfaces cannot drift.
+    for line in render.preflight_lines(r, args.path):
+        print(line)
     return 0
+
+
+def cmd_mcp(args) -> int:
+    """Serve CodeSextant to an MCP client over stdin/stdout.
+
+    Nothing is printed here: the process's stdout *is* the protocol stream.
+    """
+    from . import mcp_server
+    # None, not True: an absent flag must leave CODESEXTANT_MCP_NO_DAEMON in charge,
+    # or the environment variable is documented and dead.
+    return mcp_server.serve_stdio(
+        args.path, use_daemon=False if args.no_daemon else None)
 
 
 def cmd_status(args) -> int:
@@ -595,6 +572,15 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="the name you are about to add or change (enables the reuse check)")
     pf.add_argument("--budget", type=int, default=1200, help="token budget")
     pf.set_defaults(func=cmd_preflight)
+
+    pmcp = sub.add_parser(
+        "mcp",
+        help="serve the index to an MCP client (Claude Code, Codex, Cursor) over stdio")
+    pmcp.add_argument("path", nargs="?", default=None,
+                      help="project root (defaults to the current directory)")
+    pmcp.add_argument("--no-daemon", action="store_true",
+                      help="answer in this process instead of sharing the local daemon")
+    pmcp.set_defaults(func=cmd_mcp)
 
     pt = sub.add_parser("status", help="check a project's index status")
     pt.add_argument("path")
