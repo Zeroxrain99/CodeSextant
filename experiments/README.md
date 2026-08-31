@@ -765,14 +765,25 @@ in CI, which cannot be true of a repository with no pre-commit configuration. A 
 that is zero everywhere deserves that suspicion before it is published, and this one did
 not get it.
 
-**One kind is genuinely absent.** Not one of the seven repositories has a `.sql` file.
-C4 was on the roadmap because database constraints block people — which they do, at the
-most expensive moment — but nothing here can measure it, and building an extractor whose
-corpus score is undefined is exactly what `guards` was doing before exp9. It needs an
-application corpus; the corpus is seven libraries.
+**One kind looked absent and was being looked for in the wrong place.** Not one of the
+seven repositories has a `.sql` file, and the first reading of that was "this kind needs
+an application corpus". Adding one — alembic, a *migration tool* — did not produce a
+single `.sql` file either, which is the tell: a Python project writes its constraints in
+Python. Counting `Column(..., nullable=False)`, `UniqueConstraint` and `ForeignKey` from
+the AST instead:
 
-**The three that exist are small.** 4–15 CI checks, 0–14 lint rules and 8–21 pre-commit
-hooks, against 182–964 Python guards. Two orders of magnitude.
+| | alembic | flask | pytest | requests |
+|---|---|---|---|---|
+| db_constraint | **1023 · 0.325** | 12 · 0.008 | 0 | 0 |
+
+In the one database project, schema fences are touched in a third of commits — the same
+order as every other guard kind in that repository put together. The kind was never
+absent; the detector was reading `.sql` for something nobody writes in `.sql` any more.
+
+**The three that are always small are small.** 4–15 CI checks, 0–14 lint rules and 8–21
+pre-commit hooks, against 182–964 Python guards. Two orders of magnitude. Schema
+constraints are the exception and behave like a Python guard kind rather than like these,
+which is why they ship inside `guards` and these ship beside it.
 
 ### The measurement's own flaw, and what it changes
 

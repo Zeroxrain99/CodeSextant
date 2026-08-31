@@ -230,6 +230,62 @@ def _environment_rule(node: ast.Call) -> str | None:
     return _clip(f"reads {first.value}, unset by default")
 
 
+# Schema fences, and where they actually live. exp10 first looked for these in `.sql`
+# and found none in any of ten repositories -- including alembic, a migration tool. A
+# Python project writes its constraints in Python: alembic holds 1,023 of them across 28
+# files, touched in 0.325 of its commits, which is the same order as every other guard
+# kind in that repository put together. A detector that finds nothing in a database
+# library is looking in the wrong place, not describing the world.
+#
+# These fail at runtime, in production, which is the most expensive place a fence can
+# fire and the reason the roadmap wanted them.
+_CONSTRAINT_CALLS = {"ForeignKey", "ForeignKeyConstraint", "UniqueConstraint",
+                     "CheckConstraint", "PrimaryKeyConstraint"}
+# The two families constrain with opposite values: `nullable=False` is a fence and
+# `nullable=True` is the absence of one; `unique=True` is a fence and `unique=False` is
+# not. `_FORBIDDING` is the set whose fence is the False.
+_FORBIDDING = {"nullable", "null", "blank"}
+_REQUIRING = {"unique", "primary_key"}
+
+
+def _column_name(node: ast.Call) -> str:
+    """What the constrained thing is called, from the call or its assignment.
+
+    ``Column("user_id", ...)`` names itself; ``user_id = Column(...)`` names it on the
+    left. Both are common and a fence nobody can name is one nobody can look up.
+    """
+    for argument in node.args:
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            return argument.value
+    return ""
+
+
+def _constraint_rule(node: ast.Call, name: str) -> str | None:
+    """What this fence admits, in the words the database would use."""
+    called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+    if called in _CONSTRAINT_CALLS:
+        columns = [argument.value for argument in node.args
+                   if isinstance(argument, ast.Constant)
+                   and isinstance(argument.value, str)]
+        spelled = ", ".join(columns) if columns else "the enclosing table"
+        return _clip(f"{called} on {spelled}")
+
+    stated = []
+    for keyword in node.keywords:
+        if keyword.arg not in _FORBIDDING | _REQUIRING:
+            continue
+        if not isinstance(keyword.value, ast.Constant):
+            continue
+        forbidding = keyword.arg in _FORBIDDING
+        if keyword.value.value is forbidding:
+            continue  # nullable=True and unique=False are the absence of a fence
+        stated.append("NOT NULL" if forbidding else keyword.arg.upper())
+    if not stated:
+        return None
+    subject = name or _column_name(node) or "this column"
+    return _clip(f"{subject} is {' and '.join(sorted(set(stated)))}")
+
+
 def _test_rule(node, lines: list[str]) -> str:
     """What a test asserts, which is the closest thing to what it fences.
 
@@ -260,6 +316,18 @@ def extract(relative: str, source: str) -> list[Guard]:
     lines = source.splitlines()
     in_test_file = is_test_file(relative)
     found: list[Guard] = []
+
+    # `user_id = Column(..., nullable=False)` puts the fence's name on the left of the
+    # assignment, so the name is collected before the walk rather than guessed at it.
+    assigned_names: dict[int, str] = {}
+    for node in ast.walk(tree):
+        target = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+        if isinstance(target, ast.Name) and isinstance(node.value, ast.Call):
+            assigned_names[node.value.lineno] = target.id
 
     def stated(node, message: str = "") -> tuple[str, str]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -308,6 +376,19 @@ def extract(relative: str, source: str) -> list[Guard]:
                 variable = node.args[0].value
                 found.append(Guard("env_switch", variable, relative, node.lineno,
                                    end_of(node), rule, reason, origin))
+                continue
+            assigned = assigned_names.get(node.lineno, "")
+            constraint = _constraint_rule(node, assigned)
+            if constraint:
+                reason, origin = stated(node)
+                # A standalone constraint names itself; a constrained column takes the
+                # name it was assigned to. `UniqueConstraint("a", "b")` called itself
+                # "a" before this, which is the name of one of the two things it fences.
+                called = getattr(node.func, "attr", None) or getattr(node.func, "id", "")
+                name = called if called in _CONSTRAINT_CALLS else (
+                    assigned or _column_name(node))
+                found.append(Guard("constraint", name, relative, node.lineno,
+                                   end_of(node), constraint, reason, origin))
 
     # Module level only: these are the ones a change has to remember to update.
     for node in tree.body:

@@ -429,3 +429,49 @@ def test_a_limit_cannot_be_used_to_ask_for_the_whole_repository(repo):
     zero = engine.guards(str(repo), target="pkg/limits.py", symbol="encode",
                          token_budget=100_000, limit=0)
     assert len(zero["guards"]) >= 1, "asking for none is a mistake, not an instruction"
+
+
+# Schema constraints. `exp10` looked for these in `.sql` first and found none in any of
+# ten repositories -- including alembic, a migration tool, which was added to the corpus
+# specifically to unblock them. A Python project writes its constraints in Python:
+# alembic holds 1,023 across 28 files, touched in 0.325 of its commits. A detector that
+# finds nothing in a database library is looking in the wrong place.
+
+
+def test_a_column_that_forbids_null_is_a_fence_and_one_that_allows_it_is_not(repo):
+    """The two families constrain with opposite values, and getting that backwards would
+    fill the section with every optional column in the schema."""
+    found = guards.extract("models.py", textwrap.dedent("""
+        from sqlalchemy import Column, String
+
+        class Order:
+            user_id = Column(String, nullable=False)
+            note = Column(String, nullable=True)
+            slug = Column(String, unique=True)
+            tag = Column(String, unique=False)
+    """))
+    constraints = {g.name: g.rule for g in found if g.kind == "constraint"}
+    assert set(constraints) == {"user_id", "slug"}
+    assert constraints["user_id"] == "user_id is NOT NULL"
+    assert constraints["slug"] == "slug is UNIQUE"
+
+
+def test_a_standalone_constraint_names_itself_rather_than_one_of_its_columns(repo):
+    found = guards.extract("models.py", textwrap.dedent("""
+        from sqlalchemy import UniqueConstraint
+        table_args = (UniqueConstraint("user_id", "slug"),)
+    """))
+    row = next(g for g in found if g.kind == "constraint")
+    assert row.name == "UniqueConstraint"
+    assert row.rule == "UniqueConstraint on user_id, slug"
+
+
+def test_the_word_nullable_in_prose_is_not_a_constraint(repo):
+    """Read from the AST, not the text. A docstring explaining nullability is not a
+    fence, and counting it would put prose in a section whose whole claim is that its
+    rules come from the code."""
+    found = guards.extract("notes.py", textwrap.dedent('''
+        """Historically every column was nullable=False; see the migration notes."""
+        VALUE = 1
+    '''))
+    assert not [g for g in found if g.kind == "constraint"]

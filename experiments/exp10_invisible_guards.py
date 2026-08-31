@@ -24,7 +24,10 @@ So two numbers per repository, and the second is the one that orders the work:
     ci_check       a job in a GitHub Actions workflow -- the thing that goes red
     lint_rule      a ruff/flake8 select or ignore entry, a mypy strictness flag
     hook           a pre-commit hook
-    db_constraint  NOT NULL, UNIQUE, CHECK, PRIMARY KEY, FOREIGN KEY in SQL
+    db_constraint  NOT NULL, UNIQUE, CHECK, PRIMARY KEY, FOREIGN KEY -- in `.sql`, and
+                   in the Python where a Python project actually keeps them: a
+                   SQLAlchemy `Column(..., nullable=False)`, a `UniqueConstraint`, a
+                   Django field with `null=False`
 
 **What this is not.** The workflow and pre-commit readers here are line-based, because
 this package takes no YAML dependency and a feasibility probe should not add one. They
@@ -37,6 +40,7 @@ number as a floor; if the floor is already small, the ceiling does not matter.
 from __future__ import annotations
 
 import argparse
+import ast
 import configparser
 import json
 import os
@@ -64,6 +68,15 @@ _HOOK = re.compile(r"^\s*-\s*id:\s*(\S+)", re.MULTILINE)
 _CONSTRAINT = re.compile(
     r"\b(NOT\s+NULL|UNIQUE|CHECK\s*\(|PRIMARY\s+KEY|FOREIGN\s+KEY)\b", re.IGNORECASE)
 
+# Where a Python project actually keeps its schema fences. The first version of this
+# experiment looked only in `.sql` and reported zero everywhere -- including in alembic,
+# a migration tool, which was added to the corpus specifically to unblock this and turned
+# out to write every constraint through SQLAlchemy instead. A detector that finds nothing
+# in a database library is looking in the wrong place, not describing the world.
+_CONSTRAINT_CALLS = {"ForeignKey", "ForeignKeyConstraint", "UniqueConstraint",
+                     "CheckConstraint", "PrimaryKeyConstraint", "Index"}
+_CONSTRAINT_KWARGS = {"nullable", "unique", "primary_key", "null", "blank", "index"}
+
 
 def _read(path: str) -> str:
     try:
@@ -87,6 +100,43 @@ def _ci_checks(text: str) -> int:
             if line and not line[0].isspace():
                 break
             if _JOB.match(line):
+                found += 1
+    return found
+
+
+def _python_constraints(source: str) -> int:
+    """Schema fences expressed in Python.
+
+    A `Column(..., nullable=False)` is exactly the guard this kind is about: it fails at
+    runtime, in production, which is the most expensive place a fence can fire. Counted
+    by AST rather than by regex so that a keyword inside a docstring or a comment does
+    not become a constraint.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return 0
+    found = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if name in _CONSTRAINT_CALLS:
+            found += 1
+            continue
+        # A keyword only counts where it is constraining something: `nullable=False`
+        # and `unique=True` are fences, `nullable=True` and `unique=False` are the
+        # absence of one.
+        for keyword in node.keywords:
+            if keyword.arg not in _CONSTRAINT_KWARGS:
+                continue
+            if not isinstance(keyword.value, ast.Constant):
+                continue
+            # `nullable=False` fences; `nullable=True` is the absence of a fence.
+            # `unique=True` fences; `unique=False` is the absence of one. The value
+            # that constrains is the opposite one for the two families.
+            forbidding = keyword.arg in {"nullable", "null", "blank"}
+            if keyword.value.value is not forbidding:
                 found += 1
     return found
 
@@ -168,6 +218,10 @@ def inventory(root: str) -> dict:
             if found:
                 python_guards += len(found)
                 python_files.add(relative)
+            constraints = _python_constraints(_read(absolute))
+            if constraints:
+                per_kind["db_constraint"] += constraints
+                holders["db_constraint"].add(relative)
             continue
         counted = _classify(relative, _read(absolute))
         for kind, number in counted.items():

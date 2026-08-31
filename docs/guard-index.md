@@ -169,6 +169,7 @@ above, built as measured:
 | Two **file-level tiers** admitted anyway — history says a file moves with yours, or it imports what you changed — ranked below every fence read off its own text and labelled with the claim they rest on | both were refused by the same argument as the row above, and the argument was wrong twice. Against the symbol tiers alone the held-out difference from reading co-change instead was +0.056, **interval crossing zero** — `guards` was a longer way to an answer `check` already gives. The offline union was +0.111, because the signals hit different commits; that built the history tier. The import tier was then measured as a predictor before anything was built: +0.072 held out, positive on all six repositories. Together **+0.100 held out** over what 0.28.0 shipped |
 | The decision rule for the second tier **fixed and committed before its numbers existed** | choosing what counts as success after seeing which candidate wins is how a held-out set stops being one. Two candidates were measured; the weaker was refused even though it was real, because the stronger beat it by +0.039 and the ceiling of running both was +0.014 |
 | Reason labelled with its source (`docstring` / `comment` / `message`) | "the author said this" and "the tool derived this" are different claims |
+| A **`constraint` kind** — a column that forbids NULL, a unique or foreign-key constraint — read from the Python AST rather than from `.sql` | exp10 looked in `.sql` first and found none in ten repositories, including a migration tool. A Python project writes its constraints in Python: alembic holds 1,023 across 28 files, touched in 0.325 of its commits. It has **no retrieval score** — no repository exp9 runs on has one — and scoring it on alembic would spend the prevention corpus's independence |
 | The **always-on block** — CI jobs, pre-commit hooks, lint rules, language floor — printed whole and **not ranked at all** | exp10 counted the population at 4–15 CI checks, 8–21 hooks and 0–14 lint rules against 182–964 Python guards, and every one applies to every change. Relevance has the same answer each time, so asking is the waste. It has no corpus score and cannot have one: retrieval recall is meaningless for a fence that always applies |
 | A workflow triggered only by `push: tags:` **excluded** from that block | claiming something gates you when it does not sends a reader looking for a check that will never run — the cost this tool exists to remove, not to add to |
 
@@ -182,9 +183,9 @@ which is what makes printing it whole the cheap option rather than the reckless 
 3.1 seconds in `ast.get_source_segment`, which re-splits the whole file on every call.
 Slicing from lines already in hand is a quarter of the cost and the same output.
 
-**Not yet done, and named rather than implied**: Python only; no CI, lint, pre-commit,
-schema-constraint or database guards, all of which block people and none of which are in
-the 16-34 per kLOC above; nothing measured about whether seeing this makes a change
+**Not yet done, and named rather than implied**: Python only; CI, lint and pre-commit
+fences are stated rather than ranked and carry no retrieval score, and the `constraint`
+kind carries none either; nothing measured about whether seeing this makes a change
 better, which is the prevention experiment and is still the only design that answers it.
 
 **And one shape of repository it is measurably wrong for.** On jinja, exp9 scored

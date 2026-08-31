@@ -26,6 +26,10 @@ What counts as a guard, stated up front because the number means nothing without
     allowlist   a module-level collection something has to be added to
     threshold   a module-level numeric constant: a limit, budget, timeout, cap
     env_switch  an environment variable read: the runtime valve
+    constraint  a schema fence written in Python -- a column that forbids NULL, a
+                unique or foreign-key constraint. Added after exp10 found this kind
+                absent from every `.sql` file it looked in and dense in the Python of
+                the one database project in the corpus
 
 Rationale is looked for in the four places it can be, in the order a reader would find
 it: the definition's own docstring, a comment sitting directly above it, the message
