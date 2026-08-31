@@ -20,6 +20,11 @@ is applied, and check runs on the result.
 
 The two section-only rows exist to answer the question the union cannot: does reading
 the diff add anything over mining history, or is check just co-change with extra steps?
+
+Intervals are bootstrapped over cases, which here are whole commits and so independent
+of each other. They are reported because an earlier experiment in this directory
+produced a repository whose result reversed, and a number without error bars could not
+say whether that mattered.
 """
 from __future__ import annotations
 
@@ -51,17 +56,33 @@ class Tally:
         self.hits = 0        # the held-out file was named
         self.spoke = 0       # anything was named at all
         self.predicted = 0   # total names, for the noise a reader would carry
+        self.outcomes: list[int] = []
 
     def add(self, predicted: set[str], held_out: str) -> None:
         self.cases += 1
         self.predicted += len(predicted)
         if predicted:
             self.spoke += 1
-        if held_out in predicted:
-            self.hits += 1
+        hit = int(held_out in predicted)
+        self.hits += hit
+        self.outcomes.append(hit)
+
+    def recall_interval(self, *, seed: int = 0, rounds: int = 2000) -> tuple[float, float]:
+        if not self.outcomes:
+            return (0.0, 0.0)
+        rng = random.Random(seed)
+        size = len(self.outcomes)
+        values = []
+        for _ in range(rounds):
+            values.append(sum(self.outcomes[rng.randrange(size)]
+                              for _i in range(size)) / size)
+        values.sort()
+        return (values[int(rounds * 0.025)], values[int(rounds * 0.975)])
 
     def row(self) -> dict:
+        low, high = self.recall_interval()
         return {"recall": self.hits / self.cases if self.cases else 0.0,
+                "recall_ci": (low, high),
                 "speaks": self.spoke / self.cases if self.cases else 0.0,
                 "mean_n": self.predicted / self.cases if self.cases else 0.0,
                 "cases": self.cases}
@@ -160,11 +181,13 @@ def main() -> int:
     for repo in repos:
         report = evaluate(repo, limit=args.limit)
         print(f"\n=== {report['repo']}  ({report['scored']} held-out cases)")
-        print(f"{'predictor':14} {'recall':>8} {'speaks':>8} {'mean n':>8} {'cases':>7}")
+        print(f"{'predictor':14} {'recall':>8} {'recall 95% CI':>16} {'speaks':>8} "
+              f"{'mean n':>8} {'cases':>7}")
         for name in PREDICTORS:
             row = report["results"][name]
-            print(f"{name:14} {row['recall']:8.3f} {row['speaks']:8.3f} "
-                  f"{row['mean_n']:8.1f} {row['cases']:7}")
+            low, high = row["recall_ci"]
+            print(f"{name:14} {row['recall']:8.3f} {f'[{low:.3f},{high:.3f}]':>16} "
+                  f"{row['speaks']:8.3f} {row['mean_n']:8.1f} {row['cases']:7}")
     return 0
 
 
