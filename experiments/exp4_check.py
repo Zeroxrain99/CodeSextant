@@ -15,9 +15,16 @@ is applied, and check runs on the result.
     check            what ships: rebuilt + companions + callers, unioned
     companions       the co-change section alone -- what preflight already had
     callers          the resolved-caller section alone
-    callers_ceiling  every file that *names* a changed symbol, resolved or not
+    callers_ceiling  every file naming any definition that lives in a changed file
     same_dir@k       the most-changed neighbours of the files that did change
     frequency@k      the most-changed files in the project
+
+`callers_ceiling` is looser than the caller section it bounds, and exp5 measures by how
+much: it counts a file as reachable if it names *any* definition living in a file the
+commit touched, while the caller section only ever resolves the definitions the diff
+wrote into. Restricted to those, the ceiling is 0.153/0.439/0.350 rather than
+0.305/0.759/0.419. Read it as the ceiling for a file-level signal, which is what it is,
+and not as the headroom above the resolver.
 
 `callers_ceiling` is not a candidate for shipping -- it is a text sweep naming about
 eight files per case, which is a list nobody reads. It is here to separate two

@@ -497,6 +497,10 @@ TOOLS: tuple[Tool, ...] = (
             "the version constant;\n"
             "3. CALLERS - resolved references to the symbols you changed, in files "
             "outside your diff. Changing A while B calls it is how B breaks.\n"
+            "4. DEPENDENTS - files that import a module you changed, marked '?' "
+            "because importing it is not the same as calling what you changed. This is "
+            "the weakest of the four and the one that speaks when resolution cannot: "
+            "dynamic dispatch, re-exports, a dependency that is not a call.\n"
             "Cost is bounded by the size of your change, not the repository. Unlike "
             "preflight it needs no arguments and nothing remembered: the diff says what "
             "happened."),

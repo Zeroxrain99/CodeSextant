@@ -12,6 +12,9 @@ from a command in this directory, and the corpus is cloned on first run.
 python -m experiments.exp1_cochange       # does history predict the companion change?
 python -m experiments.exp2_blast_radius   # is a resolved reference better than grep?
 python -m experiments.exp3_reuse          # is the equivalent definition surfaced?
+python -m experiments.exp4_check          # hold a file out of a commit: does check name it?
+python -m experiments.exp5_caller_gap     # where does the caller section lose?
+python -m experiments.exp6_caller_candidates   # which repair for it is worth building?
 ```
 
 The corpus is cloned on first run into `~/.cache/codesextant-corpus`, or wherever
@@ -99,6 +102,41 @@ saying so.
 Results are split into same-named and differently-named pairs, because grep already
 solves the first for free and can never solve the second.
 
+## exp5 — where does the caller section lose?
+
+exp4 left the caller section weak and the reason unmeasured. A ratio says three files in
+four are lost; it does not say where, and every possible repair depends on where.
+Ranking candidates differently cannot help if jedi is being pointed at the wrong
+definition, and pointing it better cannot help if the name only ever appears inside a
+docstring.
+
+So this classifies rather than scores. For every case where the held-out file names a
+symbol the change touched and `check` does not name the file, exactly one reason is
+recorded: the symbol was past the resolution budget, the cost gate declined it,
+the regex locator pinned a different same-named definition than the one the diff
+touched, the name occurs only inside strings, jedi resolved nothing, or jedi resolved to
+a genuinely different definition. The categories are ordered and the first that applies
+wins, because a symbol never resolved at all cannot also have been misresolved.
+
+It measures **two ceilings on the same cases**, which is the point that mattered most:
+how often the held-out file names a definition the diff *wrote into* — what the caller
+section resolves — and how often it names any definition *living in* a changed file,
+which is what exp4's `callers_ceiling` counted.
+
+## exp6 — which repair is worth building?
+
+An hour per candidate is what leaves candidates unmeasured, so this splits the expensive
+half from the cheap half. One pass over the corpus writes, per case, a table of features
+for every file any caller-side signal could reach: how many changed symbols it mentions,
+how many changed modules it imports, whether resolution confirmed it, what co-change
+thinks of it, whether it is a test. Scoring a predictor is then a pure function over that
+table, so a new idea costs a second instead of an hour, and `--score` re-runs the whole
+comparison on a dump written days earlier.
+
+Every candidate is scored at the length `check` already prints. A predictor naming twenty
+files reaches three times the recall and stops being read — exp1's finding, and the
+ground exp4 rejected a caller candidate on.
+
 ## What these experiments changed
 
 Two defects and one improvement came out of running them, which is the reason to have
@@ -119,12 +157,23 @@ run them:
    in exactly one position, scored at the default threshold so it is the first thing
    to go when anyone raises the bar — and was validated on the held-out set, where it
    had not been fitted.
+4. **The reference locator accepted only the first definition of a name in a file.**
+   A file defining `send` on two classes had every reference to the second scored as
+   pointing somewhere else, so the blast radius came back empty while claiming to have
+   looked. exp5 puts it at 17.5% of caller misses; the fix gains 3 cases in 176 and
+   loses none, which is a correctness fix and not a measurable recall gain.
+5. **check answered "who breaks" only at symbol level.** exp5 showed the reachable
+   signal is one level up — a file that imports a changed module reaches 0.217 against
+   0.094 for resolved callers — so `check` grew a DEPENDENTS tier, marked `?` and kept
+   apart from the resolved callers. exp6 measured it before it was built, and again
+   afterwards through the shipped code path.
 
 ---
 
 # Results
 
-Run on 2026-08-31, CodeSextant 0.24.0. Reproduce with the three commands at the top.
+Run on 2026-08-31. exp1 to exp3 on CodeSextant 0.24.0, exp4 on 0.25.0, exp5 and
+exp6 on 0.26.0. Reproduce with the commands at the top.
 
 ## exp1 — co-change against three baselines
 
@@ -321,9 +370,13 @@ as two separate intervals it looked like noise; it is not.
 
 ### A candidate measured and rejected
 
-The caller section is the weak one — recall 0.068 to 0.086 — and the ceiling shows why
-it matters: 0.305 to 0.759 of held-out files *name* a symbol the change touched, so the
-information is there and resolution is not reaching it. Two mechanical explanations were
+The caller section is the weak one — recall 0.068 to 0.086 — against a `callers_ceiling`
+of 0.305 to 0.759. **That ceiling is looser than it reads, and exp5 says by how much.**
+It counts a held-out file as reachable if it names *any* definition living in a file the
+commit touched; the caller section only ever resolves the definitions the diff wrote
+into. Restricted to those, the ceiling is 0.153, 0.439 and 0.350. Roughly half of the
+gap described here was a difference between two questions rather than a resolver falling
+short of one. Two mechanical explanations were
 checked and are both wrong. requests' `src/` layout does not degrade jedi (the same
 symbol resolves identically with and without an explicit `src_root`), and the cost gate
 is not swallowing the work either (of 116 changed symbols in click, 89.7% resolve and
@@ -341,6 +394,109 @@ prints, it is *worse* on all three and significantly worse on jinja.
 **Nothing was built on it.** The gap between resolution and naming is real and still
 open; ranking by name count is not the way across it.
 
+## exp5 — where the caller section loses
+
+60 commits sampled per repository, on the derivation set.
+
+**Two ceilings, on the same cases.** `check`'s caller section resolves the definitions
+the diff wrote into. exp4's `callers_ceiling` counted a held-out file as reachable if it
+named *any* definition living in a changed file. They are not the same question:
+
+| repo | cases | names a definition the diff touched | names any definition in a changed file | `check`'s callers find it |
+|---|---|---|---|---|
+| requests | 59 | **0.153** | 0.288 | 0.051 |
+| click | 57 | **0.439** | 0.719 | 0.053 |
+| tqdm | 60 | **0.350** | 0.583 | 0.150 |
+
+The right-hand column reproduces exp4's ceiling (0.305 and 0.759 there, on a larger
+sample). **About half the gap exp4 described was a difference between two questions**,
+not a resolver falling short of one. The headroom above the caller section is roughly
+0.10 to 0.39, not 0.24 to 0.71.
+
+**Why the rest is lost.** 40 misses pooled across the three repositories:
+
+| reason | n | share |
+|---|---|---|
+| the cost gate declined the symbol | 13 | 0.325 |
+| the symbol was past the resolution budget | 8 | 0.200 |
+| jedi resolved to a genuinely different definition | 7 | 0.175 |
+| the locator pinned the wrong same-named definition | 7 | 0.175 |
+| jedi resolved nothing at any occurrence | 5 | 0.125 |
+
+Two of these correct a number in exp4. The cost gate declines **7.8% of symbols** and
+causes **32.5% of misses** — different denominators, and the per-symbol figure hid it,
+because the symbols it declines are the widely-named ones that a held-out file is most
+likely to mention. And no single mechanism dominates: there was no one bug to fix.
+
+## exp6 — which repair is worth building
+
+60 commits per repository, 351 cases, all six repositories. `check` here is the union
+of rebuilt, companions and callers, as in exp4. Every candidate is cut to the length
+`check` already prints.
+
+| repo | check | callers | importers | importers@k | dependents (shipped) | check + dependents |
+|---|---|---|---|---|---|---|
+| requests | 0.271 | 0.051 | 0.186 | 0.169 | 0.085 | **0.356** |
+| click | 0.263 | 0.070 | 0.193 | 0.140 | 0.070 | **0.333** |
+| tqdm | 0.450 | 0.183 | 0.333 | 0.267 | 0.050 | **0.500** |
+| jinja | 0.237 | 0.068 | 0.169 | 0.119 | 0.034 | **0.271** |
+| httpie | 0.140 | 0.105 | 0.228 | 0.175 | 0.088 | **0.228** |
+| rich | 0.458 | 0.085 | 0.186 | 0.102 | 0.017 | **0.475** |
+
+`dependents` is low on its own by construction: it only ever names files no other
+section reached, so it is a gap-filler and the union is the number that means anything.
+
+**Pooled, paired over the same cases.** Each repository alone carries fewer than sixty
+cases, enough to separate a large effect and not a small one.
+
+| | derivation (176) | held out (175) | all six (351) |
+|---|---|---|---|
+| `check` recall | 0.330 | 0.280 | 0.305 |
+| `check + dependents` recall | 0.398 | 0.326 | 0.362 |
+| paired difference | **+0.068** [+0.034, +0.108] | **+0.046** [+0.017, +0.080] | **+0.057** [+0.034, +0.083] |
+| files named per run | 1.8 → 2.5 | 2.3 → 2.8 | 2.1 → 2.7 |
+
+`importers − callers` is **+0.136, +0.140, +0.183** on the derivation set and **+0.102,
++0.123, +0.102** held out — every interval excluding zero, six repositories out of six.
+That is the finding: **the reachable caller-side signal is at module level, not at
+changed-symbol level.**
+
+The held-out numbers were produced by the shipped code path — the cheap import scanner,
+the cap of two, the cutoff at twenty, the skipping of files another section already named
+— not by the prototype that suggested it. They match the prototype to three decimals.
+
+### Four candidates measured and rejected
+
+Nothing was built on any of these, which is the reason to measure first.
+
+- **Removing the resolution budget.** `beyond_budget` is 20% of misses, so raising
+  `CODESEXTANT_CHECK_MAX_SYMBOLS` looks like the obvious lever. Resolving *every*
+  changed symbol instead of the first ten buys +0.017 pooled on the derivation set and
+  +0.006 held out, neither established. The cases it would reach fail for other reasons
+  as well. A diagnostic share is not a repair's value.
+- **Test files that name a changed symbol** — the third of the handoff's untried ideas.
+  0.031 pooled against 0.094 for the callers it would replace, naming 2.9 files a case:
+  **−0.063** [−0.094, −0.034]. Worse and longer.
+- **Name-level signal combined with co-change confidence** — the first of them. 0.094
+  pooled, exactly level with the resolved callers, at 0.4 files a case: **+0.000**
+  [−0.034, +0.034]. It finds nothing the two do not find separately.
+- **Ranking dependents by anything cleverer than import count.** Ranked by symbol
+  mentions, by co-change confidence, or by imports alone, the pooled recall is 0.162,
+  0.160 and 0.162. The tiebreaker buys nothing, so the plumbing to carry it into
+  `check` was not built.
+
+### The locator fix, reported honestly
+
+exp5 attributes 17.5% of misses to the reference locator taking the first `def` of a
+name in a file and rejecting jedi answers landing on any other. That is a defect with a
+reproduction — `tests/test_codemap.py::test_find_references_finds_the_second_definition_of_a_name`
+fails without the fix, returning an empty blast radius while claiming to have looked.
+
+Its effect on retrieval, measured paired on the same 176 cases before and after: **3
+cases gained, 0 lost, +0.017 [+0.000, +0.040], not established.** It is justified as a
+correctness fix, not as a recall improvement, and the difference between those two
+claims is the kind this directory exists to keep straight.
+
 ## What these experiments do not establish
 
 Written down because the gaps are easier to see now than they will be later, and
@@ -351,10 +507,18 @@ because a results section that only lists wins is an advertisement.
   genuinely forgotten, but it still does not measure whether an author who saw the
   answer went on to make a better change. That needs agents doing tasks with and
   without the tool, and a task set nobody involved wrote.
-- **Why resolution reaches so much less than naming.** exp4 puts a number on the gap
-  and rules out two explanations for it. The remaining one is presumably that jedi
-  resolves conservatively and a lot of real use is dynamic, but that is a hypothesis,
-  not a finding.
+- ~~**Why resolution reaches so much less than naming.**~~ **Answered by exp5**, and
+  the answer was partly that the gap was mismeasured: about half of it was the ceiling
+  counting a looser signal than the caller section resolves. Of what remains, the cost
+  gate causes 32.5% of misses, the resolution budget 20%, a locator defect 17.5%, and
+  genuine resolver limits — resolving elsewhere or resolving nothing — 30%. No single
+  mechanism dominates, which is why the repair that shipped changes the question rather
+  than the resolver.
+- **Whether the dependents tier helps an author, as opposed to scoring better.** It
+  names 0.6 more files per run for +0.046 held-out recall, so roughly one file in
+  thirteen that it adds is the one that was forgotten. Whether that ratio reads as a
+  useful hint or as noise is a question about people, and belongs to the prevention
+  experiment below rather than to this directory.
 - **Symbol-level co-change is unmeasured.** preflight mines per-symbol rules from hunk
   headers as well as per-file ones, and exp1 scores only the file-level rules. The
   symbol-level claim — that changing `serve` brings a different companion set than

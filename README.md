@@ -170,9 +170,15 @@ Check: 8 file(s) changed
 
   CALLERS          1 changed symbol(s) have resolved callers outside your diff
     CodesextantClient  (codesextant/client.py)  -> tests/test_daemon_lifecycle.py, …
+
+  DEPENDENTS       2 file(s) import what you changed; unconfirmed, nothing resolved to them
+    ?  codesextant/panel.py
+    ?  codesextant/supervisor.py  (2 of the changed modules)
 ```
 
 `REBUILT` compares bodies, not names. `seconds_from_clock` and `normalise_duration` share no word at all, so the name-based reuse check cannot see the pair — and before the code is written there is no body to compare, which is why this section can only exist on this side of the edit.
+
+`DEPENDENTS` is the weakest of the four and is marked `?` for that reason: it lists files that import a module you changed, which is not the same as calling the thing you changed. It exists because resolution is quiet where indirection is heavy. Measured against 351 commits in six repositories by holding one file out and asking `check` what the change forgot, the resolved caller section names the held-out file in 0.094 of cases and the whole of `check` in 0.305; adding these two lines takes `check` to 0.362, and on the three repositories nothing was tuned against, from 0.280 to 0.326. Past 20 importers it lists nothing and says so, because two of forty would be an arbitrary two.
 
 It takes no arguments: the diff says what happened, so nothing has to be remembered at the right moment. Cost is bounded by the size of your change rather than the repository — only changed files are re-read and re-parsed. `--staged` reads the index instead of the working tree, `--base BRANCH` reviews a whole branch against where it left the base, and `--strict` exits non-zero when anything is found, which is what a pre-commit hook wants.
 
