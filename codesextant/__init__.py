@@ -28,7 +28,7 @@ _ENGINE_EXPORTS = {
     "find_unwired", "find_duplicates", "get_comment_overview",
     "find_comment_tags", "get_comments", "call_hierarchy", "impact",
     "get_health", "get_map", "status", "list_projects", "find_ai_usage",
-    "preflight",
+    "preflight", "check",
 }
 _DAEMON_EXPORTS = {
     "ensure_daemon": "ensure_running",
@@ -77,6 +77,7 @@ __all__ = [
     "get_health",  # per-symbol health and unwired evidence
     "get_map",
     "preflight",  # reuse, co-change obligations and blast radius, before an edit
+    "check",  # the same three questions asked of the diff, after an edit
     "status",
     "list_projects",  # projects indexed on this machine
     "find_ai_usage",  # ai-usage: which AI/LLM the repo uses + dispatch_policy cli/direct/local channels
@@ -88,4 +89,4 @@ __all__ = [
     "CodesextantClient",
 ]
 
-__version__ = "0.24.0"
+__version__ = "0.25.0"

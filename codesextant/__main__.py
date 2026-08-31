@@ -134,6 +134,20 @@ def cmd_preflight(args) -> int:
     return 0
 
 
+def cmd_check(args) -> int:
+    r = engine.check(args.path, base=args.base, staged=args.staged,
+                     token_budget=args.budget)
+    if args.json:
+        _emit(r, True)
+        return 0
+    for line in render.check_lines(r, args.path):
+        print(line)
+    # A finding is worth an exit code: this is meant to run in a pre-commit hook.
+    if args.strict and (r["rebuilt"] or r["companions"] or r["callers"]):
+        return 1
+    return 0
+
+
 def cmd_mcp(args) -> int:
     """Serve CodeSextant to an MCP client over stdin/stdout.
 
@@ -576,6 +590,18 @@ def _build_parser() -> argparse.ArgumentParser:
                          "auto measures the cost first and resolves when it is small, "
                          "yes always resolves (slower, exact), no never does")
     pf.set_defaults(func=cmd_preflight)
+
+    pck = sub.add_parser(
+        "check",
+        help="after editing: what the change looks like it forgot")
+    pck.add_argument("path", nargs="?", default=".", help="project root")
+    pck.add_argument("--base", default=None,
+                     help="diff against this ref's merge base instead of HEAD")
+    pck.add_argument("--staged", action="store_true", help="check the staged change only")
+    pck.add_argument("--budget", type=int, default=1500, help="token budget")
+    pck.add_argument("--strict", action="store_true",
+                     help="exit 1 when anything is found (for a pre-commit hook)")
+    pck.set_defaults(func=cmd_check)
 
     pmcp = sub.add_parser(
         "mcp",

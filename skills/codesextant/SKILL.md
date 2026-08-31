@@ -11,12 +11,13 @@ the machine share one active daemon and one persistent index per project.
 
 ## First: are the CodeSextant tools already in your tool list?
 
-Look for `preflight`, `code_map`, `find_references`, `impact`, `symbols`, `find_duplicates`,
-`index`, and `status`. If they are there, CodeSextant is connected over MCP — call them
+Look for `preflight`, `check`, `code_map`, `find_references`, `impact`, `symbols`,
+`find_duplicates`, `index`, and `status`. If they are there, CodeSextant is connected over MCP — call them
 directly and skip the Python entirely:
 
 ```text
-preflight(file="codesextant/storage.py", symbol="project_key")
+preflight(file="codesextant/storage.py", symbol="project_key")   # before you write
+check()                                                          # after you write
 ```
 
 Everything else in this skill still applies: *when* to call preflight (before writing, not
@@ -177,5 +178,22 @@ index, and never use `force=True` unless the user requests a full rebuild.
 
 ## Finish a task
 
-Recheck references and impact for changed public symbols. Report confidence labels and any
-unresolved low-confidence edges instead of presenting them as confirmed callers.
+**Before you report a task as done, call `cs.check()` (or the `check` tool).** It takes no
+arguments and reads your diff, which is why it is the one step that does not depend on
+having remembered anything at the right moment. Three sections:
+
+- `rebuilt` — a unit you wrote whose exact shape already exists elsewhere. This compares
+  bodies, so it catches what preflight structurally cannot: the thing that was
+  reinvented *and renamed*. Before the code exists there is no body to compare, only a
+  name, and a name misses an equivalent someone called something else.
+- `companions` — files history says follow the ones you changed, that you did not
+  change. The test, the allowlist, the fixture, the version constant.
+- `callers` — resolved references to the symbols you changed, in files outside your
+  diff.
+
+Each finding carries its evidence. Act on the high-confidence ones; the section that
+finds nothing says so, and says that finding nothing is not a clean bill of health.
+
+Then recheck references and impact for changed public symbols. Report confidence labels
+and any unresolved low-confidence edges instead of presenting them as confirmed
+callers.

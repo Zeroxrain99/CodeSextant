@@ -57,11 +57,19 @@ INSTRUCTIONS = """\
 CodeSextant answers questions about this repository from a local index. Nothing leaves \
 the machine and no model is called.
 
-Call preflight BEFORE writing or changing code, not after. One call answers the three \
-questions that cause the most rework: whether the thing you are about to build already \
+Two calls carry most of the value. Call preflight BEFORE writing or changing code, and \
+call check AFTER editing and before you say you are done -- preflight guesses from a name, \
+check reads your actual diff, and the second is the one that catches a wheel you \
+reinvented under a different name.
+
+preflight answers the three questions that cause the most rework: whether the thing you are about to build already \
 exists, which files this repository's history says change together with the one you are \
 editing (tests, allowlists, fixtures -- the half nothing in the source mentions), and \
 which files hold references that your change would break.
+
+check asks the same three of the change you already made, where the evidence is a diff \
+rather than an intention: a body to compare shapes against, the exact files you touched, \
+and the exact symbols you changed. It takes no arguments.
 
 The reference graph fills in as find_references runs, so a small blast radius early on \
 means "not yet resolved", not "nothing depends on this"; the answer says which it is. If \
@@ -333,6 +341,19 @@ def _t_preflight(backend: Backend, arguments: dict) -> dict:
     )
 
 
+def _t_check(backend: Backend, arguments: dict) -> dict:
+    base = _optional_str(arguments, "base")
+    staged = _optional_bool(arguments, "staged")
+    budget = _optional_int(arguments, "budget", 1500)
+    return backend.execute(
+        arguments,
+        lambda client, project: client.check(
+            base=base, staged=staged, budget=budget, project=project),
+        lambda project: engine.check(
+            project, base=base, staged=staged, token_budget=budget),
+    )
+
+
 def _t_code_map(backend: Backend, arguments: dict) -> dict:
     budget = _optional_int(arguments, "budget", 2000)
     focus_files = _optional_list(arguments, "focus_files")
@@ -460,6 +481,40 @@ TOOLS: tuple[Tool, ...] = (
         },
         run=_t_preflight,
         render=render.preflight_lines,
+    ),
+    Tool(
+        name="check",
+        title="Check the change you made",
+        description=(
+            "Run this AFTER editing and BEFORE saying you are done. It reads your diff "
+            "and reports what the change looks like it forgot:\n"
+            "1. REBUILT - a unit you just wrote whose exact shape already exists "
+            "elsewhere. This compares bodies, not names, so it catches the thing that "
+            "was reinvented AND renamed - which preflight cannot, because before you "
+            "write it there is no body to compare;\n"
+            "2. COMPANIONS - files this repository's history says follow the ones you "
+            "changed, that you did not change: the test, the allowlist, the fixture, "
+            "the version constant;\n"
+            "3. CALLERS - resolved references to the symbols you changed, in files "
+            "outside your diff. Changing A while B calls it is how B breaks.\n"
+            "Cost is bounded by the size of your change, not the repository. Unlike "
+            "preflight it needs no arguments and nothing remembered: the diff says what "
+            "happened."),
+        schema={
+            "type": "object",
+            "properties": {
+                "base": {"type": "string",
+                         "description": "Diff against this ref's merge base instead of "
+                                        "HEAD, to review a whole branch."},
+                "staged": {"type": "boolean",
+                           "description": "Check only what is staged."},
+                "budget": {"type": "integer",
+                           "description": "Approximate token ceiling (default 1500)."},
+                "project": _PROJECT_ARG,
+            },
+        },
+        run=_t_check,
+        render=render.check_lines,
     ),
     Tool(
         name="code_map",

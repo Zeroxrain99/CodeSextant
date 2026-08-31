@@ -268,6 +268,14 @@ class CodesextantClient:
             "budget": budget, "resolve": resolve},
             timeout=self._interactive_timeout())
 
+    def check(self, *, base: str | None = None, staged: bool = False,
+              budget: int = 1500, project: str | None = None, resolve=None) -> dict:
+        """After editing: what the change looks like it forgot."""
+        return self._get("/check", {
+            "project": self._proj(project), "base": base,
+            "staged": "1" if staged else None, "budget": budget, "resolve": resolve},
+            timeout=self._interactive_timeout())
+
     def find_references(self, symbol: str, *, def_path: str | None = None,
                         src_root: str | None = None, project: str | None = None,
                         include_low_confidence: bool = True,

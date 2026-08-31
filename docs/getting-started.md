@@ -114,6 +114,24 @@ Run `codesextant cache` to inspect managed index usage without exposing reposito
 
 To remove all indexes, browser sessions, and the local API token, stop the daemon and delete `~/.codesextant`. CodeSextant does not upload the index or send telemetry.
 
+## After changing a file
+
+```bash
+codesextant check .
+```
+
+`preflight` asks its three questions before an edit. `check` asks the same three of the change you already made, and the difference is what it has to work with. Before the edit there is a name and an intention; after it there is a diff — every file, every line, and a body.
+
+`REBUILT` is the section that only exists on this side. It compares the shape of each unit your change wrote against every unit in the index, so it catches a helper that was reinvented *and renamed*: `seconds_from_clock` and `normalise_duration` share no word, so no name comparison can pair them, and before the code was written there was no body to compare. `COMPANIONS` lists files history says follow the ones you touched that you did not touch. `CALLERS` lists resolved references to the symbols you changed, in files outside your diff.
+
+It takes no arguments, which is the point: the diff says what happened, so nothing has to be remembered at the right moment. Cost is bounded by the change rather than the repository — only changed files are re-read and re-parsed, structural shapes are derived once per project and then per changed file, and at most `CODESEXTANT_CHECK_MAX_SYMBOLS` (10) symbols have their callers resolved. On this repository a warm run costs about half a second.
+
+`--staged` reads the index instead of the working tree, `--base BRANCH` reviews a whole branch against where it left the base, and `--strict` exits non-zero when anything is found:
+
+```bash
+codesextant check . --staged --strict   # in .git/hooks/pre-commit
+```
+
 ## Connect it to an agent over MCP
 
 ```bash

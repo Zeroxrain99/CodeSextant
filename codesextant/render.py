@@ -200,3 +200,38 @@ def index_lines(result: dict, root: str | None = None) -> list[str]:
     for failed in (result.get("error_files") or [])[:5]:
         lines.append(f"  [error] {short(failed['path'], root)}: {failed['error']}")
     return lines
+
+
+def check_lines(result: dict, root: str | None = None) -> list[str]:
+    """What the change already made looks like it forgot."""
+    lines = [f"Check: {result.get('changed_count', 0)} file(s) changed"]
+
+    if result.get("rebuilt"):
+        lines.append(f"\n  REBUILT          {len(result['rebuilt'])} changed unit(s) "
+                     "repeat a shape already in the index")
+        for entry in result["rebuilt"]:
+            size = f"  ({entry['size']} nodes)" if entry.get("size") else ""
+            lines.append(f"    {entry['name']}  {entry['path']}:{entry['line']}{size}")
+            for match in entry["matches"]:
+                lines.append(f"      already exists as  {match['name']}  "
+                             f"{match['path']}:{match['line']}")
+
+    if result.get("companions"):
+        lines.append(f"\n  COMPANIONS       {len(result['companions'])} file(s) history "
+                     "says follow what you changed, and you did not change")
+        for entry in result["companions"]:
+            lines.append(f"    {entry['confidence'] * 100:3.0f}%  "
+                         f"({entry['support']}/{entry['changes']} commits)  "
+                         f"{entry['path']}   <- {entry['because']}")
+
+    if result.get("callers"):
+        lines.append(f"\n  CALLERS          {len(result['callers'])} changed symbol(s) "
+                     "have resolved callers outside your diff")
+        for entry in result["callers"]:
+            shown = ", ".join(entry["callers"][:4])
+            more = (f" (+{entry['count'] - 4} more)" if entry["count"] > 4 else "")
+            lines.append(f"    {entry['symbol']}  ({entry['defined_in']})  -> {shown}{more}")
+
+    for note in result.get("notes") or []:
+        lines.append(f"\n  Note: {note}")
+    return lines

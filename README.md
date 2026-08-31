@@ -139,6 +139,35 @@ prediction is made from a state that contains the commit it is predicting.
 The experiments also found two defects in preflight and paid for themselves doing it;
 both are described in `experiments/README.md`.
 
+## After you change a file
+
+`preflight` asks its three questions before an edit, from a name and an intention. Two limits come with that, and neither is fixable on that side of the edit: it only runs if you remember to ask, and a name is all it has — no body to compare shapes against, no diff to say what actually happened.
+
+`check` asks the same three of the change you already made:
+
+```bash
+python -m codesextant check .
+```
+
+```
+Check: 8 file(s) changed
+
+  REBUILT          1 changed unit(s) repeat a shape already in the index
+    seconds_from_clock  app.py:1  (51 nodes)
+      already exists as  normalise_duration  util.py:1
+
+  COMPANIONS       6 file(s) history says follow what you changed, and you did not change
+    100%  (3/3 commits)  pyproject.toml   <- codesextant/mcp_server.py
+     69%  (9/13 commits)  codesextant/storage.py   <- codesextant/engine.py
+
+  CALLERS          1 changed symbol(s) have resolved callers outside your diff
+    CodesextantClient  (codesextant/client.py)  -> tests/test_daemon_lifecycle.py, …
+```
+
+`REBUILT` compares bodies, not names. `seconds_from_clock` and `normalise_duration` share no word at all, so the name-based reuse check cannot see the pair — and before the code is written there is no body to compare, which is why this section can only exist on this side of the edit.
+
+It takes no arguments: the diff says what happened, so nothing has to be remembered at the right moment. Cost is bounded by the size of your change rather than the repository — only changed files are re-read and re-parsed. `--staged` reads the index instead of the working tree, `--base BRANCH` reviews a whole branch against where it left the base, and `--strict` exits non-zero when anything is found, which is what a pre-commit hook wants.
+
 ## Why use an index
 
 Name matching cannot distinguish same-named symbols in different scopes. In collision-heavy repositories, searches for names such as `handle`, `run`, and `Config` can return many false positives. For Python and TypeScript/JavaScript, CodeSextant resolves imports and stores the graph in a shared local service.
@@ -241,6 +270,7 @@ python -m codesextant index      <repo>                     # build or increment
 python -m codesextant gui        <repo>                     # index, start the daemon, and open the GUI
 python -m codesextant map        <repo> [--budget N]        # most important symbols, within a token budget
 python -m codesextant preflight  <repo> <file> [--symbol S] [--resolve auto|yes|no]
+python -m codesextant check      [repo] [--staged] [--base REF] [--strict]
 python -m codesextant references <repo> <symbol> [--src-root R] [--def-path D]
 python -m codesextant symbols    <repo> [--file F]
 python -m codesextant status     <repo>
@@ -314,6 +344,7 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 | `CODESEXTANT_PROJECT` | unset | default project root for `codesextant mcp` when no path is given |
 | `CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES` | `25` | how many files may name a symbol before `preflight` declines to resolve it inline and reports name-level leads instead; `0` never resolves |
 | `CODESEXTANT_PREFLIGHT_NAME_SIMILARITY` | `0.5` | word overlap at which an existing definition counts as a reuse candidate |
+| `CODESEXTANT_CHECK_MAX_SYMBOLS` | `10` | how many changed symbols have their callers resolved in one `check` |
 | `CODESEXTANT_PREFLIGHT_COMMON_NAME_MAX` | `8` | how many definitions may share a name before `preflight` reports it as a convention instead of listing them; also the list length, so nothing is ever truncated arbitrarily |
 | `CODESEXTANT_NAMEGRAPH_MAX_UNIQUE_EDGES` | `250000` | hard cap so generated code cannot exhaust memory |
 | `CODESEXTANT_WATCH_ENABLED` | on | filesystem watcher for proactive incremental indexing |

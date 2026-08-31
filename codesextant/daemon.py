@@ -1260,6 +1260,19 @@ def _ep_preflight(parsed, body):
                                  resolve=_q(parsed, "resolve"))
 
 
+def _ep_check(parsed, body):
+    # After editing: what the change looks like it forgot.
+    project = _require_project(_q(parsed, "project"))
+    raw_budget = _q(parsed, "budget")
+    try:
+        budget = int(raw_budget) if raw_budget else 1500
+    except (TypeError, ValueError):
+        raise _HttpError(400, f"budget must be an integer, got '{raw_budget}'") from None
+    return 200, engine.check(project, base=_q(parsed, "base"),
+                             staged=_q(parsed, "staged") in ("1", "true", "yes", "on"),
+                             token_budget=budget, resolve=_q(parsed, "resolve"))
+
+
 def _ep_comment_overview(parsed, body):
     # Summarize docstring coverage, tags, and comment density.
     project = _require_project(_q(parsed, "project"))
@@ -1404,6 +1417,7 @@ _ROUTES_GET = {
     "/get_comments": _ep_get_comments,
     "/find_duplicates": _ep_find_duplicates,
     "/preflight": _ep_preflight,
+    "/check": _ep_check,
     "/graph_data": _ep_graph_data,
     "/links": _ep_links,
 }
@@ -1418,6 +1432,7 @@ _ROUTES_POST = {
 
 _HEAVY_PATHS = frozenset({
     "/preflight",
+    "/check",
     "/get_symbols",
     "/get_map",
     "/deadcode",
@@ -1438,6 +1453,7 @@ _HEAVY_PATHS = frozenset({
 
 _INTERACTIVE_HEAVY_PATHS = frozenset({
     "/preflight",
+    "/check",
     "/get_symbols",
     "/get_map",
     "/find_references",

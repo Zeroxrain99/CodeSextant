@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from . import (
     cochange,
+    diffscan,
     namegraph,
     project_state,
     storage,
@@ -1879,6 +1880,268 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
             break  # the envelope alone exceeds the budget; say so rather than lie
         result["truncated_by_budget"] = True
         result["approx_tokens"] = _json_tokens(result)
+    return result
+
+
+def _check_max_symbols() -> int:
+    """How many changed symbols may have their callers resolved in one check."""
+    raw = os.environ.get("CODESEXTANT_CHECK_MAX_SYMBOLS", "").strip()
+    if not raw:
+        return 10
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 10
+
+
+def _changed_units(abs_path: str, abs_file: str,
+                   added: list[tuple[int, int]]) -> list[dict]:
+    """Fingerprints of the units this diff wrote, from the file as it stands now.
+
+    This is the thing preflight structurally cannot do. Asked before the edit, there is
+    no body to fingerprint -- only a name, which is why the reuse check misses an
+    equivalent someone called something else. Asked after, the body exists, and shape
+    is a far better question than spelling.
+    """
+    language = symbols.language_for_file(abs_file)
+    if not language:
+        return []
+    try:
+        with open(abs_file, "rb") as handle:
+            source = handle.read()
+        units = clones.extract_fingerprints_from_source(
+            source, language, file_path=abs_file)
+    except (OSError, TypeError, ValueError):
+        return []
+    return [unit for unit in units
+            if diffscan.overlaps(added, unit["line"], unit.get("end_line") or unit["line"])]
+
+
+def _structurally_significant(unit) -> bool:
+    """Whether repeating this shape would mean anything.
+
+    The same gate find_duplicates applies, for the same reason and with the same
+    knob: control flow plus a node-count floor. Every one-line getter has the shape
+    of every other one, and a section that reports those is a section readers learn
+    to skip -- which costs the findings that did matter.
+    """
+    minimum = clones._env_int("CODESEXTANT_DEDUP_MIN_NODE_COUNT", 15)
+    return bool(unit["has_control_flow"]) and (unit["node_count"] or 0) >= minimum
+
+
+def _structural_matches(store, unit: dict, abs_file: str, root: str,
+                        changed: set[str], limit: int = 4) -> list[dict]:
+    """Indexed units with this one's exact shape, outside the change itself.
+
+    Matches inside the diff are excluded: a unit that moved between two files the same
+    commit touched is one unit, and reporting it as a duplicate of itself is the kind
+    of false positive that gets a whole section ignored.
+
+    A shape shared by very many units is a pattern rather than a duplication -- the
+    same reasoning that stops preflight listing eight of a project's thirty-eight
+    ``__init__`` definitions -- so those are dropped instead of sampled.
+    """
+    if not _structurally_significant(unit):
+        return []
+    rows = store.conn.execute(
+        "SELECT path,name,kind,line,node_count,has_control_flow FROM fingerprints "
+        "WHERE shape_hash=? ORDER BY path,line", (unit["shape_hash"],)).fetchall()
+    if len(rows) > _common_name_max():
+        return []
+    out = []
+    for row in rows:
+        normalized = os.path.normcase(os.path.abspath(row["path"]))
+        if normalized in changed or not _structurally_significant(row):
+            continue
+        if (normalized == os.path.normcase(abs_file)
+                and row["line"] == unit["line"]):
+            continue
+        out.append({"name": row["name"], "kind": row["kind"],
+                    "path": _repo_relative(root, row["path"]) or row["path"],
+                    "line": row["line"]})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def check(path: str, *, base: str | None = None, staged: bool = False,
+          token_budget: int = 1500, resolve="auto") -> dict:
+    """What the change you have already made looks like it forgot.
+
+    preflight asks three questions before an edit, from a name and an intention. Two
+    things limit it, and neither is fixable on that side of the edit: it only runs if
+    the author remembers to ask, and it has nothing to work with but a name -- no body
+    to compare shapes against, no diff to say what actually happened.
+
+    After the edit both go away. The diff names every file and every line, so the same
+    three questions get evidence instead of intent:
+
+    * **rebuilt** -- a unit this change wrote whose exact shape already exists
+      somewhere else. Not a name match: the body is there now, so this catches the
+      wheel that was reinvented *and renamed*, which is the case preflight cannot see.
+    * **companions** -- files history says follow the ones you changed, that you did
+      not change. The test, the allowlist, the fixture, the version constant.
+    * **callers** -- resolved references to the symbols you changed, in files outside
+      your diff. Changing A while B calls it is how B breaks.
+
+    Cost is bounded by the change rather than the repository, which is what makes it
+    affordable to run on every edit: only changed files are re-indexed and parsed, and
+    at most ``CODESEXTANT_CHECK_MAX_SYMBOLS`` symbols have their callers resolved.
+    """
+    abs_path = os.path.abspath(path)
+    db_file = storage.db_path_for(abs_path)
+    if not db_file.exists():
+        raise RuntimeError(
+            f"check: project has not been indexed yet (no {db_file}); "
+            "call index_project first.")
+    resolve = _normalize_resolve(resolve)
+    notes: list[str] = []
+
+    changed = diffscan.changed_files(abs_path, base=base, staged=staged)
+    if changed is None:
+        return _empty_check(abs_path, [
+            "check needs a Git worktree: it reads what you changed from the diff."])
+    if not changed:
+        return _empty_check(abs_path, [
+            "Nothing has changed against " + (base or ("the index" if staged else "HEAD"))
+            + ", so there is nothing to check."])
+
+    supported = {rel: status for rel, status in changed.items()
+                 if os.path.splitext(rel)[1].lower() in symbols.SUPPORTED_EXTENSIONS}
+    truncated_diff = len(changed) > diffscan.MAX_CHANGED_FILES
+    if truncated_diff:
+        notes.append(
+            f"The diff touches {len(changed)} files, beyond the {diffscan.MAX_CHANGED_FILES} "
+            "this check reads. A change that large is reviewed by splitting it, not by "
+            "a longer list; only co-change is reported below.")
+
+    changed_abs = {os.path.normcase(os.path.abspath(os.path.join(abs_path, rel)))
+                   for rel in changed}
+
+    # The index has to describe the code as it stands, or the line ranges in the diff
+    # will not line up with the symbols they touched. Only changed files are re-read.
+    existing = [os.path.join(abs_path, rel) for rel in supported
+                if os.path.isfile(os.path.join(abs_path, rel))]
+    if existing and not truncated_diff:
+        try:
+            index_paths(abs_path, existing)
+        except Exception as exc:  # noqa: BLE001 - a stale index costs precision, not the run
+            notes.append(f"Changed files could not be re-indexed ({type(exc).__name__}); "
+                         "line ranges may be out of date.")
+
+    rebuilt: list[dict] = []
+    changed_symbols: list[tuple[str, str]] = []
+    if not truncated_diff and supported:
+        # Shapes are derived lazily, so the first check on a project pays for them once
+        # and later ones pay only for the files that changed.
+        _materialize_derived(abs_path, "fingerprints")
+        with storage.ProjectStore.open_readonly(abs_path) as store:
+            for rel in sorted(supported):
+                abs_file = os.path.abspath(os.path.join(abs_path, rel))
+                if not os.path.isfile(abs_file):
+                    continue
+                ranges = diffscan.changed_ranges(
+                    abs_path, rel, base=base, staged=staged)
+                for unit in _changed_units(abs_path, abs_file, ranges["added"]):
+                    matches = _structural_matches(
+                        store, unit, abs_file, abs_path, changed_abs)
+                    if matches:
+                        rebuilt.append({
+                            "name": unit["name"], "kind": unit["kind"],
+                            "path": rel, "line": unit["line"],
+                            "size": unit.get("node_count"),
+                            "matches": matches,
+                        })
+                for row in store.conn.execute(
+                        "SELECT name,line,end_line FROM symbols WHERE path=? AND "
+                        "kind IN ('function','method','class')", (abs_file,)).fetchall():
+                    end = row["end_line"] or row["line"]
+                    if diffscan.overlaps(ranges["added"], row["line"], end):
+                        changed_symbols.append((rel, row["name"]))
+
+    cochange_stats = _ensure_cochange(abs_path)
+    companions: dict[str, dict] = {}
+    if cochange_stats.get("available"):
+        with storage.ProjectStore.open_readonly(abs_path) as store:
+            for rel in sorted(changed):
+                for rule in store.cochange_rules_for(
+                        rel, min_support=cochange.min_support(),
+                        min_confidence=cochange.min_confidence()):
+                    companion = rule["companion"]
+                    if companion in changed:
+                        continue
+                    entry = companions.get(companion)
+                    if entry is None or rule["confidence"] > entry["confidence"]:
+                        companions[companion] = {
+                            "path": companion,
+                            "confidence": round(rule["confidence"], 3),
+                            "support": rule["support"], "changes": rule["changes"],
+                            "because": rel,
+                        }
+    else:
+        notes.append("Co-change is unavailable: "
+                     + str(cochange_stats.get("reason", "unknown")))
+
+    callers: list[dict] = []
+    budget = _check_max_symbols()
+    for rel, symbol in changed_symbols[:budget]:
+        abs_file = os.path.abspath(os.path.join(abs_path, rel))
+        _ensure_blast_radius(abs_path, abs_file, symbol, resolve=resolve,
+                             defined_here=True)
+        with storage.ProjectStore.open_readonly(abs_path) as store:
+            dependents, _total = _read_blast_radius(store, abs_file, symbol)
+        outside = [_repo_relative(abs_path, d) or d for d in dependents
+                   if os.path.normcase(os.path.abspath(d)) not in changed_abs]
+        if outside:
+            callers.append({"symbol": symbol, "defined_in": rel,
+                            "callers": outside, "count": len(outside)})
+    if len(changed_symbols) > budget:
+        notes.append(
+            f"{len(changed_symbols)} symbols changed; callers were resolved for the "
+            f"first {budget} (CODESEXTANT_CHECK_MAX_SYMBOLS).")
+
+    if not rebuilt and not companions and not callers:
+        notes.append("Nothing found: no changed unit repeats a shape already in the "
+                     "index, no companion this history considers reliable was left "
+                     "out, and no resolved caller sits outside the diff. Each of the "
+                     "three is a heuristic, so this is not a clean bill of health.")
+
+    result = {
+        "project_key": storage.project_key(abs_path),
+        "changed_files": sorted(changed),
+        "changed_count": len(changed),
+        # Sorted by how much of the existing code the new unit repeats: the biggest
+        # repeat is the one most worth not having written.
+        "rebuilt": sorted(rebuilt, key=lambda r: -(r["size"] or 0)),
+        "companions": sorted(companions.values(),
+                             key=lambda c: (-c["confidence"], -c["support"])),
+        "callers": sorted(callers, key=lambda c: -c["count"]),
+        "notes": notes,
+        "approx_tokens": 0,
+    }
+    result["truncated_by_budget"] = False
+    result["approx_tokens"] = _json_tokens(result)
+    while result["approx_tokens"] > token_budget:
+        if len(result["changed_files"]) > 5:
+            result["changed_files"].pop()
+        elif len(result["callers"]) > 2:
+            result["callers"].pop()
+        elif len(result["companions"]) > 3:
+            result["companions"].pop()
+        elif len(result["rebuilt"]) > 2:
+            result["rebuilt"].pop()
+        else:
+            break
+        result["truncated_by_budget"] = True
+        result["approx_tokens"] = _json_tokens(result)
+    return result
+
+
+def _empty_check(abs_path: str, notes: list[str]) -> dict:
+    result = {"project_key": storage.project_key(abs_path), "changed_files": [],
+              "changed_count": 0, "rebuilt": [], "companions": [], "callers": [],
+              "notes": notes, "approx_tokens": 0, "truncated_by_budget": False}
+    result["approx_tokens"] = _json_tokens(result)
     return result
 
 
