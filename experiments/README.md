@@ -644,56 +644,71 @@ directory once turned a real 1.4× into a claimed 5.9×.
 
 | | requests | click | tqdm | **jinja** | **httpie** | **rich** | pooled |
 |---|---|---|---|---|---|---|---|
-| `guards` | 0.350 | 0.383 | 0.483 | 0.067 | 0.167 | 0.450 | **0.317** |
+| `guards` | 0.517 | 0.450 | 0.483 | 0.150 | 0.283 | 0.483 | **0.394** |
 | `guards_symbols` (0.28.0) | 0.333 | 0.317 | 0.417 | 0.050 | 0.167 | 0.400 | 0.281 |
-| `guards_perfile` (rejected) | 0.100 | 0.083 | 0.333 | 0.133 | 0.117 | 0.067 | 0.139 |
+| `guards_perfile` (rejected) | 0.117 | 0.083 | 0.350 | 0.167 | 0.117 | 0.067 | 0.150 |
 | `cochange@k` | 0.033 | 0.117 | 0.400 | 0.200 | 0.083 | 0.167 | 0.167 |
-| `same_dir@k` | 0.183 | 0.033 | 0.267 | 0.250 | 0.083 | 0.150 | 0.161 |
-| `frequency@k` | 0.267 | 0.083 | 0.533 | 0.317 | 0.050 | 0.150 | 0.233 |
+| `same_dir@k` | 0.200 | 0.050 | 0.250 | 0.250 | 0.100 | 0.150 | 0.167 |
+| `frequency@k` | 0.267 | 0.100 | 0.533 | 0.317 | 0.067 | 0.150 | 0.239 |
 
-Held out (jinja, httpie, rich): **0.228**, naming 3.8 fences. Paired against each
-control, held-out set only:
+Held out (jinja, httpie, rich): **0.306**, naming 4.9 fences. Paired against each
+control, held-out set only, and it beats all five:
 
 | against | difference | interval | |
 |---|---|---|---|
-| `guards_perfile` | +0.122 | [+0.050, +0.194] | real |
-| `cochange@k` | +0.078 | [+0.006, +0.150] | real |
-| `guards_symbols` | +0.022 | [+0.006, +0.044] | real |
-| `same_dir@k` | +0.067 | [−0.017, +0.150] | not established |
-| `frequency@k` | +0.056 | [−0.033, +0.139] | not established |
+| `guards_perfile` | +0.189 | [+0.111, +0.261] | real |
+| `cochange@k` | +0.156 | [+0.072, +0.239] | real |
+| `same_dir@k` | +0.139 | [+0.044, +0.222] | real |
+| `frequency@k` | +0.128 | [+0.033, +0.222] | real |
+| `guards_symbols` — what 0.28.0 shipped | +0.100 | [+0.056, +0.144] | real |
 
 **The rejection that was made by eye is confirmed by measurement.** `guards_perfile` —
 every guard in a file the change reaches, no per-guard check — is the design that was
-built and thrown away on one reading. It loses by +0.122 held out and +0.178 pooled.
+built and thrown away on one reading. It loses by +0.189 held out.
 
-**And the design was still incomplete.** `cochange@k` is the control that matters,
-because `check` already names the forgotten file from history alone and ships. Against
-the two symbol tiers alone the held-out difference was +0.056, **not established**: on
-that evidence, reading the fences was a longer way to the same answer. Pooling the
-outcomes offline showed why — the two signals hit different commits, and their union was
-worth +0.111 held out over the symbol tiers. That measurement is what built the history
-tier, in that order, and the built version is the row above: +0.022 held out, which is
-smaller than the offline union because the tier ranks last and spends only the slots the
-first two leave empty.
+**And a second rejection made by eye is reversed by it.** The first version of `guards`
+reached a fence only through the fence's own text: you edited its file, or it spells a
+symbol you changed. Two tiers whose evidence is about the *file* were written down as
+refused — history says this file moves with yours, and this file imports what you
+changed — on the argument that per-file relevance is what made the rejected design
+unreadable. The argument was sound and the conclusion was wrong on both counts:
+
+- Against the two symbol tiers alone, the held-out difference from **reading history
+  instead** was +0.056 with an interval crossing zero. On that evidence `guards` was a
+  longer way to an answer `check` already gives. Pooling the outcomes offline showed
+  why — the signals hit different commits — and the union was worth +0.111 held out.
+  That measurement built the history tier, in that order.
+- The **import tier** was then measured the same way, as a predictor, before anything
+  was built: +0.072 held out, positive on all six repositories, and beating the weakest
+  possible relaxation of the per-guard rule (admit a file that names a changed symbol
+  when no fence in it does) by +0.039.
+
+Together they take the section from 0.206 to 0.306 held out at a cost of 1.5 fences
+printed. Both are ranked below every fence read off its own text and labelled with the
+file-level claim they rest on, so a reader can tell a lead from a hit.
+
+**The decision rule was fixed before the numbers existed** — build only if the derivation
+difference excludes zero and the held-out difference is positive — and committed
+separately, because choosing the criterion after seeing which candidate wins is how a
+held-out set stops being one.
 
 ### Where it loses, and why
 
-**On jinja `guards` loses to every control and the losses are real** (−0.133 against
-`cochange@k`, −0.250 against `frequency@k`). jinja is also the repository where exp2's
-resolved-reference result reversed, and the two have one cause: both signals are read off
-symbol names, and a template engine drives its subjects through indirection. The fences
-`guards` did find there were `assert` and `raise` and not one test.
+**On jinja `guards` is still last.** It began three real losses down — against co-change,
+proximity and frequency — and the two file-level tiers took it from 0.067 to 0.150,
+leaving one: `frequency@k` beats it by 0.167 [0.017, 0.317]. jinja is also the repository
+where exp2's resolved-reference result reversed, and the two have one cause: both signals
+start from symbol names, and a template engine drives its subjects through indirection.
 
-The diagnostic is in the table. On jinja alone, `guards_perfile` (0.133) beats `guards`
-(0.067): the fences are reachable at *file* level and not at *guard* level, because
-jinja's tests do not spell the names they exercise. Per-guard evidence is the right rule
-on five repositories and the wrong one on this one, and no number here says which case a
-new repository is.
+The diagnostic was visible before the repair and remains readable in the table. On jinja
+alone, `guards_perfile` (0.167) still edges `guards` (0.150): the fences are reachable at
+*file* level and not at *guard* level, because jinja's tests do not spell the names they
+exercise. Per-guard evidence is the right rule on five repositories and the wrong one on
+this one, and no number here says which case a new repository is before the fact.
 
-`frequency@k` — the project's most-changed files, no index, no analysis — is beaten by
-+0.083 pooled and not beaten at all on the held-out set. For a repository whose tests
-concentrate in a few large files, "look at what changes most" is a good and much cheaper
-answer.
+`frequency@k` — the project's most-changed files, no index, no analysis — is a strong
+baseline and worth keeping in mind: it is beaten by +0.128 held out, but it wins outright
+on tqdm and jinja, and it costs nothing to compute.
 
 ## What these experiments do not establish
 
