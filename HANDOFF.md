@@ -16,7 +16,7 @@ the machine.
 
 | | |
 |---|---|
-| branch | `claude/codesextant-handoff-us93o7`, head `8104c57`, 31 commits ahead of master |
+| branch | `claude/codesextant-handoff-us93o7`, 32 commits ahead of master. Last commit touching `codesextant/` is `8104c57`; anything after it is this document and the experiment write-up. |
 | version | 0.26.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
 | tests | `python -m pytest -q` → 720 passed, 6 skipped |
 | lint | `python -m ruff check codesextant tests experiments` → 12 errors, all pre-existing. **12 is the baseline; 13 means you added one.** |

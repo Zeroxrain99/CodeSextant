@@ -2184,8 +2184,9 @@ def check(path: str, *, base: str | None = None, staged: bool = False,
     if not rebuilt and not companions and not callers and not dependents:
         notes.append("Nothing found: no changed unit repeats a shape already in the "
                      "index, no companion this history considers reliable was left "
-                     "out, and no resolved caller sits outside the diff. Each of the "
-                     "three is a heuristic, so this is not a clean bill of health.")
+                     "out, no resolved caller sits outside the diff, and nothing "
+                     "outside it imports what you changed. Each of the four is a "
+                     "heuristic, so this is not a clean bill of health.")
 
     result = {
         "project_key": storage.project_key(abs_path),
