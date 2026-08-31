@@ -48,5 +48,12 @@ docs/assets/*
 !docs/assets/visual-map-prototype.png
 !docs/assets/visual-map-symbol-inspector.png
 !docs/getting-started.md
+# Published because a tracked file points at them, which is the only test that
+# matters here: HANDOFF.md names the roadmap as the thing to read before choosing
+# work, experiments/README.md links the guard-index write-up, and release.yml reads
+# the release notes to publish them. tests/test_published_docs.py enforces it.
+!docs/guard-index.md
+!docs/roadmap.md
+!docs/release-notes/
 .wiredo-audit.json
 .codesextant-baseline.json
