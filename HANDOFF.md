@@ -18,7 +18,7 @@ the machine.
 |---|---|
 | branch | `claude/codesextant-handoff-us93o7`, 34 commits ahead of master. Last commit touching `codesextant/` is `a382e99`; anything after it is this document. |
 | version | 0.27.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
-| tests | `python -m pytest -q` → 724 passed, 6 skipped |
+| tests | `python -m pytest -q` → 728 passed, 6 skipped |
 | lint | `python -m ruff check codesextant tests experiments` → 12 errors, all pre-existing. **12 is the baseline; 13 means you added one.** |
 | experiments | `experiments/README.md` — protocol, results, and what they do not establish |
 
@@ -240,6 +240,19 @@ replaces the long "nothing found" note). A diff wide enough to trip the cutoff c
 no early stop: 13 ms on a 213-file repository. `check` already walks the tree once per
 resolved symbol, so this is one more walk against up to ten.
 
+**A name that does not exist on every platform and Python is guarded, and a test says
+so.** `signal.SIGKILL` is absent on Windows; `tomllib` arrived in 3.11 and the floor is
+3.10. Both were used unguarded, both were pushed green from Linux on 3.11, and both were
+red on six of thirteen CI jobs — one of them in a daemon exception handler, so every
+route-worker failure on Windows raised AttributeError instead of the 503 it meant to.
+`tests/test_portability.py` walks the AST of the whole repository and fails on any such
+name used as though it were universal. Accepted: an `os.name` / `sys.platform` branch, a
+`try/except` catching **what would actually be raised**, `getattr(mod, "NAME", default)`,
+or the word `posix-only` in the function's docstring when the caller guarantees the
+platform. The distinction between what an import raises and what an attribute raises is
+load-bearing — the first version of that checker treated `except OSError` as a guard and
+therefore passed over the very hole it was written for.
+
 **`render.py` is the only renderer.** The CLI and the MCP server print the same lines
 from the same function, with a test pinning it, so the two surfaces cannot describe a
 result differently.
@@ -278,6 +291,14 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   "excludes zero" stops being the right test at small n. Pool the cases across
   repositories — 351 separates what 59 cannot — and report the count of cases gained and
   lost beside the interval.
+- **The local loop is one of twelve.** Linux on 3.11 here; CI is three operating
+  systems times four Pythons, and the other eleven combinations can only report a
+  mistake after it is pushed. Both defects found this way were conventions the
+  repository already followed correctly in six other places — `os.name == "nt"` branches
+  four times, the `tomllib`/`tomli` fallback three times — forgotten in exactly the spot
+  the author could not run. That is not a discipline problem and more discipline will
+  not fix it; a checker that reads the AST from whichever platform you happen to have
+  will.
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is
   scored by `--score` on an old dump in one second instead of an hour. Four candidates
