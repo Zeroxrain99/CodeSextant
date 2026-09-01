@@ -71,10 +71,7 @@ stale. Finding them is the substance of this task; you are not given a list.
 
 Edit the files you believe have to change. Make the edits real -- do not leave notes
 saying what should be done. When you are finished, stop; do not commit.
-{tool}
-When you have finished, end your reply with one line in exactly this format, and nothing after it:
-TOOLCALLS: <the number of tool calls you made>
-"""
+{tool}"""
 
 
 def worktree_for(task: dict, home: str) -> str | None:
@@ -98,15 +95,14 @@ def release_worktree(task: dict, tree: str) -> None:
 def prompt_for(task: dict, tree: str, condition: str, cli: str) -> str:
     """The two prompts differ in exactly one paragraph, and in nothing else.
 
-    Anything else that differed would be measured as if it were the tool. That includes
-    the tool-call request at the end: it is in **both** arms, because a cost question
-    asked of one condition and not the other is not a comparison.
+    Anything else that differed would be measured as if it were the tool.
 
-    Self-report is a weak instrument and it is here only for the cost endpoint, never
-    for what the attempt did -- `collect` reads the worktree for that. For the
-    `with_tool` arm it is checkable: the daemon writes every request to its log, so how
-    often the tool was actually reached is observable independently of what the agent
-    says about itself. Where the two disagree, the log is the measurement.
+    **Nothing here asks the agent what it cost.** A line requesting a tool-call count
+    was added to both arms on the belief that cost could not be observed from outside,
+    and the first pilot trial refuted it twice over: the harness reports tokens, tool
+    uses and duration for every agent it runs, and the agent's own count read **18**
+    where the harness read **31**. Asking cost him thirty tokens to produce a number
+    42% low, next to one that is free and right. See `cost_from_usage`.
     """
     tool = _TOOL_PARAGRAPH.format(cli=cli) if condition == "with_tool" else ""
     return _PROMPT.format(repo=task["repo"], tree=tree,
@@ -140,6 +136,73 @@ def collect(task: dict, tree: str) -> dict:
             except OSError:
                 pass
     return {"changed": sorted(changed), "scored": prevention.score(task, changed, sources)}
+
+
+def cli_shim(home: str, cli: str) -> str:
+    """A `codesextant` that records every invocation before running the real one.
+
+    **Without this the experiment cannot tell its two most different outcomes apart.**
+    "The agent used the tool and it did not help" and "the agent never ran it" call for
+    opposite responses -- fix the answers, or fix the affordance -- and a file-change
+    score reads identically for both.
+
+    The first pilot trial tried to read this from the daemon log and got zero, which was
+    not a measurement: `preflight`, `check` and `guards` run in the CLI's own process
+    against the SQLite index, so a daemon that never starts writes no log. A column
+    reading zero everywhere is a defect until proven otherwise, and that one was.
+
+    It is named `codesextant` and placed in its own `bin/`, because the path appears in
+    the prompt and is therefore part of the stimulus. A first version called it
+    `cs-shim`, which tells the agent it is being watched -- and an agent that knows it is
+    being watched for whether it uses a tool is not measuring what it would do.
+    """
+    binary = os.path.join(home, "bin")
+    os.makedirs(binary, exist_ok=True)
+    path = os.path.join(binary, "codesextant")
+    log = os.path.join(home, "invocations.log")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "#!/bin/sh\n"
+            f'printf "%s\\t%s\\n" "$(date -u +%%FT%%TZ)" "$*" >> {log}\n'
+            f'exec {cli} "$@"\n')
+    os.chmod(path, 0o755)
+    return path
+
+
+def invocations(home: str) -> list[str]:
+    """What the agent actually ran, from the shim's log. Absent file means it ran
+    nothing -- which is only meaningful because the shim was definitely in place."""
+    log = os.path.join(home, "invocations.log")
+    if not os.path.isfile(log):
+        return []
+    with open(log, encoding="utf-8", errors="replace") as handle:
+        return [line.split("\t", 1)[-1].strip() for line in handle if line.strip()]
+
+
+def cost_from_usage(usage: dict) -> dict:
+    """The cost side of a trial, taken from the runner rather than from the agent.
+
+    Whatever invokes the agent reports what it actually spent -- tokens, tool calls,
+    wall-clock. That is the measurement; the agent's account of itself is not. Measured
+    on the first pilot trial: self-reported 18 tool calls against 31 observed, low by
+    42%, in a report that was otherwise careful and detailed. Being wrong about your own
+    behaviour is not carelessness, it is what self-report is.
+
+    Accepts whatever keys the runner supplies and normalises the three this experiment
+    reads. A key the runner does not have stays absent rather than becoming zero: an
+    unmeasured cost is not a free one, and `report` drops unmeasured pairs on purpose.
+    """
+    out: dict = {}
+    for key, names in (("tokens", ("subagent_tokens", "tokens", "total_tokens")),
+                       ("tool_calls", ("tool_uses", "tool_calls")),
+                       ("seconds", ("duration_ms", "duration_sec", "seconds"))):
+        for name in names:
+            if usage.get(name) is None:
+                continue
+            value = float(usage[name])
+            out[key] = value / 1000.0 if name == "duration_ms" else value
+            break
+    return out
 
 
 def load_tasks(path: str | None = None) -> list[dict]:
