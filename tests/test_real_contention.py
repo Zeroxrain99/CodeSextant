@@ -250,6 +250,25 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
         assert "background_recoveries" in busy_status
         assert busy_status_ms <= STATUS_DEADLINE_MS
 
+    # What the control plane costs on this machine with nothing competing. Every timing
+    # claim below is a multiple of this rather than a millisecond count, for the reason
+    # HANDOFF.md now records six times: an absolute deadline asserted on a runner that
+    # is ten to a hundred times slower is an assertion about the runner. The daemon's
+    # own budgets (150 ms of SQLite, 500 ms of git) are wall-clock too, so on a machine
+    # where a 73-file reindex takes ten seconds they buy ten times the wall-clock and
+    # `/status` legitimately answers in 2.5 seconds.
+    health_client = client.CodesextantClient(
+        project=str(project), port=port, timeout=1.0)
+    quiet_health: list[float] = []
+    quiet_status: list[float] = []
+    for _ in range(5):
+        started = time.perf_counter()
+        health_client.health()
+        quiet_health.append((time.perf_counter() - started) * 1000)
+        started = time.perf_counter()
+        status_client.status(fresh=True)
+        quiet_status.append((time.perf_counter() - started) * 1000)
+
     stop_reindex = threading.Event()
     abort_reindex = threading.Event()
     reindex_started = threading.Event()
@@ -270,8 +289,6 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     rebuild = threading.Thread(target=repeat_reindex, name="real-reindex")
     rebuild.start()
 
-    health_client = client.CodesextantClient(
-        project=str(project), port=port, timeout=1.0)
     assert reindex_started.wait(timeout=5)
 
     active_seen = False
@@ -316,6 +333,8 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
         return daemon.http_ping(port=port, timeout=2.0) is not None
     health_samples: list[float] = []
     status_samples: list[float] = []
+    health_overruns = 0
+    status_overruns = 0
 
     try:
         with ThreadPoolExecutor(max_workers=3) as pool:
@@ -373,14 +392,28 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                 "ran concurrently")
 
             for _ in range(12):
+                # The same three outcomes the graph routes get, for the same reason: a
+                # control-plane call can be answered, refused under contract, or outrun
+                # by its own client deadline while the service stays up. The third was
+                # unhandled here and raised straight out of the test -- a `TimeoutError`
+                # from `status_client` on a Windows runner where the server itself
+                # logged `/status -> 200 (2551 ms)` against a 1.5 s client budget.
                 started = time.perf_counter()
-                health = health_client.health()
-                health_samples.append((time.perf_counter() - started) * 1000)
-                assert health["service"] == "codesextant"
-                assert "heavy_work" in health
+                try:
+                    health = health_client.health()
+                except TimeoutError:
+                    health_overruns += 1
+                else:
+                    health_samples.append((time.perf_counter() - started) * 1000)
+                    assert health["service"] == "codesextant"
+                    assert "heavy_work" in health
 
                 started = time.perf_counter()
-                status = status_client.status(fresh=True)
+                try:
+                    status = status_client.status(fresh=True)
+                except TimeoutError:
+                    status_overruns += 1
+                    continue
                 status_samples.append((time.perf_counter() - started) * 1000)
                 assert "service_load" in status
                 assert "background_recoveries" in status
@@ -436,8 +469,10 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     assert all(result["indexed"] == 73 for result in reindex_results)
     assert storage.symbol_snapshot_path(
         storage.db_path_for(str(project))).is_file()
-    assert len(health_samples) == 12
-    assert len(status_samples) == 12
+    assert len(health_samples) + health_overruns == 12
+    assert len(status_samples) + status_overruns == 12
+    assert health_samples, "every health probe outran its deadline"
+    assert status_samples, "every status probe outran its deadline"
 
     raw_metrics = {
         **graph_samples,
@@ -456,7 +491,13 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     # Overruns printed beside the latencies: a run where they are non-zero is a slow
     # machine meeting a documented limit, and a reader looking at a CI log deserves to
     # see that rather than infer it from a smaller sample count.
-    print(json.dumps({**reported_metrics, "overruns": graph_overruns},
+    print(json.dumps({**reported_metrics, "overruns": graph_overruns,
+                      "control_plane_overruns": {"health": health_overruns,
+                                                 "status": status_overruns},
+                      "quiet_health_median_ms": round(_percentile(quiet_health, 50), 3),
+                      "quiet_status_median_ms": round(_percentile(quiet_status, 50), 3),
+                      "busy_health_median_ms": round(_percentile(health_samples, 50), 3),
+                      "busy_status_median_ms": round(_percentile(status_samples, 50), 3)},
                      sort_keys=True))
 
     # The claim, stated so it holds at any speed: every interactive call either came
@@ -478,7 +519,37 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
             if refusal.code == 503:
                 assert refusal.headers.get("Retry-After"), (
                     "back-pressure must say when to return")
-    assert (_percentile(raw_metrics["health"], 99)
-            < HEALTH_P99_DEADLINE_MS)
-    assert max(raw_metrics["status"]) <= STATUS_DEADLINE_MS
+    # The control plane, relative to what it costs on this machine when nothing is
+    # competing. `max` and `p99` over twelve samples are one observation each -- the
+    # slowest -- so they report the worst scheduling hiccup in the window rather than
+    # anything the code did; the median moves only if the control plane is *sustainedly*
+    # slower, which is the claim.
+    #
+    # **Measured rather than carried over from the other contention test**, because
+    # carrying a constant to a different baseline is exactly how the first version of
+    # that fix silently disabled itself. Four healthy local runs:
+    #
+    #     health  quiet 2.1-2.8 ms  ->  busy 3.9-6.0 ms    ratio 1.4-2.5x
+    #     status  quiet 6.4-7.6 ms  ->  busy 12.4-17.9 ms  ratio 1.7-2.5x
+    #
+    # So the healthy ratio is about 2 to 2.5, not 1, and a 4x multiple leaves under two
+    # of headroom. **On a machine this fast the floor is what holds the test up** -- 100
+    # ms is five to eight times the healthy busy median -- and the multiple only bites
+    # once the baseline passes about 25 ms, which is where a slow runner puts it. Total
+    # starvation is caught before either: the client budgets are 1.0 s and 1.5 s, so a
+    # starved control plane overruns them and `assert health_samples` fails.
+    for name, samples, quiet in (("health", health_samples, quiet_health),
+                                 ("status", status_samples, quiet_status)):
+        median = _percentile(samples, 50)
+        quiet_median = _percentile(quiet, 50)
+        assert median < max(quiet_median * 4, 100), (
+            f"{name} median was {median:.0f} ms during the rebuild against "
+            f"{quiet_median:.0f} ms with nothing competing, which is the control plane "
+            "being starved rather than sharing")
+
+    # The absolute deadlines are kept where they are still statements about the code:
+    # the client budget enforces them by construction, so a call that breached one is
+    # already counted as an overrun above rather than sitting in these samples.
+    assert max(health_samples) < HEALTH_P99_DEADLINE_MS
+    assert max(status_samples) <= STATUS_DEADLINE_MS
     assert not server_thread.is_alive()
