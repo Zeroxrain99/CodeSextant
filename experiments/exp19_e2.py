@@ -99,6 +99,7 @@ import argparse
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -362,6 +363,38 @@ def _lookups(text: str, slug: str, sha: str) -> list[str]:
     return found
 
 
+_RUN_DIR = re.compile(r"/tmp/e2run/runs/(run_\d\d)")
+
+
+def _crossed_trials(text: str, run_id: str) -> list[str]:
+    """Did this trial read another trial's checkout -- and above all, its own pair's?
+
+    The two arms of a pair are the *same task*, so the other arm's working tree is a
+    worked solution. Twenty runs share one container and eight run at a time, so the
+    trees are all sitting there readable.
+
+    This is not hypothetical. One agent ran `pip install -e .` on its own checkout,
+    which repointed the container's `import pytest` at that tree -- two later trials
+    noticed and worked around it, and one of them said so in its report. Neither shared
+    the task, so nothing leaked; the arm that *did* share the task was running
+    concurrently and happened to set `PYTHONPATH` explicitly. That is luck, not
+    isolation, and luck is not a control.
+
+    Naming a different task's run directory is environment interference rather than a
+    leak: it costs the agent effort and adds noise to the cost reading, so it is
+    reported without voiding the trial. Naming the *paired* run's directory voids it.
+    """
+    plan = {item["run_id"]: item for item in load_plan()}
+    mine = plan.get(run_id, {}).get("task_id")
+    out = []
+    for other in sorted(set(_RUN_DIR.findall(text)) - {run_id}):
+        if plan.get(other, {}).get("task_id") == mine:
+            out.append(f"read the other arm of its own task ({other})")
+        else:
+            out.append(f"note: touched another trial's checkout ({other})")
+    return out
+
+
 def contaminated(run_id: str, transcript: str | None = None) -> list[str]:
     """Evidence that this trial looked the answer up instead of working it out.
 
@@ -397,6 +430,7 @@ def contaminated(run_id: str, transcript: str | None = None) -> list[str]:
         with open(transcript, encoding="utf-8", errors="replace") as handle:
             text = handle.read()
         found.extend(f"transcript {why}" for why in _lookups(text, slug, task["sha"]))
+        found.extend(f"transcript {why}" for why in _crossed_trials(text, run_id))
     return sorted(set(found))
 
 
