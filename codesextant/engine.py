@@ -372,7 +372,10 @@ def _index_source_file(store: storage.ProjectStore, fp: str, *, force: bool = Fa
 
     try:
         lang = symbols.language_for_file(fp)
-        tree = symbols.parse_source(source, lang) if lang else None
+        # A language read line by line has no tree to share. `extract_symbols_from_source`
+        # ignores the argument for those, and passing None keeps the one call site.
+        tree = (symbols.parse_source(source, lang)
+                if lang and symbols.has_grammar(lang) else None)
         extracted = (
             symbols.extract_symbols_from_source(source, lang, file_path=fp, tree=tree)
             if lang else []
@@ -415,7 +418,11 @@ def _derive_one_file(store: storage.ProjectStore, path: str, content_hash: str,
         # fingerprints that disagree with the symbols beside them.
         return False
     lang = symbols.language_for_file(path)
-    if not lang:
+    if not lang or not symbols.has_grammar(lang):
+        # Clone fingerprints and comment extraction both walk a tree-sitter tree, and a
+        # language without a grammar has none. Saying so by skipping is right; faking a
+        # tree would put fingerprints in the index that disagree with the symbols beside
+        # them, which is the defect the comment above this function already warns about.
         return False
     try:
         tree = symbols.parse_source(source, lang)
@@ -1009,6 +1016,18 @@ def call_hierarchy(path: str, symbol: str, *, direction: str = "both",
         "(map and refs persist automatically). If there are too few edges, the transitive "
         "levels and the callees direction will look sparse; run refs against the related "
         "symbols first to fill them in.")
+    # Without a resolver that advice is a dead end: name matching never produces the
+    # high-confidence edges this chain is built from, so "run refs first" would send a
+    # reader round a loop that cannot terminate. Worse, an empty chain here reads as
+    # "nothing depends on this" when it means "nobody can tell you".
+    def_lang = symbols.language_for_file(def_path) if def_path else None
+    if def_path and not references.resolves_imports(def_lang):
+        result["note"] += (
+            f" There is no import resolver for '{def_lang or 'this language'}', so no "
+            "high-confidence edge will ever be persisted for it and this chain cannot "
+            "fill in. Use find_references instead: it name-matches, which is a weaker "
+            "claim clearly labelled as one. Read an empty chain here as 'nobody can "
+            "tell you', not as 'nothing depends on this'.")
     return result
 
 

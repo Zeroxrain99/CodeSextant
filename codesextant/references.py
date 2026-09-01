@@ -239,6 +239,18 @@ def _occurrences_in_file(file_path: str, symbol: str) -> list[tuple[int, int]]:
     return out
 
 
+# The languages whose imports are actually resolved. Everything else degrades to name
+# matching, which is a weaker claim and has to be labelled as one wherever it surfaces --
+# `impact` in particular, which builds its chain from *resolved* edges and would
+# otherwise tell a reader to go and generate edges that can never exist.
+RESOLVED_LANGUAGES = frozenset({"python", "typescript", "tsx", "javascript"})
+
+
+def resolves_imports(lang: str | None) -> bool:
+    """Whether a real import resolver exists for this language."""
+    return lang in RESOLVED_LANGUAGES
+
+
 def find_references(src_root: str, symbol: str, def_path: str | None = None,
                     *, include_low_confidence: bool = True,
                     max_candidate_files: int = 400) -> dict:

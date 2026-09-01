@@ -12,6 +12,8 @@ import os
 import tree_sitter
 from tree_sitter_language_pack import get_language
 
+from . import pinescript
+
 # -- per-language spec (table-driven) --
 #   language : the grammar name in tree-sitter-language-pack
 #   exts     : file extensions (lowercase, with dot)
@@ -230,12 +232,33 @@ LANGUAGE_SPECS: dict[str, dict] = {
     },
 }
 
+# Languages read without a grammar, because `tree_sitter_language_pack` ships 371 and
+# does not ship theirs. They are a smaller claim -- see `pinescript` for what a line
+# reader gets wrong -- and they are kept apart so that nothing which needs a parse tree
+# can be handed one of them by accident.
+TEXT_LANGUAGE_SPECS: dict[str, dict] = {
+    pinescript.LANGUAGE: {"exts": list(pinescript.EXTENSIONS),
+                          "extract": pinescript.extract_symbols},
+}
+
 # extension -> lang key (reverse lookup table), used by the engine for scanning /
 # determining a file's language when resolving references.
 _EXT_TO_LANG: dict[str, str] = {
-    ext: name for name, spec in LANGUAGE_SPECS.items() for ext in spec["exts"]
+    ext: name
+    for registry in (LANGUAGE_SPECS, TEXT_LANGUAGE_SPECS)
+    for name, spec in registry.items()
+    for ext in spec["exts"]
 }
 SUPPORTED_EXTENSIONS = frozenset(_EXT_TO_LANG)
+
+
+def has_grammar(lang_key: str | None) -> bool:
+    """Whether this language is parsed rather than read line by line.
+
+    The caller that matters is the indexer: clone fingerprints and comment extraction
+    both walk a tree-sitter tree, and there is no tree here to walk.
+    """
+    return lang_key in LANGUAGE_SPECS
 
 
 # -- tree-sitter Language object lazy cache (loaded on first use, shared per language) --
@@ -255,7 +278,7 @@ def language_for_file(file_path: str) -> str | None:
     return _EXT_TO_LANG.get(os.path.splitext(file_path)[1].lower())
 
 
-def parse_source(source: bytes, lang_key: str):
+def parse_source(source: bytes, lang_key: str):  # noqa: D401 - contract below
     """Parse a chunk of source into a tree-sitter tree.
 
     ``index_project`` parses each file once and shares the tree across symbol,
@@ -372,9 +395,18 @@ def extract_symbols_from_source(source: bytes, lang_key: str = "python", *,
                 MyClass; "" means module top level)
     Listed in order of appearance.
 
+    A language without a grammar is dispatched to its own reader and ``tree`` is
+    ignored, because there is none.
+
     fail-loud: source not being bytes raises TypeError directly; an unsupported
     lang_key raises ValueError directly.
     """
+    if lang_key in TEXT_LANGUAGE_SPECS:
+        if not isinstance(source, bytes):
+            raise TypeError("extract_symbols_from_source: source must be bytes")
+        return TEXT_LANGUAGE_SPECS[lang_key]["extract"](
+            source.decode("utf-8", "replace"), file_path)
+
     if not isinstance(source, (bytes, bytearray)):
         raise TypeError(
             f"extract_symbols_from_source requires bytes, got {type(source).__name__}"

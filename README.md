@@ -238,6 +238,8 @@ Two of those four tiers reach a fence through a claim about its *file* rather th
 
 ## Why use an index
 
+**Languages.** Sixteen are parsed with tree-sitter; PineScript is read line by line, because `tree_sitter_language_pack` ships 371 grammars and not that one — a weaker instrument, labelled as one in `codesextant/pinescript.py`. Import resolution exists for Python, TypeScript, JavaScript and TSX only; everything else degrades to name matching and every answer that does says so. `impact` builds its chain from resolved edges, so on an unresolved language it now tells you the chain cannot fill in and to use `references` instead — an empty chain there means "nobody can tell you", not "nothing depends on this".
+
 Name matching cannot distinguish same-named symbols in different scopes. In collision-heavy repositories, searches for names such as `handle`, `run`, and `Config` can return many false positives. For Python and TypeScript/JavaScript, CodeSextant resolves imports and stores the graph in a shared local service.
 
 ## How it works

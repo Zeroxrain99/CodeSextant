@@ -210,7 +210,9 @@ is wrong, and nothing predicts which a new repository is.
   decides.
 - **Thresholds.** `min_support=3`, `min_confidence=0.5` predate the corpus that could
   justify them. Tuning must use the held-out repositories, not the derivation set.
-- **Twelve of thirteen languages.** Only Python gets import resolution.
+- **Thirteen of seventeen languages.** Only Python, TypeScript, JavaScript and TSX
+  get import resolution; the rest degrade to name matching and say so. PineScript
+  is weaker still -- it is read line by line, because no grammar exists for it.
 - **Repository shape.** Three libraries. No application, no monorepo.
 
 ---
