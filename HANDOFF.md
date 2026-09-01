@@ -490,11 +490,24 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   call. What it could not say is whether 2% describes software or describes the
   curation. exp17 ran the *same classifier* over 900 real commits from the *same
   repositories*: **11% on the derivation set, 7% on the prevention set.** The task
-  selection had quietly preferred commits whose companions were clearly linked. Nothing
-  about `prevention_tasks.json` is wrong; it is simply the easy half, and every number
-  E1 and E1b produced is a number about the easy half. **Before trusting a rate from a
-  curated set, measure the same rate on the uncurated population.** The measurement cost
-  ten minutes and it moved a decision that would have cost 240 agent runs.
+  Nothing about `prevention_tasks.json` is wrong; it is simply the easy half, and every
+  number E1 and E1b produced is a number about the easy half. **Before trusting a rate
+  from a curated set, measure the same rate on the uncurated population.** The
+  measurement cost ten minutes and it moved a decision that would have cost 240 agent
+  runs.
+  **And then the explanation was wrong too.** The obvious mechanism -- exp12 requires a
+  commit to touch two Python files, and two Python files usually change together because
+  they share a symbol -- was written into a commit message and a PR before it was
+  checked. exp18 checks it: **every hidden task it finds touches two or more Python
+  files**, so that filter would have kept four in five. The shortfall is real and its
+  cause is not established. Naming a plausible mechanism is not the same as measuring
+  one, and a number that survives is not evidence for the story told about it.
+  **The correction then repeated the mistake at one level up.** "Every hidden task
+  touches two or more Python files" was written from the smoke run of eleven. At
+  forty-five it is 82%, not 100%, and the filter costs about a fifth of the stratum
+  rather than none of it. Two entries above, this file already says a sample of fifty
+  gave the opposite sign; a sample of eleven was used to overturn a claim within the
+  hour of writing that down. **A correction needs the sample size a finding needs.**
 
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is

@@ -22,6 +22,8 @@ from experiments import exp12_prevention as prevention
 
 TASKS = pathlib.Path(__file__).resolve().parent.parent / "experiments" / \
     "prevention_tasks.json"
+STRATIFIED = pathlib.Path(__file__).resolve().parent.parent / "experiments" / \
+    "prevention_tasks_stratified.json"
 
 
 def _task(**truth):
@@ -113,3 +115,58 @@ def test_the_task_instructions_do_not_hand_over_the_answer():
               if any(companion in task["instruction"]
                      for companion in task["truth"]["companions"])]
     assert not leaked, f"these instructions name a file to be discovered: {leaked[:5]}"
+
+
+# ── the stratified set ──
+# It exists because the frozen one above is not a sample: exp15 found 2% of its tasks
+# had a companion no grep could reach, and exp17 measured 7-11% on real commits from the
+# same repositories. A set that under-represents the only stratum this tool can help
+# with cannot answer whether it helps.
+
+def _stratified():
+    if not STRATIFIED.is_file():
+        pytest.skip("the stratified set has not been built in this checkout")
+    return json.loads(STRATIFIED.read_text(encoding="utf-8"))
+
+
+def test_the_stratified_set_holds_to_the_same_shape():
+    """Same contract as the frozen set. A second task file that answers to a different
+    standard is two benchmarks pretending to be one."""
+    for task in _stratified():
+        for key in ("repo", "sha", "parent", "instruction", "start_in", "truth",
+                    "stratum"):
+            assert task[key], f"{task['id']} has no {key}"
+        truth = task["truth"]
+        assert truth["companions"], "a task with no companion cannot measure anything"
+        assert task["start_in"] not in truth["companions"]
+        assert task["start_in"] not in truth["guard_files"]
+        assert not any(companion in task["instruction"]
+                       for companion in truth["companions"]), (
+            f"{task['id']}: the instruction names a file to be discovered")
+
+
+def test_the_stratified_set_actually_contains_the_stratum_it_was_built_for():
+    """The whole point, pinned as a number.
+
+    This file can be regenerated, and a regeneration that quietly reverts to the old
+    proportions would leave every downstream result looking fine while measuring the
+    easy half again. The frozen set has 2 hidden tasks of 120; anything near that is a
+    regression whatever the total.
+    """
+    tasks = _stratified()
+    hidden = [task for task in tasks if task["stratum"] == "hidden"]
+    assert len(hidden) >= 30, (
+        f"only {len(hidden)} of {len(tasks)} tasks are hidden -- an A/B on this set "
+        "would measure the stratum a grep already handles")
+    assert len(hidden) / len(tasks) >= 0.20
+
+
+def test_the_two_sets_do_not_silently_become_one():
+    """The frozen set is the record of what E1 and E1b measured. Overwriting it would
+    make every published number unverifiable, so its size is pinned here rather than
+    trusted to whoever runs the builder next."""
+    frozen = json.loads(TASKS.read_text(encoding="utf-8"))
+    assert len(frozen) == 120, "prevention_tasks.json is the frozen record; do not rebuild it"
+    assert not any("stratum" in task for task in frozen), (
+        "the frozen set predates stratification and gaining that field means it was "
+        "regenerated")
