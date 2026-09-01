@@ -495,8 +495,26 @@ def test_partial_unauthenticated_connections_are_timed_out_and_bounded(
         second.sendall(
             b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
         )
-        response = second.recv(2048)
-        assert b"503 Service Unavailable" in response
+        # **The refusal is what is guaranteed; the layer it arrives at is not.**
+        # The server answers 503 and closes. On Windows a close with data still unread
+        # becomes an RST, and an RST discards whatever was buffered -- so the client
+        # sees `ConnectionAbortedError` (WinError 10053) instead of the 503 it was
+        # sent. That is the same refusal delivered one layer down, and it is exactly
+        # the case `_timed_samples` in `test_real_contention.py` already documents for
+        # a 504 that arrives as a `TimeoutError`.
+        #
+        # What must hold at any speed and on any platform is that the second
+        # connection was **not served** while the only handler slot was taken. A hang
+        # still fails the test: the socket has a five-second timeout and
+        # `socket.timeout` is deliberately not caught here.
+        try:
+            response = second.recv(2048)
+        except (ConnectionAbortedError, ConnectionResetError):
+            response = b""
+        assert b" 200 " not in response and b" 401 " not in response, (
+            "the second connection was served while the only handler slot was held")
+        if response:
+            assert b"503 Service Unavailable" in response
 
         # The pre-auth timeout must close the stalled connection. Observe the close as
         # EOF rather than sleeping past a deadline and assuming it happened.
