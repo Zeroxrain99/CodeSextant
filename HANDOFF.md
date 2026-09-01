@@ -364,12 +364,21 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   workflow would have published a generated changelog instead of the notes written for
   it. Nothing failed, which is why it survived. `tests/test_published_docs.py` is the
   fix -- not remembering the allowlist.
-- **A test asserting an absolute wall-clock time asserts the speed of the machine.** Two
-  different tests failed on two consecutive runs of one Windows job going at half speed,
-  while the behaviour they guard was correct. Derive the threshold from something the
-  test controls -- the length of the wait it is claiming not to have made, or an
-  uncontended baseline measured on the same machine -- and state the behavioural half of
-  the claim first, because that half holds at any speed.
+- **A test asserting an absolute wall-clock time asserts the speed of the machine.**
+  **Three** tests now, on three separate Windows runs, while the behaviour they guard
+  was correct every time. The worst runner indexed 73 files in 27 seconds -- against 55
+  to 289 files *per second* everywhere else, so between twenty and a hundred times
+  slower. Derive the threshold from something the test controls: the length of the wait
+  it claims not to have made, an uncontended baseline measured on the same machine, or
+  the service's own contract. And state the behavioural half of the claim first, because
+  that half holds at any speed.
+  **The third one is the instructive case.** `test_real_contention` failed on a 504 --
+  which is the daemon doing exactly what it promises, refusing a call it cannot serve
+  inside the deadline. The test already knew this: it says so in a comment, for
+  *reindex*, and then asserted raw latency for the interactive routes beside it. A rule
+  applied to one half of a test and not the other is the same forgotten fence this whole
+  project is about. The claim is now "answered inside the deadline, or refused under the
+  contract", which is what the code actually promises.
 - **`pkill -f <pattern>` kills your own shell** when your command line contains the
   pattern. Happened three times. Kill by PID from `ps -eo pid,args | awk '/patt[e]rn/'`.
 - **The Bash tool caps at 10 minutes.** Long experiments must use `run_in_background`.

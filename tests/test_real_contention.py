@@ -49,18 +49,40 @@ def _write_real_project(project: Path) -> Path:
     return definition
 
 
+# Refusals the daemon is *supposed* to make when it cannot serve in time. 504 is the
+# request deadline firing; 503 is the admission queue full. Both are the contract
+# working, and treating either as a failure is what makes this test assert the speed of
+# the machine instead of the behaviour of the code.
+_CONTRACTED_REFUSALS = (503, 504)
+
+
 def _timed_samples(
     invoke: Callable[[], dict],
     validate: Callable[[dict], None],
     count: int,
-) -> list[float]:
+) -> tuple[list[float], list[urllib.error.HTTPError]]:
+    """Latencies of the calls that were answered, and the refusals that were not.
+
+    Separating the two is the whole point. This test failed on a CI runner slow enough
+    that a reindex of 73 files took 27 seconds -- against 55 to 289 files per second
+    everywhere else -- and the daemon did exactly what it promises: it refused the
+    interactive calls it could not serve inside their deadline. Counting that refusal as
+    a failure asserts that the runner is fast, which is not a property of this code.
+    """
     samples: list[float] = []
+    refused: list[urllib.error.HTTPError] = []
     for _ in range(count):
         started = time.perf_counter()
-        result = invoke()
+        try:
+            result = invoke()
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _CONTRACTED_REFUSALS:
+                raise
+            refused.append(exc)
+            continue
         samples.append((time.perf_counter() - started) * 1000)
         validate(result)
-    return samples
+    return samples, refused
 
 
 def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
@@ -211,6 +233,7 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
         for _ in range(3)
     ]
     graph_samples: dict[str, list[float]] = {}
+    graph_refusals: dict[str, list[urllib.error.HTTPError]] = {}
     health_samples: list[float] = []
     status_samples: list[float] = []
 
@@ -285,7 +308,7 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                     assert status["indexed"] is True
 
             for route, future in futures.items():
-                graph_samples[route] = future.result(timeout=90)
+                graph_samples[route], graph_refusals[route] = future.result(timeout=90)
     finally:
         stop_reindex.set()
         rebuild.join(timeout=70)
@@ -327,8 +350,23 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     }
     print(json.dumps(reported_metrics, sort_keys=True))
 
+    # The claim, stated so it holds at any speed: every interactive call either came
+    # back inside its deadline or was refused under the contract. A machine slow enough
+    # to refuse all three is not evidence of a defect here; a machine that answers late
+    # is.
     for route in ("map", "references", "impact"):
-        assert max(raw_metrics[route]) < INTERACTIVE_DEADLINE_MS
+        assert max(raw_metrics[route], default=0.0) < INTERACTIVE_DEADLINE_MS, (
+            f"{route} answered outside its deadline rather than refusing")
+    answered = sum(len(raw_metrics[route]) for route in ("map", "references", "impact"))
+    assert answered, (
+        "every interactive call was refused, so this run measured admission control "
+        "and nothing else -- the runner was too slow for the test to say anything")
+    for route, refusals in graph_refusals.items():
+        for refusal in refusals:
+            assert refusal.code in _CONTRACTED_REFUSALS, (route, refusal)
+            if refusal.code == 503:
+                assert refusal.headers.get("Retry-After"), (
+                    "back-pressure must say when to return")
     assert (_percentile(raw_metrics["health"], 99)
             < HEALTH_P99_DEADLINE_MS)
     assert max(raw_metrics["status"]) <= STATUS_DEADLINE_MS
