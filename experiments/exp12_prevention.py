@@ -371,7 +371,25 @@ def _apply_oracle(repo_path: str, task: dict) -> tuple[set[str], dict[str, str]]
     return changed, _read_blobs(repo_path, task["sha"], sorted(changed))
 
 
-BASELINES = ("oracle", "parent", "null")
+def _apply_shotgun(repo_path: str, task: dict) -> tuple[set[str], dict[str, str]]:
+    """Touch every file in the tree: the attempt that finds everything by finding nothing.
+
+    Added after the E2 pilot, where one arm changed a file the other did not and both
+    scored identically. `changed_a_broke_b` and `forgot_the_guard` are recall over the
+    truth, with no precision term, so an attempt that sprays edits across the repository
+    is credited with every companion it hit by accident. `null` cannot see that -- it
+    changes nothing and scores zero on a mode that is wide open.
+
+    A benchmark whose top score is reachable without doing the task measures nothing,
+    and this repository has already shipped one mode like that (`rebuilt_the_wheel`,
+    which any plausible Python satisfied until the `parent` baseline caught it).
+    """
+    changed = set(_python_files(repo_path, task["parent"]))
+    changed.update(task["truth"]["files"])
+    return changed, _read_blobs(repo_path, task["parent"], sorted(changed))
+
+
+BASELINES = ("oracle", "parent", "null", "shotgun")
 
 
 def validate(tasks: list[dict], roots: dict[str, str]) -> dict:
@@ -384,9 +402,11 @@ def validate(tasks: list[dict], roots: dict[str, str]) -> dict:
         # The right files with their old contents: everything a file-level mode asks
         # for and nothing a content-level mode should accept.
         stale = _read_blobs(root, task["parent"], sorted(changed))
+        wide, wide_sources = _apply_shotgun(root, task)
         scored = {"oracle": score(task, changed, sources),
                   "parent": score(task, changed, stale),
-                  "null": score(task, set(), {})}
+                  "null": score(task, set(), {}),
+                  "shotgun": score(task, wide, wide_sources)}
         for mode in MODES:
             if scored["oracle"][mode] is None:
                 continue
@@ -400,6 +420,17 @@ def validate(tasks: list[dict], roots: dict[str, str]) -> dict:
                       for mode, v in totals[name].items()} for name in BASELINES}
     # The vacuity check the null baseline cannot make. Touching the right files with
     # their unchanged contents must not look like reuse.
+    # The vacuity the *null* baseline cannot make either: a mode with no precision term
+    # is beaten by changing everything. Reported rather than failed, because the modes
+    # are recall by design and the paired A/B compares two attempts of similar breadth --
+    # but a number nobody has looked at is how the last vacuous mode survived.
+    for mode in ("changed_a_broke_b", "forgot_the_guard"):
+        wide_score = average["shotgun"][mode]
+        if wide_score is not None and wide_score > 0.99:
+            broken.append(
+                f"NOTE {mode} scores {wide_score:.2f} for an attempt that changed every "
+                "Python file: it is recall with no precision term, so breadth is free. "
+                "Read it as 'did it find them', never as 'did it change the right set'")
     stale_reuse = average["parent"]["rebuilt_the_wheel"]
     if stale_reuse is not None and stale_reuse > 0.05:
         broken.append(

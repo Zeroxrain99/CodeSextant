@@ -382,6 +382,85 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   the service stayed up and kept serving through the overrun. **The limit was written
   down in the module the test exercises, and the test was written as though it were not.**
   Read the known-limits section of what you are testing before deciding what it promises.
+
+  **A fifth, and the second time this test stated the right rule in a comment and broke
+  it on the next line.** `assert len(reindex_results) >= 2` sat directly under a
+  paragraph explaining that a slow runner reaching the queue-full condition is the
+  admission control working. The macOS log gave the mechanism rather than leaving it to
+  a guess: `503: the route worker was killed before answering: route worker exited
+  without a result (exit=-9)`. **SIGKILL** -- the OS reclaimed the child process that
+  runs heavy engine work, and the daemon reported a retryable 503 instead of crashing.
+  Two completed rebuilds is a throughput claim; what the test exists to show is that
+  rebuild work does not starve the interactive routes, and `active_seen` and
+  `simultaneous_seen` already assert exactly that. **Five instances now. When a test
+  writes down a rule, check every assertion under it against that rule, not just the one
+  that failed.**
+  **A sixth, in a different test, and the fix for it was wrong first.**
+  `test_interactive_contention` compared p99 under a rebuild against p99 while idle. p99
+  over sixty samples is *one observation* -- the slowest -- weighed against p99 over
+  fifteen, which is also one: a max against a max, which on a shared runner reports the
+  worst scheduling hiccup rather than anything the code did. It failed at 392 ms against
+  a 34 ms baseline while a healthy run here sits at a ratio of about **1.05**, so the 8x
+  allowance was never being approached and a single sample tripped it. Starvation is
+  sustained, so the statistic became the median. **Then the floor swallowed the
+  assertion**: 250 ms was derived for a p99 and carried across unchanged, and against a
+  healthy median of 23 ms it is eleven times too generous -- a starved run with a 160 ms
+  median passed. Caught only because the repaired test was checked against a *starved*
+  distribution, not just a healthy one. **When you change the statistic, re-derive every
+  constant tuned for the old one**, and verify a repaired test against the failure it is
+  supposed to catch.
+
+  **A seventh, and the third distinct assertion inside `test_real_contention`.** The
+  control-plane probes in its measurement loop were unprotected, so a `status` call that
+  outran its 1.5 s client budget raised straight out of the test -- on a runner whose
+  server logged `/status -> 200 (2551 ms)` while a reindex took 9.6 s. Patching one
+  assertion at a time had by then cost six CI runs on this file, so the fix is the
+  pattern rather than the line: **every timing claim in it is now a multiple of a
+  baseline measured on the same machine moments earlier**, the control plane gets the
+  same three outcomes the graph routes already had, and total starvation is caught by
+  requiring that not every probe overran. Measured to derive it, four local runs: health
+  2.1-2.8 ms quiet against 3.9-6.0 ms busy, status 6.4-7.6 against 12.4-17.9 --
+  **a healthy ratio near 2.5, not 1**, which is what makes a 4x multiple thin and the
+  floor load-bearing on a fast machine. Written down because the previous two fixes each
+  carried a constant to a baseline it was not derived for.
+
+  **An eighth, the fourth assertion in this same file, and the lesson is the file
+  rather than the line.** `simultaneous_seen` watched for a four-way concurrency
+  coincidence inside a fixed five-second window. That window is a machine-speed
+  assertion in another hat: the slower the runner, the more each poll costs and the
+  fewer looks fit inside it, so the machine that most needs time to line four jobs up
+  gets the fewest chances. It now rides the twelve-round measurement loop, which already
+  fetches `/health` and already carries `active_jobs` -- no extra calls, and the window
+  becomes however long the measurement takes, which *grows* on a slow machine. Verified
+  to still have teeth rather than assumed: 8 to 11 rounds of 12 observe it here, never
+  12, and the count is printed so a run reporting 1 reads as a warning before it becomes
+  a failure. **Four distinct assertions in one file, each on a different runner, none
+  repeating.** After the second, the thing to fix is the file's whole approach to time,
+  not whichever line fired.
+
+  **A ninth, and this one was my own assertion firing on healthy code.** The fix for
+  the seventh replaced absolute deadlines with a ratio to a baseline measured on the
+  same machine -- and then tuned the multiple from four runs on *one* machine (health
+  1.4-2.5x, status 1.7-2.5x). Windows read **4.4x** and failed, on a run with **zero
+  overruns** where every probe answered inside its 1.5 s budget. Not starvation: a false
+  positive.
+  **A ratio is not automatically machine-independent.** Quiet status is 6-8 ms here and
+  50 ms on that runner; busy is 12-18 ms here and 218 ms there -- 7x slower quiet but
+  **14x slower busy**, because contention costs proportionally more where there is less
+  machine to go round. The ratio scales with the machine too, so tuning one needs the
+  population and not one host. What replaced it is scale-free and is what the service
+  actually promises: most control-plane probes must be answered inside their own client
+  budget, and a starved control plane overruns them. Checked against five distributions
+  including the run that had just failed.
+
+- **A commit message claimed a file was updated when the edit had silently failed.**
+  `d90b23b` says "HANDOFF.md carries this as the sixth instance". It did not: the edit
+  was bundled into the same shell call as a two-minute background test run, its
+  assertion failed, and only the pytest tail was read. Both entries above were missing
+  until the next failure went looking for them. **Never put an unverified edit in the
+  same command as a long-running one and read only the end of the output** -- and when a
+  commit message says a file changed, the diff is what decides, not the intent.
+
   **The third one is the instructive case.** `test_real_contention` failed on a 504 --
   which is the daemon doing exactly what it promises, refusing a call it cannot serve
   inside the deadline. The test already knew this: it says so in a comment, for
@@ -508,6 +587,27 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   rather than none of it. Two entries above, this file already says a sample of fifty
   gave the opposite sign; a sample of eleven was used to overturn a claim within the
   hour of writing that down. **A correction needs the sample size a finding needs.**
+
+- **Two instruments were broken and the pilot found both before it found a result.**
+  That is what a pilot is for and it is the cheapest six agent runs this project has
+  spent. The cost question was put to the agent, which reported **18** tool calls
+  against **31** the runner observed -- while the runner had been reporting tokens, tool
+  uses and duration for free the whole time. And "the tool did not help" was
+  indistinguishable from "the agent never opened it", two findings that call for
+  opposite responses and score identically on file changes; the first attempt to tell
+  them apart counted daemon-log requests and got zero, from a log that did not exist,
+  because the CLI answers in its own process. **Before spending agents, check that every
+  number the design depends on can actually be produced.**
+
+- **A mode with no precision term is beaten by changing everything.** The E2 pilot had
+  one pair where the arms changed different files and scored identically, which is how
+  this surfaced: `changed_a_broke_b` and `forgot_the_guard` are recall over the truth,
+  so breadth is free. A `shotgun` baseline that touches every Python file now runs in
+  `--validate` and scores **1.00** on both -- measured, not assumed. It does not fail the
+  suite, because the modes are recall by design and the paired A/B compares two attempts
+  of similar breadth. It prints, because the last mode that could be satisfied without
+  doing the task survived by nobody looking. Read those two rates as "did it find them",
+  never as "did it change the right set".
 
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is

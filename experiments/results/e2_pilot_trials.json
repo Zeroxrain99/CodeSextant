@@ -1,0 +1,150 @@
+[
+ {
+  "task_id": "alembic@2cd9e1ae0c",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "scored": {
+   "changed_a_broke_b": 0.5,
+   "forgot_the_guard": 0.0,
+   "rebuilt_the_wheel": null
+  },
+  "cost": {
+   "tokens": 78615.0,
+   "tool_calls": 37.0,
+   "seconds": 282.424
+  },
+  "changed": [
+   "alembic/templates/pylons/README",
+   "alembic/templates/pylons/alembic.ini.mako",
+   "alembic/templates/pylons/env.py",
+   "alembic/templates/pylons/script.py.mako",
+   "docs/build/tutorial.rst",
+   "docs/build/unreleased/pylons_template.rst"
+  ],
+  "invocations": [
+   "preflight . alembic/templates/pylons/env.py",
+   "guards .",
+   "check .",
+   "guards .",
+   "check ."
+  ]
+ },
+ {
+  "task_id": "alembic@2cd9e1ae0c",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "scored": {
+   "changed_a_broke_b": 0.5,
+   "forgot_the_guard": 0.0,
+   "rebuilt_the_wheel": null
+  },
+  "cost": {
+   "tokens": 73917.0,
+   "tool_calls": 31.0,
+   "seconds": 223.487
+  },
+  "changed": [
+   "alembic/templates/pylons/README",
+   "alembic/templates/pylons/alembic.ini.mako",
+   "alembic/templates/pylons/env.py",
+   "alembic/templates/pylons/script.py.mako",
+   "docs/build/tutorial.rst",
+   "docs/build/unreleased/pylons_template.rst"
+  ]
+ },
+ {
+  "task_id": "alembic@e28ee4ed42",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "scored": {
+   "changed_a_broke_b": 0.6666666666666666,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "cost": {
+   "tokens": 142490.0,
+   "tool_calls": 66.0,
+   "seconds": 866.755
+  },
+  "changed": [
+   "alembic/op.pyi",
+   "alembic/operations/base.py",
+   "tools/write_pyi.py"
+  ],
+  "invocations": [
+   "preflight . tools/write_pyi.py --symbol _generate_stub_for_meth",
+   "preflight . alembic/operations/base.py --symbol batch_alter_table",
+   "guards .",
+   "check .",
+   "guards .",
+   "check ."
+  ]
+ },
+ {
+  "task_id": "alembic@e28ee4ed42",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "scored": {
+   "changed_a_broke_b": 0.6666666666666666,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "cost": {
+   "tokens": 114201.0,
+   "tool_calls": 53.0,
+   "seconds": 630.533
+  },
+  "changed": [
+   "alembic/op.pyi",
+   "alembic/operations/base.py",
+   "alembic/operations/batch.py",
+   "tools/write_pyi.py"
+  ]
+ },
+ {
+  "task_id": "flask@438edcdf01",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "cost": {
+   "tokens": 59116.0,
+   "tool_calls": 30.0,
+   "seconds": 240.066
+  },
+  "changed": [
+   "CHANGES.rst",
+   "src/flask/app.py",
+   "tests/test_helpers.py"
+  ],
+  "invocations": [
+   "preflight . tests/test_helpers.py --symbol url_for",
+   "preflight . src/flask/app.py --symbol url_for",
+   "check .",
+   "guards ."
+  ]
+ },
+ {
+  "task_id": "flask@438edcdf01",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "cost": {
+   "tokens": 56822.0,
+   "tool_calls": 26.0,
+   "seconds": 170.571
+  },
+  "changed": [
+   "CHANGES.rst",
+   "src/flask/app.py",
+   "tests/test_helpers.py"
+  ]
+ }
+]
