@@ -54,6 +54,44 @@ the shim log for the `with_tool` arm (a `with_tool` run that never invoked the t
 reported, not discarded -- "it did not help" and "it was never opened" are different
 findings); and a global log of *every* `codesextant` invocation in the container, which
 is how a `without_tool` agent stumbling onto the binary on `PATH` would be caught.
+
+Amendment, after the first eight trials and before any of them was scored
+-------------------------------------------------------------------------
+**Three of the first eight fetched the reference commit instead of working the
+companions out.** One cloned the upstream project and diffed against the answer's blob,
+one called a repository API for the full patch and curled the `.patch` URL, one searched
+upstream for the commit by its own instruction text. The corpus repositories are public
+and the instruction *is* the upstream commit message, so a single search finds the
+answer. `checkout_for` had taken the answer off the disk; nothing had taken away the
+road to it.
+
+Recorded as an amendment rather than folded in silently, because the numbers it changes
+are the ones this file exists to protect. Three things change, and none of them is the
+endpoint, the sample, or the statistic:
+
+1. **A trial that looked the answer up is void and is re-run**, in the same class as
+   `prepare` refusing one. `contaminated()` is the test, and it reads tool *calls*, not
+   prose -- matching a bare `github.com` flagged a repository whose own `tox.ini` names
+   it. On the eight finished trials it separates 5 clean from 3 contaminated with
+   nothing in between.
+2. **The roads are blocked where they can be blocked from outside the agent**:
+   `arm_git_guard` refuses remote `git`, and a guard beside it refuses `curl` at a code
+   host. Both sit ahead of `/usr/bin` on `PATH`, so deleting one file restores the
+   original binary.
+3. **The prompt says not to, in both arms, identically** -- see `exp14.prompt_for`. A
+   restricted agent with no network tools at all would have been better and was written
+   (`.claude/agents/e2-trial.md`), but a new agent definition is not loadable inside a
+   running session, so the prompt carries what the sandbox could not.
+
+**All forty runs are re-run under this**, including the five that came back clean: the
+prompt changed, and a trial run under a different prompt is not comparable to one run
+under this one. The eight already spent are reported as what they cost and not as a
+result.
+
+**The residual risk, stated rather than hoped:** a repository API tool remains in the
+agent's hands and cannot be taken away from here, and a hand-written HTTP fetch from
+Bash would reach the network. That is what `contaminated()` is for, and why it runs on
+every trial rather than on the ones that look suspicious.
 """
 from __future__ import annotations
 
@@ -208,6 +246,48 @@ def arm_git_guard() -> str:
         handle.write(_GIT_GUARD_SCRIPT.format(log=GIT_LOG))
     os.chmod(GIT_GUARD, 0o755)
     return GIT_GUARD
+
+
+_FETCH_GUARD_SCRIPT = """#!/bin/sh
+# E2 ground-truth guard: log every {name}, refuse the ones aimed at a code host.
+printf "%s\\t%s\\t{name} %s\\n" "$(date -u +%FT%TZ)" "$(pwd)" "$*" >> {log} 2>/dev/null
+if [ "$E2_GIT_ALLOW" != "1" ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      *github.com*|*githubusercontent.com*|*gitlab.com*|*bitbucket.org*|*codeload*)
+        echo "{name}: this host is not reachable from this environment" >&2
+        exit {code}
+        ;;
+    esac
+  done
+fi
+exec /usr/bin/{name} "$@"
+"""
+
+# `git` is not the only road. One trial reached the answer with `curl` at a `.patch`
+# URL, so the fetchers get the same treatment: log everything, refuse a code host.
+FETCH_GUARDS = {"curl": 6, "wget": 4}
+
+
+def arm_fetch_guards() -> list[str]:
+    armed = []
+    os.makedirs(ROOT, exist_ok=True)
+    for name, code in FETCH_GUARDS.items():
+        if not os.path.isfile(f"/usr/bin/{name}"):
+            continue
+        path = f"/usr/local/bin/{name}"
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(_FETCH_GUARD_SCRIPT.format(name=name, log=GIT_LOG, code=code))
+        os.chmod(path, 0o755)
+        armed.append(path)
+    return armed
+
+
+def disarm_fetch_guards() -> None:
+    for name in FETCH_GUARDS:
+        path = f"/usr/local/bin/{name}"
+        if os.path.isfile(path):
+            os.unlink(path)
 
 
 def disarm_git_guard() -> None:
@@ -514,10 +594,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "arm":
         print(arm_global_log())
         print(arm_git_guard())
+        print("\n".join(arm_fetch_guards()))
         return 0
     if args.command == "disarm":
         disarm_global_log()
         disarm_git_guard()
+        disarm_fetch_guards()
         print(PATH_CLI)
         return 0
     if args.command == "contaminated":

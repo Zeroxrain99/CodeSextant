@@ -70,6 +70,11 @@ Start in `{start_in}`. That file is where the change begins.
 with it -- callers, tests, documentation, changelogs, anything that would break or go
 stale. Finding them is the substance of this task; you are not given a list.
 
+**Work only from this checkout and its own git history.** Do not consult the project
+upstream, its issue tracker, its commit history on any hosting service, or any other
+network source -- not with git, not with a web request, not with a repository API.
+Finding the companions here is the task; looking up what somebody else did is not.
+
 Edit the files you believe have to change. Make the edits real -- do not leave notes
 saying what should be done. When you are finished, stop; do not commit.
 {tool}"""
@@ -210,6 +215,15 @@ def prompt_for(task: dict, tree: str, condition: str, cli: str) -> str:
     where the harness read **31**. Asking cost him thirty tokens to produce a number
     42% low, next to one that is free and right. See `cost_from_usage`.
     """
+    # The paragraph forbidding upstream lookups is in `_PROMPT`, so it is in **both**
+    # arms, identical, and cannot favour either. It is there because three of the first
+    # eight trials fetched the reference commit rather than working the companions out:
+    # the corpus repositories are public and the instruction *is* the upstream commit
+    # message, so one search finds the answer. Blocking the roads (`exp19.arm_git_guard`
+    # and the curl guard beside it) closes what can be closed from outside the agent;
+    # this closes what cannot. It changes how hard the task is, equally on both sides,
+    # which is the point -- the question is whether the tool helps you find companions
+    # in a repository, not whether an agent can look up a diff.
     tool = _TOOL_PARAGRAPH.format(cli=cli) if condition == "with_tool" else ""
     return _PROMPT.format(repo=task["repo"], tree=tree,
                           instruction=task["instruction"],
