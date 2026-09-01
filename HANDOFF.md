@@ -86,9 +86,44 @@ apply the rest, ask `check` what the change forgot. 351 cases, three repositorie
   comparison the correct one, and it changed the conclusion.
 
 **exp1 (co-change against baselines, prequential).** Precision 0.49–0.55 at matched
-budget, 1.4–2.1× the strongest control, intervals separating on 2 of 3 repositories.
-Recall ~0.10. On CodeSextant's own 67-commit history a plain frequency baseline beats
-it outright — it earns its place where change is spread across many hands.
+budget, 1.4–2.1× the strongest control. Recall ~0.10. On CodeSextant's own 67-commit
+history a plain frequency baseline beats it outright — it earns its place where change
+is spread across many hands.
+
+"Intervals separating on 2 of 3 repositories" used to stand here and was the wrong test.
+The bootstrap resamples one set of commits and scores *every* predictor on it, so the
+samples were paired all along and the pairing was thrown away at the last step; reading
+overlap between two marginal intervals as "no difference" is conservative in the wrong
+direction. The paired difference is now reported, and it says something sharper: **at a
+matched budget co-change separates on 3 of 3 Python repositories** (+0.054 to +0.126 F1
+against the better of `same_dir@k` and `frequency@k`, every interval excluding zero),
+while against controls given an *unbudgeted* 20-plus guesses it separates only on click.
+Both halves of that are worth keeping: it wins when the comparison is fair, and it does
+not win by volume.
+
+**exp1 on TypeScript and JavaScript — the belief it was written to confirm was wrong.**
+`docs/plan.md` opened with resolution being Python-only and therefore the front end being
+where the tool is weakest. Co-change cannot tell what language it is reading, so the
+front-end corpus (express, zod, held-out vite) measures that half directly, and it is not
+weaker there — it is **stronger on every measure and against every control**:
+
+| | precision | recall | F1 | vs best matched-budget control |
+|---|---|---|---|---|
+| Python (requests/click/tqdm) | 0.49–0.55 | 0.08–0.11 | 0.141–0.177 | +0.054 to +0.066 |
+| express | 0.736 | 0.220 | 0.339 | +0.085 |
+| zod | 0.622 | 0.111 | 0.188 | +0.137 |
+| **vite** (held out) | **0.809** | **0.387** | **0.524** | +0.058 |
+
+All twelve paired comparisons on the front-end corpus exclude zero; four of twelve on
+Python do not. vite is the strongest result in either corpus, and vite is a monorepo
+whose packages have to move together — which is the shape this was built for and the
+shape that made the question worth asking.
+
+**What this does not say.** It measures one of preflight's three pillars. Blast radius on
+TS/JS is unmeasured and is still name matching. And the numbers are file-level
+prequential retrieval, not task outcomes. What it does settle is that "the tool is weak
+on TypeScript" was a belief about the resolver being generalised to the whole tool, and
+the generalisation does not survive contact with a number.
 
 **exp2 (resolved references vs grep).** Resolution is 2.2–3.2× more precise than the
 name matches beside it on 2 of 4 repositories, no difference on a third, and **reversed

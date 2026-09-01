@@ -4,6 +4,18 @@ Raw per-trial output, checked in so a number in `docs/roadmap.md` can be traced 
 trials that produced it rather than believed. Roadmap G1 asks for a benchmark somebody
 else can reproduce; a result whose inputs live only in a transcript is not one.
 
+## `exp1_paired_python_and_frontend.txt`
+
+exp1 over all six repositories — the Python derivation corpus and the front-end corpus
+declared in `corpus.FRONTEND` — with the paired difference against every control.
+
+Two things in it are worth not having to re-derive. The paired interval changed a
+reading: on express the marginal intervals for co-change and `frequency@k` overlap
+(0.292–0.404 against 0.216–0.306) while the paired difference is +0.085 [+0.068,+0.108],
+which is the comparison the question was actually about. And the front-end numbers are
+higher than the Python ones on every measure, against every control, which is the
+opposite of what `docs/plan.md` was written expecting.
+
 ## `e2_pilot_void_*.json` — void, kept as evidence
 
 **Do not quote a number out of these files.** The nine E2 pilot pairs were run in
