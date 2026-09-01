@@ -8,6 +8,12 @@ down, in one place, with the reason attached to each item.
 the status line in the same commit as the work.** A roadmap that lags the code is worse
 than none, because it is believed.
 
+**This file is the work list. [`docs/plan.md`](plan.md) is the goal it serves** -- the
+two demands, the seven problems each row has to map to, the resource ceilings, and the
+five drift rules that decide whether a row belongs here at all. Where the two disagree,
+`plan.md` wins and this file is the one that is wrong. Nothing gets a row here without
+a problem in `plan.md` §2 to point at.
+
 ---
 
 ## The two demands, verbatim

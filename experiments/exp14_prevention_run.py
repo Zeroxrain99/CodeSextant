@@ -89,7 +89,11 @@ def _full_mirror(repo: str) -> str:
     path = os.path.join(root, f"{repo}.git")
     if not os.path.isdir(path):
         url = dict(corpus.PREVENTION)[repo]
-        subprocess.run(["git", "clone", "-q", "--bare", url, path], check=True)
+        # `exp19.arm_git_guard` takes the network away from `git` for everything in the
+        # container while a run is on. This mirror is the one clone that is *supposed*
+        # to reach the network, so it carries the flag that says so.
+        subprocess.run(["git", "clone", "-q", "--bare", url, path], check=True,
+                       env={**os.environ, "E2_GIT_ALLOW": "1"})
     return path
 
 

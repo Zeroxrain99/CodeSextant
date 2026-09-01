@@ -67,6 +67,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from experiments import corpus  # noqa: E402
 from experiments import exp14_prevention_run as run  # noqa: E402
 
 SEED = 20260901
@@ -76,6 +77,8 @@ ROOT = os.environ.get("CODESEXTANT_E2_ROOT", "/tmp/e2run")
 REAL_CLI = "/usr/local/bin/codesextant-real"
 PATH_CLI = "/usr/local/bin/codesextant"
 GLOBAL_LOG = os.path.join(ROOT, "all-invocations.log")
+GIT_LOG = os.path.join(ROOT, "all-git.log")
+GIT_GUARD = "/usr/local/bin/git"
 
 
 # --------------------------------------------------------------------------- sample
@@ -156,6 +159,114 @@ def task_for(task_id: str) -> dict:
         if task["id"] == task_id:
             return task
     raise KeyError(task_id)
+
+
+# ---------------------------------------------------------------------- the git guard
+
+_GIT_GUARD_SCRIPT = """#!/bin/sh
+# E2 ground-truth guard: log every git call, refuse the ones that reach a remote.
+printf "%s\\t%s\\t%s\\n" "$(date -u +%FT%TZ)" "$(pwd)" "$*" >> {log} 2>/dev/null
+if [ "$E2_GIT_ALLOW" != "1" ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      https://*|http://*|git://*|ssh://*|git@*)
+        echo "git: remote access is disabled in this environment" >&2
+        exit 128
+        ;;
+    esac
+  done
+fi
+exec /usr/bin/git "$@"
+"""
+
+
+def arm_git_guard() -> str:
+    """Take the network away from `git`, and write down every call either way.
+
+    **Isolating the checkout is not isolating the trial.** The repositories under test
+    are public, the task instruction *is* the upstream commit message, and the
+    container has a network -- so an agent that cannot find the answer locally can
+    clone the project and read it. One did, in the first batch of eight: it cloned
+    `sqlalchemy/alembic` into a scratch directory, found the commit whose parent was
+    this checkout's HEAD, and compared its own edit against the upstream blob. That
+    trial measured a lookup, not a change.
+
+    `checkout_for` removed the answer from the repository. This removes the road to it.
+
+    The guard is written to `/usr/local/bin/git`, which precedes `/usr/bin` on `PATH`,
+    so deleting the file restores the original binary and nothing was moved. Local git
+    keeps working -- `checkout_for` needs `bundle` and a clone from a file path -- and
+    any argument carrying a remote scheme is refused unless `E2_GIT_ALLOW=1` marks the
+    caller as the harness.
+
+    **What it does not cover, stated rather than hoped:** an agent that calls
+    `/usr/bin/git` by its full path, or reads the upstream over HTTP by another route.
+    So the log is kept as well as the block, and `contaminated` reads both.
+    """
+    os.makedirs(ROOT, exist_ok=True)
+    with open(GIT_GUARD, "w", encoding="utf-8") as handle:
+        handle.write(_GIT_GUARD_SCRIPT.format(log=GIT_LOG))
+    os.chmod(GIT_GUARD, 0o755)
+    return GIT_GUARD
+
+
+def disarm_git_guard() -> None:
+    if os.path.isfile(GIT_GUARD):
+        os.unlink(GIT_GUARD)
+
+
+_REMOTE_SUBCOMMANDS = ("clone", "fetch", "pull", "ls-remote", "remote", "archive")
+
+# What a lookup looks like in a transcript, as observed rather than imagined. Each of
+# these was used by a real trial in the first batch of eight: `mcp__github__` twice
+# (`search_commits` with the instruction text, then `get_commit` with `full_patch`),
+# `curl` at a `.patch` URL, and `git clone` of the upstream project. Matched against
+# tool *inputs* only -- a bare `github.com` matches a repository's own `tox.ini` and
+# was a false positive on the first pass.
+_LOOKUP_MARKERS = (
+    ('"name":"mcp__github__', "called a GitHub API tool"),
+    ('"name":"WebFetch"', "fetched a web page"),
+    ('"name":"WebSearch"', "searched the web"),
+)
+
+
+def contaminated(run_id: str, transcript: str | None = None) -> list[str]:
+    """Evidence that this trial looked the answer up instead of working it out.
+
+    Two sources, because neither alone is enough. The git log catches a remote
+    operation wherever it was run from -- the leak is not confined to the checkout, so
+    neither is the check. The transcript catches what the block does not: the upstream
+    URL, the reference sha, or a fetch by some other road.
+
+    A hit is a mechanical failure of the trial, in the same class as `prepare`
+    refusing it. It is not a result, and it is not read as one.
+    """
+    found = []
+    task = task_for(find(run_id)["task_id"])
+    url = dict(corpus.PREVENTION)[task["repo"]]
+    slug = url.split("github.com/")[-1].removesuffix(".git")
+    if os.path.isfile(GIT_LOG):
+        with open(GIT_LOG, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                parts = line.rstrip("\\n").split("\\t")
+                if len(parts) != 3 or "://" not in parts[2]:
+                    continue
+                if any(word in _REMOTE_SUBCOMMANDS for word in parts[2].split()):
+                    found.append(f"remote git in {parts[1]}: {parts[2]}")
+    if transcript and os.path.isfile(transcript):
+        with open(transcript, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        if task["sha"][:10] in text:
+            found.append(f"transcript names the reference commit: {task['sha'][:10]}")
+        for marker, why in _LOOKUP_MARKERS:
+            if marker in text:
+                found.append(f"transcript {why}")
+        for line in text.split('"name":"Bash"')[1:]:
+            command = line[:400]
+            if slug in command or "githubusercontent" in command:
+                found.append("transcript shells out to the upstream repository")
+                break
+    return sorted(set(found))
 
 
 # ------------------------------------------------------------------- global tripwire
@@ -384,6 +495,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("report")
     sub.add_parser("arm")
     sub.add_parser("disarm")
+    check = sub.add_parser("contaminated")
+    check.add_argument("run_id")
+    check.add_argument("--transcript", default=None)
     args = parser.parse_args(argv)
 
     if args.command == "plan":
@@ -399,10 +513,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "arm":
         print(arm_global_log())
+        print(arm_git_guard())
         return 0
     if args.command == "disarm":
         disarm_global_log()
+        disarm_git_guard()
         print(PATH_CLI)
+        return 0
+    if args.command == "contaminated":
+        print(json.dumps(contaminated(args.run_id, args.transcript), indent=1))
         return 0
     if args.command == "prepare":
         print(json.dumps(prepare(args.run_id), indent=1))

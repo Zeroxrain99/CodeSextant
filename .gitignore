@@ -53,6 +53,7 @@ docs/assets/*
 # work, experiments/README.md links the guard-index write-up, and release.yml reads
 # the release notes to publish them. tests/test_published_docs.py enforces it.
 !docs/guard-index.md
+!docs/plan.md
 !docs/roadmap.md
 !docs/release-notes/
 .wiredo-audit.json
