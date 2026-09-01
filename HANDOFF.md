@@ -509,6 +509,27 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   gave the opposite sign; a sample of eleven was used to overturn a claim within the
   hour of writing that down. **A correction needs the sample size a finding needs.**
 
+- **Two instruments were broken and the pilot found both before it found a result.**
+  That is what a pilot is for and it is the cheapest six agent runs this project has
+  spent. The cost question was put to the agent, which reported **18** tool calls
+  against **31** the runner observed -- while the runner had been reporting tokens, tool
+  uses and duration for free the whole time. And "the tool did not help" was
+  indistinguishable from "the agent never opened it", two findings that call for
+  opposite responses and score identically on file changes; the first attempt to tell
+  them apart counted daemon-log requests and got zero, from a log that did not exist,
+  because the CLI answers in its own process. **Before spending agents, check that every
+  number the design depends on can actually be produced.**
+
+- **A mode with no precision term is beaten by changing everything.** The E2 pilot had
+  one pair where the arms changed different files and scored identically, which is how
+  this surfaced: `changed_a_broke_b` and `forgot_the_guard` are recall over the truth,
+  so breadth is free. A `shotgun` baseline that touches every Python file now runs in
+  `--validate` and scores **1.00** on both -- measured, not assumed. It does not fail the
+  suite, because the modes are recall by design and the paired A/B compares two attempts
+  of similar breadth. It prints, because the last mode that could be satisfied without
+  doing the task survived by nobody looking. Read those two rates as "did it find them",
+  never as "did it change the right set".
+
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is
   scored by `--score` on an old dump in one second instead of an hour. Four candidates
