@@ -139,6 +139,7 @@ read with the same suspicion.
 | D2 · the caller gap, what is left of it | symbol-level ceiling is 0.153/0.439/0.350 and resolution reaches 0.094; module-level `dependents` took `check` to 0.326 held out | exp5 mapped the mechanism: **no single cause dominates**, and the two cheapest repairs (removing the resolution budget; printing the cost gate's leads) were measured and bought nothing |
 | D3 · score symbol-level co-change | mined, shipped, asserted, **never scored** | **done — exp11, and it corrected the reason the feature exists.** Asked alone the narrowed question is *worse* than the file-level one (−0.047 derivation, −0.004 held out) and silent in 52–78% of queries. But `_merge_cochange` ships the union, and the union beats the file tier by **+0.056 held out** — 409 more true companions of 7,315, for 1,377 extra predictions, three in ten of them real. Justified as a supplement, not as a replacement, and `mine_symbols`' docstring now says so |
 
+| D4 · the single-word query, scoped to one file | `preflight --symbol shutdown` on `codesextant/daemon.py` answered **"nothing resembles it; it looks new"** while `initiate_shutdown`, `_shutdown_for_idle` and `stop_running` were indexed in that file — and a second shutdown endpoint was written there as a result. `_name_similarity` needs two shared words, so a one-word query only ever matches exactly | **open, and the obvious fix is already refused.** D1 measured overlap-over-the-shorter-name: 0.983 reach for **55.8 names per query**, and a single-word query is where that is worst (`get` would match every `get_*`). What is untested is the same relaxation **scoped to the file being edited**: tens of symbols rather than half a million, so the explosion D1 measured cannot occur, and the author is looking at that file anyway. Measure reach and names-per-query on the derivation set, confirm held out. Do not relax the global threshold — the reason it exists is real |
 ---
 
 ### Phase E — prevention: the only thing that answers "有用嗎"
@@ -181,6 +182,15 @@ exists for TypeScript, which makes it the cheapest second language.
   the reason the registry was wanted. Everything here is derived from the repository.
 - **Merging `dependents` into `callers`, or `guards` into `check`.** Separate claims stay
   separately labelled; that invariant is in `HANDOFF.md` layer 3 with its reason.
+- **Shortening the three-hour idle timeout.** Asked because a user said their machine
+  was struggling, and measured before changing: an idle daemon holds **30–36 MiB RSS
+  and burned 0.02 s of CPU over 120 s** — 0.02% of one core — while a cold start costs
+  0.22 s plus a warm reindex. The lag had a different cause, found and fixed (the
+  watcher was putting a filesystem watch on every directory in the tree, 98.3% of them
+  build and dependency output). Trading 0.2 s of latency for 36 MiB is not supported by
+  any of those numbers. `codesextant stop` is the answer for somebody who wants it gone
+  now; the default stays until a measurement says otherwise.
+
 - **Any number quoted from the derivation set when a held-out number exists.** +0.778 on
   the repository that suggested a rule against +0.08 held out is why the held-out set
   exists.

@@ -122,11 +122,39 @@ def test_lazy_module_patching_reaches_the_real_module():
         real_references.find_references = original
 
 
-def test_http_server_disables_windows_address_reuse():
-    """HTTPServer sets allow_reuse_address=1 by default, which on Windows lets
-    several PIDs bind port 8790 at once."""
-    assert daemon._ExclusiveThreadingHTTPServer.allow_reuse_address is False
+def test_http_server_never_allows_two_live_listeners():
+    """The singleton guarantee, pinned to what each flag actually does.
+
+    SO_REUSEPORT is the one that lets several PIDs LISTEN on 127.0.0.1:8790 at once, so
+    it is off everywhere. SO_REUSEADDR only means that on Windows; there it stays off
+    with SO_EXCLUSIVEADDRUSE behind it. On POSIX it means "bind over a TIME_WAIT socket
+    whose process has exited", which is the only reason `stop` can be followed by a
+    working command instead of a minute of spawn-timeout.
+    """
     assert daemon._ExclusiveThreadingHTTPServer.allow_reuse_port is False
+    assert daemon._ExclusiveThreadingHTTPServer.allow_reuse_address is (os.name != "nt")
+
+
+def test_bind_failure_is_not_masked_by_teardown():
+    """A port already in use must say so.
+
+    `socketserver.__init__` calls `server_close()` when `server_bind` raises, before
+    `__init__` has set `_idle_shutdown`. Reaching through that attribute unguarded
+    turned "Address already in use" into an AttributeError about an internal name.
+    """
+    import socket
+
+    holder = socket.socket()
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    holder.bind((daemon.HOST, 0))
+    holder.listen(1)
+    port = holder.getsockname()[1]
+    try:
+        with pytest.raises(OSError) as caught:
+            daemon._ExclusiveThreadingHTTPServer((daemon.HOST, port), daemon._Handler)
+        assert not isinstance(caught.value, AttributeError)
+    finally:
+        holder.close()
 
 
 def test_http_server_has_room_for_control_plane_during_heavy_work():

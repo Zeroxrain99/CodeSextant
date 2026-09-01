@@ -146,6 +146,35 @@ def cmd_guards(args) -> int:
     return 0
 
 
+def cmd_stop(args) -> int:
+    """Stop the background daemon.
+
+    The answer to "how do I get this off my machine" should be a command, not a
+    paragraph about environment variables and `ps`.
+    """
+    from . import client as client_module
+
+    api = client_module.CodesextantClient(project=os.getcwd())
+    result = api.stop()
+    if result.get("stopped"):
+        print(f"Stopped the daemon (pid {result.get('pid', '?')}).")
+        if result.get("drained") is False:
+            print("It is still finishing work already in progress; it exits when that "
+                  "finishes, and the next command waits for it.")
+        else:
+            print("It starts again by itself the next time a command needs it.")
+        return 0
+    if result.get("daemon_present"):
+        # A refusal is not an absence. Saying "nothing to stop" while a process is
+        # still resident is exactly the report somebody asking this question cannot
+        # afford to be given, so it exits non-zero and names what is in the way.
+        print(f"The daemon is still running: {result.get('reason')}.")
+        return 1
+    print(f"Nothing to stop: {result.get('reason', 'no daemon was running')}.")
+    print("It starts again by itself the next time a command needs it.")
+    return 0
+
+
 def cmd_check(args) -> int:
     r = engine.check(args.path, base=args.base, staged=args.staged,
                      token_budget=args.budget)
@@ -636,6 +665,11 @@ def _build_parser() -> argparse.ArgumentParser:
                          "more of the fence a change had to touch than six does "
                          "(experiments/exp9_guards.py, held out)")
     pg.set_defaults(func=cmd_guards)
+
+    pstop = sub.add_parser(
+        "stop",
+        help="stop the background daemon (it restarts on the next command that needs it)")
+    pstop.set_defaults(func=cmd_stop)
 
     pmcp = sub.add_parser(
         "mcp",

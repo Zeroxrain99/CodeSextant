@@ -57,6 +57,16 @@ else:
     symbols = LazyModule(f"{__package__}.symbols")
 
 # Directories skipped while scanning source files during indexing (target = Rust build output).
+# Directories nothing here reads. **Two consumers, one list, on purpose.** The indexer
+# skips these when it walks for source files, and `watcher` skips them when it decides
+# what to put a filesystem watch on. They were separate for a long time and only the
+# indexer had the list: the watcher asked watchdog for `recursive=True` over the whole
+# repository, so on a project shaped like a real front end -- 1,317 directories, 22 of
+# them source -- **98.3% of the filesystem watches were on files this tool never reads**.
+# On Linux that is inotify descriptors against a per-user cap; everywhere it is an event
+# storm every time a build or an install runs.
+#
+# Import this rather than copying it. A copy is how the two drifted apart the first time.
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
               ".mypy_cache", ".pytest_cache", "build", "dist", "target", ".tox"}
 

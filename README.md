@@ -345,6 +345,7 @@ python -m codesextant references <repo> <symbol> [--src-root R] [--def-path D]
 python -m codesextant symbols    <repo> [--file F]
 python -m codesextant status     <repo>
 python -m codesextant mcp        [repo]                     # serve the index to an MCP client over stdio
+python -m codesextant stop                                  # stop the background daemon; it restarts on the next command that needs one
 python -m codesextant cache                                 # managed index cache usage
 # any command takes --json for machine-readable output
 ```
@@ -424,6 +425,7 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 | `CODESEXTANT_WATCH_RETRY_MAX_SEC` | `60` | maximum exponential backoff after an incremental index is rejected or fails |
 | `CODESEXTANT_WATCH_RETRY_JITTER` | `0.2` | random spread applied to watcher retries to prevent synchronized retry bursts |
 | `CODESEXTANT_WATCH_RECOVERY_FOLLOWER_CAP` | `8` | maximum first-query recovery followers for one project |
+| `CODESEXTANT_WATCH_MAX_DIRS` | `4000` | ceiling on watched directories per repository; build and dependency output is never watched, so this is far above any real source tree |
 | `CODESEXTANT_HEAVY_GLOBAL_CAP` | `4` | maximum heavy jobs running across all repositories |
 | `CODESEXTANT_INTERACTIVE_GLOBAL_RESERVE` | `3` | global slots reserved for interactive graph requests; one slot remains for maintenance |
 | `CODESEXTANT_HEAVY_QUEUE_CAP` | `8` | base queued jobs allowed per repository |
@@ -435,6 +437,7 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 | `CODESEXTANT_STATUS_DB_TIMEOUT_MS` | `150` | best-effort SQLite budget for the immediate status endpoint |
 | `CODESEXTANT_STATUS_GIT_TIMEOUT_SEC` | `0.5` | Git freshness budget when `status?fresh=1` is requested |
 | `CODESEXTANT_STATUS_TIMEOUT_SEC` | `2` | client transport deadline for the diagnostic status request |
+| `CODESEXTANT_STOP_DRAIN_SEC` | `10` | how long `stop` waits for the daemon to finish work in progress before reporting that it is still draining |
 | `CODESEXTANT_OVERLOAD_RETRY_AFTER_SEC` | `5` | `Retry-After` value returned with an overload response |
 | `CODESEXTANT_MAX_BODY_BYTES` | `65536` | maximum JSON request body size |
 | `CODESEXTANT_MAX_HANDLER_THREADS` | `64` | maximum concurrent HTTP handlers, including pre-auth connections |

@@ -425,6 +425,26 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   that missed it because the import was aliased. Each round was caught one push later.
   What ended it was making the condition reproducible locally — deleting the name and
   reloading — rather than being more careful.
+- **The tool failed to stop its own author rebuilding a wheel, on this repository, in
+  this file.** `codesextant stop` was built as a new HTTP endpoint (`/shutdown`), a new
+  client method and a new drain confirmation. All three already existed: `/_shutdown`,
+  `daemon.stop_running`, and its port-release loop, roughly eighty lines above the edit,
+  in the file that was open. The new one was also *worse* -- it called `shutdown()`
+  rather than `initiate_shutdown()`, so the daemon kept accepting requests on its way
+  out. This is demand #1, committed by the project that exists to prevent it.
+  **Both commands were asked and both missed it**, and the reason is one rule:
+  `check` has no `rebuilt` signal for "second endpoint beside an existing one" -- it
+  counts imports (exp12), and this added no import. `preflight codesextant/daemon.py
+  --symbol shutdown` answered **"nothing resembles it; it looks new"** while
+  `initiate_shutdown`, `_shutdown_for_idle` and `stop_running` were all indexed in that
+  file. `_name_similarity` requires **two** shared words, so a single-word query can
+  only ever match exactly: `shutdown` scores 0.0 against `initiate_shutdown`. The same
+  rule missed `stop_running` for the query `stop`. The two-word rule was a deliberate,
+  documented choice with a good reason (one shared word is usually a common verb), and
+  it has now been measured wrong on one real case. **`docs/roadmap.md` Phase D4 is the
+  experiment**; do not relax the threshold without it, because the reason the rule
+  exists -- `get_user` against `get` -- is still real.
+
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is
   scored by `--score` on an old dump in one second instead of an hour. Four candidates
