@@ -180,8 +180,14 @@ index, and never use `force=True` unless the user requests a full rebuild.
 
 **Before you report a task as done, call `cs.check()` (or the `check` tool).** It takes no
 arguments and reads your diff, which is why it is the one step that does not depend on
-having remembered anything at the right moment. Three sections:
+having remembered anything at the right moment. Four sections:
 
+- `removed_guards` — **read this one first.** A fence you deleted or loosened that had
+  a reason written beside it, quoted in the author's words. The other three ask what
+  the change forgot to *add*; this is the only one that reads what is no longer there,
+  and a fence somebody explained is a decision, not an omission. If it fires, either
+  put the guard back or say in the change why it no longer applies. Renames and moves
+  are excluded, and a fence with no stated reason is not reported.
 - `rebuilt` — a unit you wrote whose exact shape already exists elsewhere. This compares
   bodies, so it catches what preflight structurally cannot: the thing that was
   reinvented *and renamed*. Before the code exists there is no body to compare, only a

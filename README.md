@@ -154,7 +154,8 @@ built, and refuted two of the author's own explanations; all of it is in
 
 `preflight` asks its three questions before an edit, from a name and an intention. Two limits come with that, and neither is fixable on that side of the edit: it only runs if you remember to ask, and a name is all it has — no body to compare shapes against, no diff to say what actually happened.
 
-`check` asks the same three of the change you already made:
+`check` asks the same three of the change you already made, and a fourth that only
+makes sense afterwards — **what did this change take away?**
 
 ```bash
 python -m codesextant check .
@@ -162,6 +163,15 @@ python -m codesextant check .
 
 ```
 Check: 8 file(s) changed
+
+  FENCES GONE      1 removed and 1 loosened -- each had a reason written beside it
+    removed  assert (assert)  src/limits.py:13
+      was: requires n <= MAX_INFLIGHT
+      [comment] Deliberate: a caller that batches past the cap silently loses the tail.
+    loosened  threshold MAX_INFLIGHT  src/limits.py:4
+      was: MAX_INFLIGHT = 5
+      now: MAX_INFLIGHT = 5000
+      [comment] The upstream API rate-limits above five in flight; more just queues and times out.
 
   REBUILT          1 changed unit(s) repeat a shape already in the index
     seconds_from_clock  app.py:1  (51 nodes)

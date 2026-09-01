@@ -48,6 +48,37 @@ def _diff_args(base: str | None, staged: bool) -> list[str]:
     return ["diff", "HEAD"]
 
 
+def _pre_image_ref(base: str | None, staged: bool) -> str:
+    """The revision the diff is measured *from*.
+
+    It has to match `_diff_args` exactly or the two disagree about what "before"
+    means: with a base the diff is three-dot, so the pre-image is the merge base and
+    not the base tip, which is the whole point of using three dots there.
+    """
+    if staged:
+        return "HEAD"
+    return base + "..." if base else "HEAD"
+
+
+def content_before(root: str, path: str, *, base: str | None = None,
+                   staged: bool = False) -> str | None:
+    """The file as it was before this change, or None if it did not exist then.
+
+    `changed_files` says *that* a file changed and `changed_ranges` says where. Neither
+    can answer what the change took **away**, because everything they read is the text
+    that is still there. Reading the pre-image is the only way to see a fence that is
+    now gone.
+    """
+    ref = _pre_image_ref(base, staged)
+    if ref.endswith("..."):
+        code, merge_base = _git(root, "merge-base", ref[:-3], "HEAD")
+        if code != 0 or not merge_base.strip():
+            return None
+        ref = merge_base.strip()
+    code, out = _git(root, "show", f"{ref}:{path}")
+    return out if code == 0 else None
+
+
 def changed_files(root: str, *, base: str | None = None,
                   staged: bool = False) -> dict[str, str] | None:
     """{relative path: status letter}, or None outside a Git worktree.
