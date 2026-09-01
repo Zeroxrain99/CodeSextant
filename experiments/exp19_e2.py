@@ -430,7 +430,7 @@ def _served_the_prepared_index(tree: str, cli: str, task: dict) -> dict:
                                                      "ALREADY EXISTS"))]}
 
 
-def prepare(run_id: str) -> dict:
+def prepare(run_id: str, *, force: bool = False) -> dict:
     """Everything that must be true before an agent is spent, or nothing is written.
 
     Order matters: the checkout is built, then `exp14.leaks` is run against it, and the
@@ -440,6 +440,25 @@ def prepare(run_id: str) -> dict:
     item = find(run_id)
     task = task_for(item["task_id"])
     home = home_of(run_id)
+
+    # **One agent per checkout, and `prepare` is where that is enforced.**
+    # run_22's first attempt finished without a cost reading, so it was re-prepared and
+    # re-run -- while the first agent was *still working*. It finished four minutes
+    # later and wrote its edits into the freshly rebuilt checkout, so the second agent
+    # was handed a tree in which the task was already done. Caught from file mtimes
+    # (prepare 13:49:53, edits 13:54-13:56) rather than from anything going wrong, which
+    # is the point: nothing failed, and the second trial would have been reported as a
+    # measurement of an agent that had most of its work done for it.
+    #
+    # A prepared run that has not been collected is presumed live. Re-preparing it
+    # requires saying so.
+    prepared = os.path.isfile(os.path.join(home, "state.json"))
+    collected = os.path.isfile(os.path.join(ROOT, "trials", f"{run_id}.json"))
+    if prepared and not collected and not force:
+        return {"run_id": run_id,
+                "error": "already prepared and not yet collected -- an agent may still "
+                         "be working in this checkout; stop it first, then pass force"}
+
     shutil.rmtree(home, ignore_errors=True)
     os.makedirs(home, exist_ok=True)
 
@@ -568,6 +587,11 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("prepare", "finish"):
         one = sub.add_parser(name)
         one.add_argument("run_id")
+        if name == "prepare":
+            one.add_argument("--force", action="store_true",
+                             help="rebuild a checkout that is prepared but not yet "
+                                  "collected. Only after the agent working in it has "
+                                  "been stopped.")
         if name == "finish":
             one.add_argument("--usage", default=None,
                              help="JSON from the runner: subagent_tokens, tool_uses, "
@@ -606,7 +630,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(contaminated(args.run_id, args.transcript), indent=1))
         return 0
     if args.command == "prepare":
-        print(json.dumps(prepare(args.run_id), indent=1))
+        print(json.dumps(prepare(args.run_id, force=args.force), indent=1))
         return 0
     if args.command == "finish":
         usage = json.loads(args.usage) if args.usage else None
