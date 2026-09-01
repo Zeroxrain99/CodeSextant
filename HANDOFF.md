@@ -438,6 +438,21 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   repeating.** After the second, the thing to fix is the file's whole approach to time,
   not whichever line fired.
 
+  **A ninth, and this one was my own assertion firing on healthy code.** The fix for
+  the seventh replaced absolute deadlines with a ratio to a baseline measured on the
+  same machine -- and then tuned the multiple from four runs on *one* machine (health
+  1.4-2.5x, status 1.7-2.5x). Windows read **4.4x** and failed, on a run with **zero
+  overruns** where every probe answered inside its 1.5 s budget. Not starvation: a false
+  positive.
+  **A ratio is not automatically machine-independent.** Quiet status is 6-8 ms here and
+  50 ms on that runner; busy is 12-18 ms here and 218 ms there -- 7x slower quiet but
+  **14x slower busy**, because contention costs proportionally more where there is less
+  machine to go round. The ratio scales with the machine too, so tuning one needs the
+  population and not one host. What replaced it is scale-free and is what the service
+  actually promises: most control-plane probes must be answered inside their own client
+  budget, and a starved control plane overruns them. Checked against five distributions
+  including the run that had just failed.
+
 - **A commit message claimed a file was updated when the edit had silently failed.**
   `d90b23b` says "HANDOFF.md carries this as the sixth instance". It did not: the edit
   was bundled into the same shell call as a two-minute background test run, its
