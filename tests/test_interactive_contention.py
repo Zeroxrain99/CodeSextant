@@ -17,6 +17,19 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+# The deadline under test: the client's own timeout, and the value
+# `CODESEXTANT_INTERACTIVE_TIMEOUT_SEC` is set to. A call that breaches it must fail the
+# test, and it does -- the client raises and `timed` lets it out.
+INTERACTIVE_DEADLINE_SEC = 2
+
+# **Strictly longer, and that is the whole point.** This wait exists only so a wedged
+# worker cannot hang the suite; it is not the deadline and must never be the thing that
+# fires first. Set to the same 2 seconds it raced the client's timeout on a loaded
+# Windows runner and won -- producing a bare `concurrent.futures.TimeoutError` with no
+# message, from a run whose server-side times were all under 900 ms. Two timeouts of
+# equal length race, and the one that wins is the one carrying no information.
+FUTURE_WAIT_SEC = INTERACTIVE_DEADLINE_SEC * 5
+
 
 def _percentile(samples: list[float], percentile: int) -> float:
     values = statistics.quantiles(samples, n=100, method="inclusive")
@@ -72,7 +85,8 @@ def test_map_references_and_impact_meet_deadline_during_reindex(
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     api = client.CodesextantClient(
-        project=str(project), port=server.server_port, timeout=2)
+        project=str(project), port=server.server_port,
+        timeout=INTERACTIVE_DEADLINE_SEC)
     rebuild_errors: list[BaseException] = []
 
     def run_rebuild() -> None:
@@ -104,7 +118,20 @@ def test_map_references_and_impact_meet_deadline_during_reindex(
                         timed, lambda: api.impact("target"), "impact"),
                 )
                 for future in futures:
-                    future.result(timeout=2)
+                    try:
+                        future.result(timeout=FUTURE_WAIT_SEC)
+                    except TimeoutError as exc:      # pragma: no cover - a wedge
+                        # Not the deadline firing: the client's own timeout is shorter
+                        # and would have raised inside the worker with a real message.
+                        # Reaching here means the call never came back at all.
+                        raise AssertionError(
+                            f"an interactive call did not return within "
+                            f"{FUTURE_WAIT_SEC}s -- "
+                            f"{FUTURE_WAIT_SEC - INTERACTIVE_DEADLINE_SEC}s past the "
+                            f"{INTERACTIVE_DEADLINE_SEC}s client deadline that should "
+                            "have raised inside the worker first. The worker is "
+                            "wedged, not slow."
+                        ) from exc
 
     try:
         # Warm first and measure second. The very first requests pay for connection
@@ -178,9 +205,10 @@ def test_map_references_and_impact_meet_deadline_during_reindex(
         "than sharing")
 
     # The tail is held to the deadline rather than to a ratio, and it is held by
-    # construction: every call above runs under a two-second client timeout and a
-    # `future.result(timeout=2)`, so a sample that breached the interactive deadline
-    # would have raised before reaching this line. A call merely slower than usual and
-    # still inside the deadline is the machine, not a defect -- which is exactly what
-    # the old assertion could not tell apart.
+    # construction: every call above runs under the client's own
+    # `INTERACTIVE_DEADLINE_SEC` timeout, so a sample that breached the interactive
+    # deadline raised inside its worker -- with a message naming the route -- before
+    # reaching this line. A call merely slower than usual and still inside the deadline
+    # is the machine, not a defect, which is exactly what the old assertion could not
+    # tell apart. `FUTURE_WAIT_SEC` is deliberately longer and catches only a wedge.
     assert p99 < 2000, f"a call took {p99:.0f} ms, past the interactive deadline"
