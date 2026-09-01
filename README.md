@@ -399,7 +399,8 @@ All settings are environment variables. Boolean flags accept `1/true/yes/on` cas
 | `CODESEXTANT_CACHE_TARGET_RATIO` | `0.9` | fraction of the quota retained after LRU cleanup |
 | `CODESEXTANT_CACHE_MISSING_GRACE_DAYS` | `30` | age before a cache for a missing repository can be removed |
 | `CODESEXTANT_CACHE_TOUCH_INTERVAL_SEC` | `60` | minimum interval between access marker updates per project |
-| `CODESEXTANT_INTERACTIVE_TIMEOUT_SEC` | `15` | client deadline for symbols, map, references, hierarchy, and impact |
+| `CODESEXTANT_INTERACTIVE_TIMEOUT_SEC` | `30` | client deadline for symbols, map, references, hierarchy, and impact |
+| `CODESEXTANT_AUTOINDEX_MAX_FILES` | `400` | how many files a first call indexes inline before it returns a note telling you to run `index` instead |
 | `CODESEXTANT_MAP_TIMEOUT_SEC` | unset | optional client deadline override for cold `map` queries |
 | `CODESEXTANT_MAP_CACHE_SIZE` | `4` | trimmed map results retained by direct in-process callers |
 | `CODESEXTANT_NAMEGRAPH_MAX_FILES` | adaptive | override the file-scan cap; adapts 12 to 5000 by symbol count when unset |

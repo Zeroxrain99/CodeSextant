@@ -218,11 +218,26 @@ def test_a_project_without_git_says_what_it_needs(tmp_path, monkeypatch):
 
 
 def test_an_unindexed_project_says_so_instead_of_answering_from_nothing(tmp_path, monkeypatch):
+    """The claim is unchanged and the mechanism is not: it used to raise.
+
+    Raising was right about the danger and wrong about the delivery. The daemon turned
+    the exception into **HTTP 500**, and an agent cannot act on a 500 -- it reads as the
+    tool being broken, which is what sent one back to grep without ever learning that a
+    single `index` call was the whole fix. So the same refusal now arrives as a
+    well-formed answer whose notes say why it is empty.
+    """
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
     root = tmp_path / "fresh"
     root.mkdir()
-    with pytest.raises(RuntimeError, match="not been indexed"):
-        engine.check(str(root))
+
+    result = engine.check(str(root))
+
+    assert result["changed_count"] == 0
+    assert result["notes"], "an empty answer with no reason is the failure itself"
+    reason = " ".join(result["notes"])
+    assert "no file in a language this indexes" in reason
+    # "no data" and "no impact" look identical and mean opposite things.
+    assert "not as 'no impact'" in reason
 
 
 # Scope and cost.

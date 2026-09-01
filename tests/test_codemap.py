@@ -366,10 +366,12 @@ def test_all_api_returns_json_serializable(project):
         json.dumps(o, ensure_ascii=False, default=str)
 
 
-def test_get_map_requires_index(project):
-    # get_map on an unindexed project has to fail loudly
-    with pytest.raises(RuntimeError):
-        codesextant.get_map(str(project))
+def test_get_map_on_an_unindexed_project_says_so_instead_of_raising(project):
+    """Loudly, still -- but in the result rather than as an exception the daemon turns
+    into an HTTP 500 that no caller can act on."""
+    result = codesextant.get_map(str(project))
+    assert result["symbols"] == []
+    assert "no file in a language this indexes" in " ".join(result["notes"])
 
 
 def test_status_unindexed(project):

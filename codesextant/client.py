@@ -36,7 +36,7 @@ class CodesextantClient:
     """
 
     def __init__(self, project: str | None = None, port: int | None = None,
-                 timeout: float = 30.0):
+                 timeout: float = 60.0):
         self.project = os.path.abspath(project) if project else None
         self.port = port or daemon._port()
         self.timeout = timeout
@@ -196,17 +196,25 @@ class CodesextantClient:
                 configured = 900.0
         return max(self.timeout, configured)
 
+    # The fail-fast budget for an interactive query. 30 rather than 15 because a first
+    # call may now index the project inline before answering, and that is bounded by
+    # `engine._autoindex_max_files` at roughly eight seconds on the slowest indexing
+    # rate measured across the corpus. Fifteen left the query itself almost nothing.
+    # Still fail-fast: the point of a budget is that a wedged daemon cannot stall an
+    # agent, and 30 seconds is well short of any agent's own tool timeout.
+    INTERACTIVE_BUDGET_SEC = 30.0
+
     def _interactive_timeout(self, specific_env: str | None = None) -> float:
         """Return the fail-fast budget for an interactive graph query."""
         raw = os.environ.get(specific_env) if specific_env else None
         if raw is None:
             raw = os.environ.get("CODESEXTANT_INTERACTIVE_TIMEOUT_SEC")
         if raw is None:
-            return max(0.1, min(float(self.timeout), 15.0))
+            return max(0.1, min(float(self.timeout), self.INTERACTIVE_BUDGET_SEC))
         try:
             return max(0.1, float(raw))
         except (TypeError, ValueError):
-            return max(0.1, min(float(self.timeout), 15.0))
+            return max(0.1, min(float(self.timeout), self.INTERACTIVE_BUDGET_SEC))
 
     def _status_timeout(self) -> float:
         """Bound the diagnostic path so it can never become a task gate."""

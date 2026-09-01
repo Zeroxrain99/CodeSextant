@@ -260,12 +260,65 @@ def test_preflight_respects_its_token_budget(repo):
     assert served(generous) <= 20000
 
 
-def test_preflight_requires_an_index(tmp_path, monkeypatch):
+def test_preflight_on_an_unindexed_project_answers_rather_than_raising(
+        tmp_path, monkeypatch):
+    """It used to raise, and the daemon turned that into an HTTP 500 on the very first
+    call anyone made. The shape a caller gets is now the same shape as a real answer,
+    with the reason in the notes -- because a caller that has to branch on which fields
+    exist gets it wrong once and then stops calling."""
     monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
     root = tmp_path / "bare"
     root.mkdir()
-    with pytest.raises(RuntimeError):
-        engine.preflight(str(root), "anything.py")
+
+    result = engine.preflight(str(root), "anything.py")
+
+    assert set(result) >= {"target", "symbol", "already_exists", "co_change",
+                           "blast_radius", "notes"}
+    assert result["already_exists"] == []
+    assert "no file in a language this indexes" in " ".join(result["notes"])
+
+
+def test_a_first_call_indexes_a_small_project_and_says_it_did(tmp_path, monkeypatch):
+    """The cure for the 500, and the reason nobody should need to know `index` exists.
+
+    Bounded on purpose: `_autoindex_max_files` decides, from a measured indexing rate,
+    whether an inline index fits inside an interactive budget. Above it the answer says
+    to index rather than blocking -- which is the failure this replaced, where the MCP
+    layer silently ran a full reindex on a 900-second budget and whichever tool timeout
+    was shortest fired first.
+    """
+    monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
+    root = tmp_path / "small"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "thing.py").write_text(
+        "def load_settings():\n    return {}\n", encoding="utf-8")
+
+    result = engine.preflight(str(root), "pkg/thing.py", symbol="load_settings")
+
+    assert "had never been indexed" in " ".join(result["notes"])
+    # The question asked still got answered.
+    assert result["target"].endswith("thing.py")
+
+    again = engine.preflight(str(root), "pkg/thing.py", symbol="load_settings")
+    assert "had never been indexed" not in " ".join(again["notes"]), (
+        "saying it twice is noise, and re-indexing would be worse than noise")
+
+
+def test_a_project_too_large_to_index_inline_is_told_to_index_rather_than_blocked(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("CODESEXTANT_HOME", str(tmp_path / "_db"))
+    monkeypatch.setenv("CODESEXTANT_AUTOINDEX_MAX_FILES", "2")
+    root = tmp_path / "big"
+    root.mkdir()
+    for n in range(5):
+        (root / f"mod{n}.py").write_text(f"def f{n}():\n    return {n}\n",
+                                         encoding="utf-8")
+
+    result = engine.preflight(str(root), "mod0.py", symbol="f0")
+
+    reason = " ".join(result["notes"])
+    assert "more than 2 source files" in reason
+    assert "index" in reason, "a refusal without the remedy is half an answer"
 
 
 def test_result_is_json_serializable(repo):

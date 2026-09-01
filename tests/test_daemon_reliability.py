@@ -625,7 +625,13 @@ def test_client_does_not_retry_http_application_error(monkeypatch, tmp_path):
 
 
 def test_client_map_has_short_interactive_deadline(monkeypatch, tmp_path):
-    """An interactive map fails fast instead of inheriting the batch budget."""
+    """An interactive map fails fast instead of inheriting the batch budget.
+
+    Asserted against the constant rather than a literal: the number moved once already
+    (15 to 30, when a first call started indexing small projects inline) and a test that
+    pins the digit fails on the change instead of on the mistake. What must hold is the
+    ordering -- an interactive query gives up long before a batch one.
+    """
     seen = []
 
     def capture_open(*_args, timeout=None, **_kwargs):
@@ -633,9 +639,13 @@ def test_client_map_has_short_interactive_deadline(monkeypatch, tmp_path):
         return _JsonResponse({"count": 1})
 
     monkeypatch.setattr(client.urllib.request, "urlopen", capture_open)
-    c = client.CodesextantClient(project=str(tmp_path), port=18797, timeout=30.0)
+    budget = client.CodesextantClient.INTERACTIVE_BUDGET_SEC
+    c = client.CodesextantClient(project=str(tmp_path), port=18797, timeout=budget)
     assert c.get_map() == {"count": 1}
-    assert seen == [15.0]
+    assert seen == [budget]
+    assert budget < c._heavy_timeout(), (
+        "an interactive deadline that is not shorter than the batch one is not a "
+        "deadline")
 
 
 def test_client_reindex_has_dedicated_long_deadline(monkeypatch, tmp_path):

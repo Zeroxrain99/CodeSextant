@@ -1836,7 +1836,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return None
             if path in _INTERACTIVE_HEAVY_PATHS:
                 raw = os.environ.get(
-                    "CODESEXTANT_INTERACTIVE_TIMEOUT_SEC", "15")
+                    "CODESEXTANT_INTERACTIVE_TIMEOUT_SEC", "30")
             else:
                 raw = os.environ.get("CODESEXTANT_HEAVY_TIMEOUT_SEC", "900")
             try:

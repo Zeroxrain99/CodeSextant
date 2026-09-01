@@ -161,6 +161,93 @@ def _iter_source_files(root: str):
                 yield os.path.join(dirpath, fn)
 
 
+# How many files a first call will index inline before it gives up and says so
+# instead. Measured rather than picked: indexing runs at 55 to 289 files per second
+# across the corpus (requests 55, click 197, rich 186, pytest 139, flask 289), and the
+# interactive budget is 15 seconds. 400 files at the slowest observed rate is about
+# eight seconds, which leaves the query itself room inside the budget.
+def _autoindex_max_files() -> int:
+    try:
+        return max(0, int(os.environ.get("CODESEXTANT_AUTOINDEX_MAX_FILES", "400")))
+    except (TypeError, ValueError):
+        return 400
+
+
+def _count_source_files(root: str, limit: int) -> int:
+    """How many indexable files there are, stopping once ``limit`` is passed.
+
+    Stopping early matters: the answer is only used to decide whether an inline index
+    is affordable, and walking a monorepo to find out that it is not is the cost the
+    decision exists to avoid.
+    """
+    seen = 0
+    for _path in _iter_source_files(root):
+        seen += 1
+        if seen > limit:
+            break
+    return seen
+
+
+def _ensure_indexed(abs_path: str, command: str, notes: list[str]) -> bool:
+    """Make the first call work, or say why it cannot. Never raises.
+
+    This exists because the honest answer to "I have not indexed this yet" used to be
+    an exception, which the daemon turned into **HTTP 500**. An agent cannot act on a
+    500. It reads as the tool being broken -- and the report that led here was exactly
+    that: another agent called this on a fresh project, got a hard failure, and fell
+    back to grep without ever learning that one `index` call was all it needed.
+
+    The daemon does schedule a background index on a first interactive call, which is
+    the right design for the *second* call and no help at all for the first. So:
+
+    * already indexed -- nothing to do;
+    * small enough -- index now, inline, and answer properly. The user never learns
+      that indexing is a thing, which is the point;
+    * too large -- return a note saying so. A note is something a caller can act on;
+    * nothing indexable -- say *that*, because an empty answer and "this tool cannot
+      read your language" look identical and mean opposite things.
+
+    Appends what happened to ``notes`` and returns whether the caller can proceed.
+    """
+    if storage.db_path_for(abs_path).exists():
+        return True
+    ceiling = _autoindex_max_files()
+    found = _count_source_files(abs_path, ceiling)
+    if found == 0:
+        readable = ", ".join(sorted(symbols.SUPPORTED_EXTENSIONS))
+        notes.append(
+            f"{command} found no file in a language this indexes, so there is nothing "
+            f"to answer from. It reads: {readable}. This is a statement about the "
+            "index, not about your project -- treat it as 'no data', not as 'no "
+            "impact'.")
+        return False
+    if found > ceiling:
+        # Deliberately a note rather than a long silent index. The MCP layer used to
+        # catch the old exception here and run a full reindex on a 900-second budget,
+        # so a first call against a large repository blocked for minutes and whichever
+        # tool timeout was shortest fired first -- which is the failure that sent an
+        # agent back to grep. A caller that is told to index can decide; a caller that
+        # is silently made to wait cannot.
+        notes.append(
+            f"{command} needs an index and this project has more than {ceiling} source "
+            "files, which is more than a first call should block on. Run the `index` "
+            "tool (or `codesextant index .`) once -- every call after it is immediate. "
+            "Raise CODESEXTANT_AUTOINDEX_MAX_FILES to have the first call do it inline "
+            "instead.")
+        return False
+    try:
+        index_project(abs_path)
+    except Exception as exc:  # noqa: BLE001 - a failed index is a note, not a crash
+        notes.append(
+            f"{command} tried to index this project first and could not "
+            f"({type(exc).__name__}: {exc}). Run `codesextant index .` to see the "
+            "failure in full.")
+        return False
+    notes.append("This project had never been indexed; CodeSextant indexed it before "
+                 "answering. Later calls skip this.")
+    return True
+
+
 def _git_command_kwargs() -> dict:
     kwargs = {"capture_output": True, "text": False, "timeout": 10}
     if os.name == "nt":
@@ -1219,6 +1306,14 @@ def get_map(path: str, token_budget: int = 2000, *, damping: float = 0.85,
     """The public map, with a revision-aware LRU; within the daemon, the same index and the
     same parameters return a copy of the cached small result directly."""
     abs_path = os.path.abspath(path)
+    # Index on first use rather than raising into a 500. The cache is skipped in that
+    # window on purpose -- there is nothing yet to key on.
+    index_notes: list[str] = []
+    if not _ensure_indexed(abs_path, "code_map", index_notes):
+        empty = {"project_key": storage.project_key(abs_path), "symbols": [],
+                 "files": [], "notes": index_notes, "approx_tokens": 0}
+        empty["approx_tokens"] = _json_tokens(empty)
+        return empty
     db_file = storage.db_path_for(abs_path)
     if not db_file.exists():
         return _get_map_uncached(
@@ -1801,11 +1896,9 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     """
     abs_path = os.path.abspath(path)
     resolve = _normalize_resolve(resolve)
-    db_file = storage.db_path_for(abs_path)
-    if not db_file.exists():
-        raise RuntimeError(
-            f"preflight: project has not been indexed yet (no {db_file}); "
-            "call index_project first.")
+    index_notes: list[str] = []
+    if not _ensure_indexed(abs_path, "preflight", index_notes):
+        return _empty_preflight(abs_path, target, symbol, index_notes)
     abs_target = target if os.path.isabs(target) else os.path.join(abs_path, target)
     abs_target = os.path.abspath(abs_target)
     relative = _repo_relative(abs_path, abs_target)
@@ -1815,6 +1908,9 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     if symbol and relative and cochange_stats.get("available"):
         symbol_stats = _ensure_symbol_cochange(abs_path, relative)
     notes: list[str] = []
+    # An index built on this very call is worth saying once, in the answer
+    # the caller actually reads -- not only in the empty one.
+    notes.extend(index_notes)
 
     with storage.ProjectStore.open_readonly(abs_path) as store:
         already, shared_name_count = (
@@ -2543,13 +2639,14 @@ def check(path: str, *, base: str | None = None, staged: bool = False,
     at most ``CODESEXTANT_CHECK_MAX_SYMBOLS`` symbols have their callers resolved.
     """
     abs_path = os.path.abspath(path)
-    db_file = storage.db_path_for(abs_path)
-    if not db_file.exists():
-        raise RuntimeError(
-            f"check: project has not been indexed yet (no {db_file}); "
-            "call index_project first.")
+    index_notes: list[str] = []
+    if not _ensure_indexed(abs_path, "check", index_notes):
+        return _empty_check(abs_path, index_notes)
     resolve = _normalize_resolve(resolve)
     notes: list[str] = []
+    # An index built on this very call is worth saying once, in the answer
+    # the caller actually reads -- not only in the empty one.
+    notes.extend(index_notes)
 
     changed = diffscan.changed_files(abs_path, base=base, staged=staged)
     if changed is None:
@@ -2698,6 +2795,24 @@ def check(path: str, *, base: str | None = None, staged: bool = False,
             break
         result["truncated_by_budget"] = True
         result["approx_tokens"] = _json_tokens(result)
+    return result
+
+
+def _empty_preflight(abs_path: str, target: str, symbol: str | None,
+                     notes: list[str]) -> dict:
+    """The shape preflight always returns, with nothing in it but the reason.
+
+    Same keys as a real answer on purpose: a caller that has to branch on which
+    fields exist will get it wrong once and then stop calling.
+    """
+    result = {
+        "project_key": storage.project_key(abs_path), "target": target,
+        "symbol": symbol, "already_exists": [], "co_change": [],
+        "blast_radius": {"dependent_files": [], "dependent_count": 0,
+                         "callers": [], "caller_count": 0, "leads": []},
+        "notes": notes, "approx_tokens": 0,
+    }
+    result["approx_tokens"] = _json_tokens(result)
     return result
 
 
