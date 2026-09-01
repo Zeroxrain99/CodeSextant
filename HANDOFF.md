@@ -484,6 +484,18 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   zero pre-commit hooks everywhere: the number was extreme enough to check, and checking
   it took one minute against the hours of building on it.
 
+- **A curated set is not a sample, and the difference was a factor of five.** exp15
+  stratified the 120 frozen prevention tasks and found 2% where a grep could not reach
+  the companion -- enough to stop E2 from being run as designed, which was the right
+  call. What it could not say is whether 2% describes software or describes the
+  curation. exp17 ran the *same classifier* over 900 real commits from the *same
+  repositories*: **11% on the derivation set, 7% on the prevention set.** The task
+  selection had quietly preferred commits whose companions were clearly linked. Nothing
+  about `prevention_tasks.json` is wrong; it is simply the easy half, and every number
+  E1 and E1b produced is a number about the easy half. **Before trusting a rate from a
+  curated set, measure the same rate on the uncurated population.** The measurement cost
+  ten minutes and it moved a decision that would have cost 240 agent runs.
+
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is
   scored by `--score` on an old dump in one second instead of an hour. Four candidates
