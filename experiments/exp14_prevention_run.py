@@ -71,7 +71,10 @@ stale. Finding them is the substance of this task; you are not given a list.
 
 Edit the files you believe have to change. Make the edits real -- do not leave notes
 saying what should be done. When you are finished, stop; do not commit.
-{tool}"""
+{tool}
+When you have finished, end your reply with one line in exactly this format, and nothing after it:
+TOOLCALLS: <the number of tool calls you made>
+"""
 
 
 def worktree_for(task: dict, home: str) -> str | None:
@@ -95,7 +98,15 @@ def release_worktree(task: dict, tree: str) -> None:
 def prompt_for(task: dict, tree: str, condition: str, cli: str) -> str:
     """The two prompts differ in exactly one paragraph, and in nothing else.
 
-    Anything else that differed would be measured as if it were the tool.
+    Anything else that differed would be measured as if it were the tool. That includes
+    the tool-call request at the end: it is in **both** arms, because a cost question
+    asked of one condition and not the other is not a comparison.
+
+    Self-report is a weak instrument and it is here only for the cost endpoint, never
+    for what the attempt did -- `collect` reads the worktree for that. For the
+    `with_tool` arm it is checkable: the daemon writes every request to its log, so how
+    often the tool was actually reached is observable independently of what the agent
+    says about itself. Where the two disagree, the log is the measurement.
     """
     tool = _TOOL_PARAGRAPH.format(cli=cli) if condition == "with_tool" else ""
     return _PROMPT.format(repo=task["repo"], tree=tree,
