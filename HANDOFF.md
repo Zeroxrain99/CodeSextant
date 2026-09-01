@@ -382,6 +382,19 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   the service stayed up and kept serving through the overrun. **The limit was written
   down in the module the test exercises, and the test was written as though it were not.**
   Read the known-limits section of what you are testing before deciding what it promises.
+
+  **A fifth, and the second time this test stated the right rule in a comment and broke
+  it on the next line.** `assert len(reindex_results) >= 2` sat directly under a
+  paragraph explaining that a slow runner reaching the queue-full condition is the
+  admission control working. The macOS log gave the mechanism rather than leaving it to
+  a guess: `503: the route worker was killed before answering: route worker exited
+  without a result (exit=-9)`. **SIGKILL** -- the OS reclaimed the child process that
+  runs heavy engine work, and the daemon reported a retryable 503 instead of crashing.
+  Two completed rebuilds is a throughput claim; what the test exists to show is that
+  rebuild work does not starve the interactive routes, and `active_seen` and
+  `simultaneous_seen` already assert exactly that. **Five instances now. When a test
+  writes down a rule, check every assertion under it against that rule, not just the one
+  that failed.**
   **The third one is the instructive case.** `test_real_contention` failed on a 504 --
   which is the daemon doing exactly what it promises, refusing a call it cannot serve
   inside the deadline. The test already knew this: it says so in a comment, for
