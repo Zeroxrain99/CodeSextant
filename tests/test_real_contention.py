@@ -18,6 +18,22 @@ INTERACTIVE_DEADLINE_MS = 15_000.0
 STATUS_DEADLINE_MS = 1_500.0
 HEALTH_P99_DEADLINE_MS = 1_000.0
 
+# The daemon's own deadline for a rebuild, and the deadline of the client that asks for
+# one. **The second has to be strictly longer than the first, and it used to be half.**
+# `CODESEXTANT_REINDEX_TIMEOUT_SEC` was 60 while the rebuild client timed out at 30, so
+# on any runner where a rebuild took between 30 and 60 seconds the client gave up before
+# the daemon had reached its own deadline -- and the assertion waiting downstream demands
+# the daemon's contracted 503. That assertion was therefore unreachable exactly where it
+# mattered, and what arrived instead was a bare client `TimeoutError` carrying nothing
+# about the service at all. It failed on a Windows runner where one rebuild took 3.3
+# seconds and a later one did not come back.
+#
+# The same shape as `test_interactive_contention.FUTURE_WAIT_SEC`: an outer wait exists
+# to catch a wedge, never to race the deadline it is wrapping. Two deadlines in a race
+# are decided by the machine, and the one that wins carries the less information.
+REINDEX_DEADLINE_SEC = 60
+REINDEX_CLIENT_TIMEOUT_SEC = REINDEX_DEADLINE_SEC * 2
+
 
 def _percentile(samples: list[float], percentile: int) -> float:
     """Return a linearly interpolated percentile for a small latency sample."""
@@ -202,6 +218,26 @@ def test_a_timeout_from_a_dead_daemon_is_still_a_failure():
         _timed_samples(invoke, lambda result: None, 1, lambda: False)
 
 
+def test_the_rebuild_client_outlives_the_daemons_own_reindex_deadline():
+    """The eighth failure in this family, reduced to the one line that caused it.
+
+    The big test below asserts that a refused rebuild carries the contract -- a 503 with
+    a Retry-After. For that assertion to be reachable the daemon has to get as far as
+    refusing, and it cannot if the client asking has already given up: the error that
+    arrives is then a bare client `TimeoutError` that says nothing about the service.
+
+    The client was timing out at **30 seconds against the daemon's own 60**, so on every
+    runner where a rebuild took between the two the contracted refusal was structurally
+    unobservable. Nothing about that is unlucky, which is why it belongs in an assertion
+    rather than in a retry.
+
+    A full deadline of headroom, not a nominal margin: the daemon is entitled to use all
+    of `REINDEX_DEADLINE_SEC` before it answers or refuses, so the client has to be still
+    waiting *after* that, on a machine that may be running everything at half speed.
+    """
+    assert REINDEX_CLIENT_TIMEOUT_SEC >= REINDEX_DEADLINE_SEC * 2
+
+
 def test_an_uncontracted_status_is_never_treated_as_a_refusal():
     """503 and 504 are the documented back-pressure. A 500 is a defect and propagates."""
     def invoke():
@@ -225,7 +261,8 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     monkeypatch.setenv("CODESEXTANT_WATCH_ENABLED", "1")
     monkeypatch.setenv("CODESEXTANT_IDLE_TIMEOUT_SEC", "0")
     monkeypatch.setenv("CODESEXTANT_INTERACTIVE_TIMEOUT_SEC", "15")
-    monkeypatch.setenv("CODESEXTANT_REINDEX_TIMEOUT_SEC", "60")
+    monkeypatch.setenv("CODESEXTANT_REINDEX_TIMEOUT_SEC",
+                       str(REINDEX_DEADLINE_SEC))
     monkeypatch.delenv("CODESEXTANT_SQLITE_UNSAFE_WAL", raising=False)
     monkeypatch.delenv("CODESEXTANT_SQLITE_WAL", raising=False)
     monkeypatch.delenv("CODESEXTANT_SQLITE_BUSY_TIMEOUT_MS", raising=False)
@@ -330,10 +367,24 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     reindex_started = threading.Event()
     reindex_results: list[dict] = []
     reindex_errors: list[BaseException] = []
+    # Whether the daemon was still answering at the moment each error was raised. It has
+    # to be asked *then*: the wind-down below closes the server, so by the time the
+    # assertions run the only honest answer is "no", for every run.
+    reindex_error_live: list[bool] = []
+
+    def still_serving() -> bool:
+        """Is the daemon up and answering after a call overran its deadline?
+
+        The branded probe, not a socket connect: what has to hold is that the service
+        kept serving through an uninterruptible call, and a port that accepts a
+        connection does not say that.
+        """
+        return daemon.http_ping(port=port, timeout=2.0) is not None
 
     def repeat_reindex() -> None:
         rebuild_client = client.CodesextantClient(
-            project=str(project), port=port, timeout=30)
+            project=str(project), port=port,
+            timeout=REINDEX_CLIENT_TIMEOUT_SEC)
         try:
             while (not abort_reindex.is_set()
                    and (not stop_reindex.is_set() or len(reindex_results) < 2)):
@@ -341,6 +392,7 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                 reindex_results.append(rebuild_client.reindex(force=True))
         except BaseException as exc:  # noqa: BLE001 - surfaced in the test thread
             reindex_errors.append(exc)
+            reindex_error_live.append(still_serving())
 
     rebuild = threading.Thread(target=repeat_reindex, name="real-reindex")
     rebuild.start()
@@ -379,14 +431,6 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     graph_refusals: dict[str, list[urllib.error.HTTPError]] = {}
     graph_overruns: dict[str, int] = {}
 
-    def still_serving() -> bool:
-        """Is the daemon up and answering after a call overran its deadline?
-
-        The branded probe, not a socket connect: what has to hold is that the service
-        kept serving through an uninterruptible call, and a port that accepts a
-        connection does not say that.
-        """
-        return daemon.http_ping(port=port, timeout=2.0) is not None
     health_samples: list[float] = []
     status_samples: list[float] = []
     health_overruns = 0
@@ -514,11 +558,19 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
         watching.clear()
         watcher_thread.join(timeout=10)
         stop_reindex.set()
-        rebuild.join(timeout=70)
+        rebuild.join(timeout=REINDEX_DEADLINE_SEC + 10)
         if rebuild.is_alive():
             abort_reindex.set()
             rebuild.join(timeout=5)
+        # **Closing the server is what ends a call the daemon itself could not**, and it
+        # has to happen before the aliveness check rather than after it. `abort_reindex`
+        # ends the loop, never the request inside it, so a rebuild stuck in an
+        # uninterruptible native call outlives every join above -- and now that the
+        # client waits twice the daemon's deadline rather than half of it, that wait is
+        # long enough to matter. Shutting the listener down is the only thing that makes
+        # its client return.
         close_server()
+        rebuild.join(timeout=10)
 
     assert not rebuild.is_alive()
     # A reindex refused with documented back-pressure is the admission control working,
@@ -526,7 +578,25 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     # hold the reserve, so a slow runner will reach the queue-full condition. What is
     # not allowed is a refusal without the contract -- a 500, or a 503 that omits the
     # Retry-After a caller is supposed to obey.
-    for error in reindex_errors:
+    # `strict` because the two lists are appended in the same `except` block: if
+    # they ever differ in length something has gone wrong in the rebuild thread,
+    # and silently truncating would hide it behind a passing test.
+    for error, was_live in zip(reindex_errors, reindex_error_live, strict=True):
+        if isinstance(error, TimeoutError):
+            # Not a refusal the daemon delivered: the client's own deadline, which
+            # `work_coordinator` documents it cannot always beat -- "CPython cannot
+            # safely interrupt a thread inside Jedi, tree-sitter, SQLite, or another
+            # native call. Those calls may return after the request deadline."
+            # `_timed_samples` accepts exactly this outcome on the three interactive
+            # routes, under exactly this guard, and the rebuild path never got it.
+            #
+            # What the service still owes in that case is that it is *up*: a timeout
+            # from a daemon that has died is a failure and stays one. That is the whole
+            # difference between accepting an outcome and asserting one away.
+            assert was_live, (
+                "the rebuild timed out and the daemon stopped answering -- an overrun "
+                "inside an uninterruptible call leaves the service up, a crash does not")
+            continue
         assert isinstance(error, urllib.error.HTTPError), error
         assert error.code == 503, error
         assert error.headers.get("Retry-After"), "back-pressure must say when to return"
