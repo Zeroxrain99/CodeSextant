@@ -131,9 +131,16 @@ def _read_blobs(root: str, sha: str, paths) -> dict[str, str]:
         newline = out.find(b"\n", cursor)
         if newline < 0:
             break
-        header = out[cursor:newline].decode("utf-8", "replace").split()
+        line = out[cursor:newline].decode("utf-8", "replace")
         cursor = newline + 1
-        if len(header) < 3:      # "<oid> missing" for a path not in this tree
+        header = line.split()
+        # A resolved object answers "<oid> <type> <size>". Anything it cannot resolve
+        # is echoed back verbatim with " missing" appended -- so a path containing a
+        # space, which is what git's `{old => new}/file.py` rename notation is, splits
+        # into more than three fields and header[2] is a path fragment. exp17 died
+        # here on `int('__about__.py}')`. The frozen task sets carry no such path;
+        # mining raw commits does.
+        if len(header) < 3 or line.endswith(" missing") or not header[2].isdigit():
             continue
         size = int(header[2])
         found[relative] = out[cursor:cursor + size].decode("utf-8", "replace")

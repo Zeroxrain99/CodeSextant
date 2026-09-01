@@ -253,6 +253,16 @@ def cli_shim(home: str, cli: str) -> str:
     against the SQLite index, so a daemon that never starts writes no log. A column
     reading zero everywhere is a defect until proven otherwise, and that one was.
 
+    **It also exports `CODESEXTANT_HOME`, and without that line the tool the agent gets
+    is not the tool that was prepared.** `index_for_agent` indexes into the run's home;
+    an invocation that does not name that home looks in `~/.codesextant`, finds nothing,
+    and answers `This project had never been indexed; CodeSextant indexed it before
+    answering` -- so the agent pays the whole indexing cost inside its own budget, gets
+    an answer mined from no history, and every run shares one index directory. Measured
+    on a prepared checkout before the twenty-pair run: the note is printed, verbatim, on
+    the first call. `exp19.prepare` now asserts the note is absent before an agent is
+    spent.
+
     It is named `codesextant` and placed in its own `bin/`, because the path appears in
     the prompt and is therefore part of the stimulus. A first version called it
     `cs-shim`, which tells the agent it is being watched -- and an agent that knows it is
@@ -265,7 +275,9 @@ def cli_shim(home: str, cli: str) -> str:
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(
             "#!/bin/sh\n"
-            f'printf "%s\\t%s\\n" "$(date -u +%%FT%%TZ)" "$*" >> {log}\n'
+            f'printf "%s\\t%s\\n" "$(date -u +%FT%TZ)" "$*" >> {log}\n'
+            f'CODESEXTANT_HOME={home}\n'
+            "export CODESEXTANT_HOME\n"
             f'exec {cli} "$@"\n')
     os.chmod(path, 0o755)
     return path
