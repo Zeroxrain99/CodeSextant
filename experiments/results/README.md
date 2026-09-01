@@ -4,13 +4,23 @@ Raw per-trial output, checked in so a number in `docs/roadmap.md` can be traced 
 trials that produced it rather than believed. Roadmap G1 asks for a benchmark somebody
 else can reproduce; a result whose inputs live only in a transcript is not one.
 
-## `e2_pilot_trials.json`
+## `e2_pilot_void_*.json` — void, kept as evidence
 
-The first six E2 trials: three tasks, both arms, on
-`experiments/prevention_tasks_stratified.json`. Each record carries what the attempt
+**Do not quote a number out of these files.** The nine E2 pilot pairs were run in
+checkouts built with `git worktree add`, which shares the parent repository's object
+store: the reference commit, the whole future history, and `origin/main` were all
+present, and the instruction handed to the agent is the commit message, so
+`git log --all --grep=` reached the answer in one step. Grepping the transcripts for
+history probes found **8 of 19 trials** touching history. Quality and cost are both
+contaminated — an agent that has read the diff needs fewer tokens to find the files.
+
+`e2_pilot_void_trials.json` holds the three pairs that were scored: what the attempt
 changed (read from `git status`, not from the agent's account of itself), the three
 scored modes, the cost the runner observed, and — for the `with_tool` arm — every
-CodeSextant invocation the shim recorded.
+CodeSextant invocation the shim recorded. `e2_pilot_void_usage.json` holds the runner's
+cost for all nine pairs; the other six were never scored.
 
-**Six trials is a pilot.** It exists to show the instruments work end to end. Nothing in
-it establishes an effect, and `docs/roadmap.md` E2 says what it does and does not say.
+They are checked in because the failure is worth more than the result would have been:
+this is what an experiment looks like when the isolation was never asserted.
+`exp14_prevention_run.checkout_for` is the fix and `leaks()` is the assertion that was
+missing.

@@ -1,0 +1,105 @@
+{
+  "status": "VOID -- ground-truth leak, see experiments/exp14_prevention_run.checkout_for",
+  "batch_b": {
+    "alembic@2cd9e1ae0c": {
+      "with_tool": {
+        "subagent_tokens": 78615,
+        "tool_uses": 37,
+        "duration_ms": 282424
+      },
+      "without_tool": {
+        "subagent_tokens": 73917,
+        "tool_uses": 31,
+        "duration_ms": 223487
+      }
+    },
+    "flask@438edcdf01": {
+      "without_tool": {
+        "subagent_tokens": 56822,
+        "tool_uses": 26,
+        "duration_ms": 170571
+      },
+      "with_tool": {
+        "subagent_tokens": 59116,
+        "tool_uses": 30,
+        "duration_ms": 240066
+      }
+    },
+    "alembic@e28ee4ed42": {
+      "without_tool": {
+        "subagent_tokens": 114201,
+        "tool_uses": 53,
+        "duration_ms": 630533
+      },
+      "with_tool": {
+        "subagent_tokens": 142490,
+        "tool_uses": 66,
+        "duration_ms": 866755
+      }
+    }
+  },
+  "batch_c": {
+    "alembic@7ed092df5c": {
+      "with_tool": {
+        "subagent_tokens": 63047,
+        "tool_uses": 24,
+        "duration_ms": 183769
+      },
+      "without_tool": {
+        "subagent_tokens": 67422,
+        "tool_uses": 30,
+        "duration_ms": 252778
+      }
+    },
+    "flask@15a3e82823": {
+      "without_tool": {
+        "subagent_tokens": 64980,
+        "tool_uses": 23,
+        "duration_ms": 335873
+      },
+      "with_tool": {
+        "subagent_tokens": 94940,
+        "tool_uses": 42,
+        "duration_ms": 598003
+      }
+    },
+    "flask@ab1fbef29a": {
+      "without_tool": {
+        "subagent_tokens": 157729,
+        "tool_uses": 71,
+        "duration_ms": 758404
+      },
+      "with_tool": {
+        "subagent_tokens": 164825,
+        "tool_uses": 66,
+        "duration_ms": 781384
+      }
+    },
+    "alembic@3398e6b5a5": {
+      "without_tool": {
+        "subagent_tokens": 54758,
+        "tool_uses": 20,
+        "duration_ms": 129921
+      },
+      "with_tool": {
+        "subagent_tokens": 48423,
+        "tool_uses": 17,
+        "duration_ms": 138679
+      }
+    },
+    "alembic@361076e847": {
+      "without_tool": {
+        "subagent_tokens": 70202,
+        "tool_uses": 33,
+        "duration_ms": 342826
+      }
+    },
+    "pytest@bc57e69aaa": {
+      "without_tool": {
+        "subagent_tokens": 96824,
+        "tool_uses": 52,
+        "duration_ms": 493007
+      }
+    }
+  }
+}

@@ -9,7 +9,8 @@ thing returned. That is a proxy. This is not.
 
 What one trial is
 -----------------
-1. Check the task's parent commit out into a throwaway worktree.
+1. Build a throwaway repository holding the task's parent commit and its ancestors
+   -- and nothing after it. `checkout_for` says why that is not a `git worktree`.
 2. Hand an agent the commit's own message and the one file it starts in -- never the
    file list. Finding the rest is the task.
 3. Let it work. Under `with_tool` it is told CodeSextant is installed and what the three
@@ -21,7 +22,7 @@ and the variance between tasks cancels.
 
 **This module only prepares and scores.** It does not call an agent -- the caller does,
 because agent invocation belongs to whatever is driving the session. `prepare` returns
-the worktree and the prompt; `collect` reads the result back out.
+the checkout and the prompt; `collect` reads the result back out.
 """
 from __future__ import annotations
 
@@ -74,21 +75,122 @@ saying what should be done. When you are finished, stop; do not commit.
 {tool}"""
 
 
-def worktree_for(task: dict, home: str) -> str | None:
-    """A throwaway checkout of the task's parent commit."""
-    root = corpus.ensure(task["repo"],
-                         dict(corpus.PREVENTION)[task["repo"]])
-    tree = os.path.join(home, f"{task['id'].replace('@', '_')}")
+def _full_mirror(repo: str) -> str:
+    """A bare clone that actually holds its blobs.
+
+    `corpus.ensure` clones `--filter=blob:none`, which is right for mining -- history
+    and trees are all it reads -- and wrong here: `git bundle` has to write every
+    object it packs, and a promisor repository answers `unable to read <oid>` for
+    blobs it never fetched. So the prevention runs get their own full mirror. It is
+    cheap: alembic is 5.8 MB and clones in two seconds.
+    """
+    root = os.path.join(corpus.corpus_root(), "_full")
+    os.makedirs(root, exist_ok=True)
+    path = os.path.join(root, f"{repo}.git")
+    if not os.path.isdir(path):
+        url = dict(corpus.PREVENTION)[repo]
+        subprocess.run(["git", "clone", "-q", "--bare", url, path], check=True)
+    return path
+
+
+def checkout_for(task: dict, home: str, *, name: str = "repo") -> str | None:
+    """A checkout of the task's parent commit that does not contain the answer.
+
+    **The first version of this used `git worktree add`, and every trial run against
+    it is void.** A worktree shares the parent repository's object store, so the
+    checkout was detached at the parent while still carrying the whole future: the
+    reference commit was one `git show` away, `git log --all` listed it, and because
+    the instruction *is* the commit message, `git log --all --grep=` found it in a
+    single step. An agent volunteered that it had read `--stat` on the answer. Grepping
+    the pilot transcripts for history probes found 8 of 19 trials touching it.
+
+    So the checkout is rebuilt from a bundle of the parent alone. `git bundle` packs
+    exactly what is reachable from the ref it is given, so the descendants are not
+    copied -- not unreferenced, *absent*: `git cat-file` cannot get object info for the
+    reference commit, and `git fsck` reports nothing dangling. The 1404 ancestors stay,
+    because co-change and the tool under test both need them.
+
+    Two further leaks were in the path, not the repository, and both were mine:
+    the worktree was named `<repo>_<sha>` inside a home named `<repo>_<sha>_<condition>`,
+    and `prompt_for` prints the path to the agent. Hence `name`, and the assertion.
+    """
+    sha = task["sha"][:7]
+    tree = os.path.join(home, name)
+    if sha in tree:
+        raise ValueError(
+            f"the checkout path {tree!r} contains the answer's sha {sha!r}; "
+            "the prompt shows the agent this path")
+
+    mirror = _full_mirror(task["repo"])
+    ref = "refs/heads/__cs_base"
+    bundle = os.path.join(home, "_base.bundle")
+    try:
+        subprocess.run(["git", "-C", mirror, "update-ref", ref, task["parent"]],
+                       check=True, capture_output=True)
+        made = subprocess.run(["git", "-C", mirror, "bundle", "create", bundle, ref],
+                              capture_output=True, text=True)
+    finally:
+        subprocess.run(["git", "-C", mirror, "update-ref", "-d", ref],
+                       capture_output=True)
+    if made.returncode != 0:
+        return None
+
     done = subprocess.run(
-        ["git", "-C", root, "worktree", "add", "-q", "--detach", tree, task["parent"]],
+        ["git", "clone", "-q", "-b", "__cs_base", bundle, tree],
         capture_output=True, text=True)
-    return tree if done.returncode == 0 else None
+    os.unlink(bundle)
+    if done.returncode != 0:
+        return None
+
+    # The bundle is a remote, `__cs_base` is a tell, and the reflog still names what
+    # was fetched. None of the three survives into what the agent sees.
+    for argv in (["remote", "remove", "origin"],
+                 ["branch", "-m", "__cs_base", "main"],
+                 ["reflog", "expire", "--all", "--expire=now",
+                  "--expire-unreachable=now"],
+                 ["gc", "--prune=now", "--quiet"]):
+        subprocess.run(["git", "-C", tree, *argv], capture_output=True)
+    return tree
 
 
-def release_worktree(task: dict, tree: str) -> None:
-    root = corpus.ensure(task["repo"], dict(corpus.PREVENTION)[task["repo"]])
-    subprocess.run(["git", "-C", root, "worktree", "remove", "--force", tree],
-                   capture_output=True)
+def ancestors(tree: str) -> int:
+    """How much history the checkout kept. Co-change mines this; an empty answer here
+    would make both arms of the trial equally blind and the comparison meaningless."""
+    done = subprocess.run(["git", "-C", tree, "rev-list", "--count", "HEAD"],
+                          capture_output=True, text=True)
+    return int(done.stdout.strip() or 0)
+
+
+def leaks(task: dict, tree: str) -> list[str]:
+    """Everything about this checkout that could hand the agent the answer.
+
+    Run before every trial. A leak found after the run is a run thrown away; this is
+    the check that was missing when the pilot was run.
+    """
+    found = []
+    if task["sha"][:7] in tree:
+        found.append(f"path names the answer: {tree}")
+    present = subprocess.run(["git", "-C", tree, "cat-file", "-e", task["sha"]],
+                             capture_output=True)
+    if present.returncode == 0:
+        found.append(f"the reference commit {task['sha'][:10]} is in the object store")
+    head = subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+    if head != task["parent"]:
+        found.append(f"HEAD is {head[:10]}, not the parent {task['parent'][:10]}")
+    remotes = subprocess.run(["git", "-C", tree, "remote"],
+                             capture_output=True, text=True).stdout.split()
+    if remotes:
+        found.append(f"remotes can refetch the future: {remotes}")
+    dangling = [line for line in subprocess.run(
+        ["git", "-C", tree, "fsck", "--no-progress"],
+        capture_output=True, text=True).stdout.splitlines() if "dangling" in line]
+    if dangling:
+        found.append(f"{len(dangling)} dangling objects")
+    return found
+
+
+def release_checkout(tree: str) -> None:
     shutil.rmtree(tree, ignore_errors=True)
 
 
@@ -114,7 +216,7 @@ def collect(task: dict, tree: str) -> dict:
     """What the attempt actually did, scored.
 
     Read from `git status` rather than from anything the agent says about itself: an
-    agent that reports what it meant to do is a worse instrument than the worktree.
+    agent that reports what it meant to do is a worse instrument than the checkout.
     """
     done = subprocess.run(["git", "-C", tree, "status", "--porcelain"],
                           capture_output=True, text=True)
@@ -316,7 +418,7 @@ def index_for_agent(tree: str, cli: str, home: str) -> tuple[bool, str]:
 def _self_test() -> int:
     """Prove the plumbing and the report, without an agent.
 
-    Two halves. The worktree/prompt/collect path is checked on a real task. Then
+    Two halves. The checkout/prompt/collect path is checked on a real task. Then
     `report` is fed trials whose answer is known -- one arm perfect, the other empty,
     and a cost difference put in by hand -- because a reporting function nobody has run
     against a known answer is a reporting function that can report anything. The first
@@ -326,17 +428,32 @@ def _self_test() -> int:
     tasks = load_tasks()
     with tempfile.TemporaryDirectory() as home:
         task = tasks[0]
-        tree = worktree_for(task, home)
+        tree = checkout_for(task, home)
         print(f"{task['id']} ({task.get('stratum')}): "
-              f"worktree {'ok' if tree else 'FAILED'}")
+              f"checkout {'ok' if tree else 'FAILED'}")
         if not tree:
             return 1
         with_bytes = len(prompt_for(task, tree, "with_tool", "cs"))
         without_bytes = len(prompt_for(task, tree, "without_tool", "cs"))
         print(f"  files present: {len(os.listdir(tree))}")
+        print(f"  ancestors:     {ancestors(tree)}")
         print(f"  prompt bytes:  with={with_bytes} without={without_bytes}")
         print(f"  clean collect: {collect(task, tree)['scored']}")
-        release_worktree(task, tree)
+        # The isolation is the experiment's validity, so it is asserted, not printed.
+        found = leaks(task, tree)
+        print(f"  leaks:         {found or 'none'}")
+        if found:
+            return 1
+        # And the guard itself is exercised: a path that names the answer must not
+        # merely be reported, it must refuse to be built.
+        try:
+            checkout_for(task, home, name=f"x_{task['sha'][:7]}")
+        except ValueError:
+            print("  path guard:    refuses a path naming the sha")
+        else:
+            print("  path guard:    FAILED -- built a checkout naming the sha")
+            return 1
+        release_checkout(tree)
 
     trials = []
     for index, task in enumerate(tasks[:12]):

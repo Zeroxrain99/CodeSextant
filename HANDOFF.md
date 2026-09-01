@@ -588,9 +588,9 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   gave the opposite sign; a sample of eleven was used to overturn a claim within the
   hour of writing that down. **A correction needs the sample size a finding needs.**
 
-- **Two instruments were broken and the pilot found both before it found a result.**
-  That is what a pilot is for and it is the cheapest six agent runs this project has
-  spent. The cost question was put to the agent, which reported **18** tool calls
+- **Three instruments were broken and the pilot found all three before it found a
+  result.** That is what a pilot is for -- and the third one, the leaked checkout below,
+  was found only after nine pairs had been paid for, because nothing asserted it. The cost question was put to the agent, which reported **18** tool calls
   against **31** the runner observed -- while the runner had been reporting tokens, tool
   uses and duration for free the whole time. And "the tool did not help" was
   indistinguishable from "the agent never opened it", two findings that call for
@@ -608,6 +608,28 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   of similar breadth. It prints, because the last mode that could be satisfied without
   doing the task survived by nobody looking. Read those two rates as "did it find them",
   never as "did it change the right set".
+
+- **A `git worktree` is not an isolated checkout, and the E2 pilot is void because of
+  it.** Nine pairs were run against `git worktree add --detach <parent>`. A worktree
+  shares the parent repository's object store: the checkout sat at the parent commit
+  while still carrying the entire future, so the reference commit was one `git show`
+  away, `git log --all` listed it, `origin/main` was present, and -- because the
+  instruction handed to the agent *is* the commit message -- `git log --all --grep=`
+  found the answer in a single step. It surfaced because one agent volunteered that it
+  had read `--stat` on the reference commit; grepping the transcripts for history
+  probes then found **8 of 19 trials** touching history. Two more leaks were in the
+  path and were mine: the checkout was named `<repo>_<sha>` inside a home named
+  `<repo>_<sha>_<condition>`, and `prompt_for` prints that path to the agent, so the
+  answer's sha was in the prompt. The trials are kept in
+  `experiments/results/e2_pilot_void_*.json`, labelled void, because the cost is the
+  only thing they still measure honestly.
+  The fix is `checkout_for`: bundle the parent ref out of a full mirror and clone the
+  bundle, so the descendants are not unreferenced but **absent** -- `git cat-file` cannot
+  get object info for the reference commit and `git fsck` reports nothing dangling --
+  while the ancestors co-change needs are all there (1404 for alembic, 4050 for flask).
+  `leaks()` asserts all of it before every trial, and `checkout_for` refuses a path
+  containing the sha. **A leak found after the run is the run thrown away; check
+  isolation before spending agents, not after.**
 
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is
@@ -663,7 +685,10 @@ checked in: `experiments/exp12_prevention.py` and `experiments/prevention_tasks.
 120 real commits over a third corpus (flask, pytest, alembic) chosen before any of it was
 read, one rate per failure mode, and three baselines proving no mode is free. What is
 left is E2: the same model on the same tasks with the tool available and without, paired,
-with tokens recorded. **It needs agents, which is the only reason it is not done.**
+with tokens recorded. **It needs agents, which is the only reason it is not done** --
+and the nine pairs already spent bought instruments rather than evidence, because the
+checkouts leaked the answer; see the worktree trap. `checkout_for` and `leaks()` are the
+fix, and the next run starts from zero pairs.
 Everything cheaper is: every retrievable claim in the tool has a held-out number, and
 this is the only design that answers the question the tool exists for.
 
