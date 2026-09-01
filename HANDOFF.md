@@ -372,6 +372,16 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   it claims not to have made, an uncontended baseline measured on the same machine, or
   the service's own contract. And state the behavioural half of the claim first, because
   that half holds at any speed.
+  **A fourth run, and the same test again.** On Windows it failed with a client-side
+  `TimeoutError` rather than the 504 the test allows. `work_coordinator`'s own docstring
+  says why that is not a defect: "CPython cannot safely interrupt a thread inside Jedi,
+  tree-sitter, SQLite, or another native call. Those calls may return after the request
+  deadline." So on a slow enough machine the client's deadline passes before the refusal
+  can be delivered, and a test that demands the 504 is demanding an interrupt CPython
+  will not perform. The contract that does hold -- and is now what is asserted -- is that
+  the service stayed up and kept serving through the overrun. **The limit was written
+  down in the module the test exercises, and the test was written as though it were not.**
+  Read the known-limits section of what you are testing before deciding what it promises.
   **The third one is the instructive case.** `test_real_contention` failed on a 504 --
   which is the daemon doing exactly what it promises, refusing a call it cannot serve
   inside the deadline. The test already knew this: it says so in a comment, for
