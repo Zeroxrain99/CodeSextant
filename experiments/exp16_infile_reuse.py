@@ -64,9 +64,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from experiments import corpus  # noqa: E402
 from experiments import exp13_reuse_ceiling as exp13  # noqa: E402
 
-RARE_THRESHOLDS = (2, 4, 8)
-MATCHERS = ("shipped", "shipped+infile") + tuple(
-    f"shipped+rare{k}" for k in RARE_THRESHOLDS)
+# 999 is 'no rarity gate at all', to price what the gate itself is doing:
+# reach came out flat across 2/4/8, so the floor may be carrying the whole
+# result and the gate may be complexity nobody is paying for.
+RARE_THRESHOLDS = (2, 4, 8, 999)
+MATCHERS = (("shipped", "shipped+infile")
+            + tuple(f"shipped+rare{k}" for k in RARE_THRESHOLDS)
+            + tuple(f"shipped+gated{k}" for k in RARE_THRESHOLDS))
 
 
 def _matches(matcher: str, query: str, other: str, *,
@@ -92,6 +96,23 @@ def _matches(matcher: str, query: str, other: str, *,
         # The *rarest* shared word decides. Two names sharing one rare word are related;
         # that they also both contain `get` says nothing either way.
         return min(word_freq.get(word, 0) for word in shared) <= ceiling
+    if matcher.startswith("shipped+gated"):
+        # **The rule as it would actually ship.** `rare` above is the gate alone, and
+        # measuring that instead of this would be measuring something nobody runs. Two
+        # reasons for the extra floor, and the second is the one that matters:
+        #
+        #  - `CODESEXTANT_PREFLIGHT_NAME_SIMILARITY` is a knob a user turns to get
+        #    fewer candidates. A rule that ignores it silently stops answering to it,
+        #    and an existing test caught exactly that.
+        #  - A short rare word should not drag in a long unrelated name. `parse`
+        #    against `parse_and_validate_user_supplied_duration` shares one word out of
+        #    six; the gate alone accepts it and the overlap says it is not the same
+        #    idea.
+        ceiling = int(matcher.removeprefix("shipped+gated"))
+        if min(word_freq.get(word, 0) for word in shared) > ceiling:
+            return False
+        union = exp13._tokens(query) | exp13._tokens(other)
+        return len(shared) / len(union) >= 0.5
     return False
 
 

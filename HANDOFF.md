@@ -444,6 +444,35 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   it has now been measured wrong on one real case. **`docs/roadmap.md` Phase D4 is the
   experiment**; do not relax the threshold without it, because the reason the rule
   exists -- `get_user` against `get` -- is still real.
+  **Measured since, and the rule changed: exp16, roadmap D4.** A single shared word now
+  counts when the word is rare *and* the overlap still clears the threshold: +0.014 held
+  out for +0.05 names per query. The two-word requirement was written by eye with a good
+  reason, and the good reason turned out to be carried mostly by the overlap denominator
+  rather than by the word count -- `get` only ever matched two-word names anyway.
+
+- **A sample of fifty gave the opposite sign.** The first exp16 run scored 60 commits per
+  repository: 50 duplicates, and the in-file variant read **+0.000** reach. At 250
+  commits -- 190 duplicates -- the same variant read **+0.053**, and held out **+0.110**.
+  A conclusion was nearly written from the small run. Nothing about it looked wrong; it
+  was simply too small to see the effect, and "no difference" is what a small sample
+  reports by default. Check what n a rate is over before believing a zero, the same way
+  a column of zeros is a defect until proven otherwise.
+
+- **Measure the rule you would ship, not the one that is easy to score.** exp16 first
+  scored the rarity gate alone: +0.050 held out. The rule that could actually ship also
+  has to clear the user's similarity threshold -- otherwise
+  `CODESEXTANT_PREFLIGHT_NAME_SIMILARITY` silently stops working, which an existing test
+  caught -- and with that floor the same idea reaches +0.014. Three and a half times
+  smaller. Had the floor been added quietly after the measurement, the shipped feature
+  would have carried a number it does not earn.
+
+- **A variant that reads 143 when the baseline reads 2.4 is a defect, not a finding.**
+  exp16 tried counting a word's frequency over production names only, on the theory that
+  five `test_shutdown_*` names are one concept rather than five uses. A word appearing
+  *only* in tests then has a production frequency of **zero**, and zero passes every
+  ceiling, so that variant matched everything. Same shape as the exp10 regex that read
+  zero pre-commit hooks everywhere: the number was extreme enough to check, and checking
+  it took one minute against the hours of building on it.
 
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is
