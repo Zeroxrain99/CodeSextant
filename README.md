@@ -7,6 +7,38 @@
 
 **A practical code navigation and change-impact tool for AI coding agents and human developers.**
 
+> ### Project status: paused, 2026-09-01
+>
+> **The tool works and its retrieval numbers are real. The claim that it changes what an
+> agent does was tested and did not hold, so development is paused rather than continued
+> on a guess.**
+>
+> A pre-registered paired experiment — 20 tasks, 40 agent trials, 3.6M tokens, one arm
+> told the tool was installed and one arm not — found **no measurable difference**. The
+> files the two arms edited were identical in 20 of 20 pairs, and the cost difference
+> (−5.4%) had a confidence interval containing zero. The tool was used: 71 invocations
+> across all 20 arms. The follow-up experiment, on forgotten safety fences being deleted,
+> was designed and then **not run**: the event occurred 0 times in those 40 real changes
+> despite 569 explained fences sitting inside the files the agents edited, and the
+> cheapest version with any power would have cost 10M tokens while assuming the tool is
+> flawless.
+>
+> Everything is written down, including what refutes it:
+> [`experiments/results/E2.md`](experiments/results/E2.md) ·
+> [`experiments/results/E4.md`](experiments/results/E4.md) ·
+> [`docs/plan.md`](docs/plan.md)
+>
+> **The one thing measured that points forward is a language, not a feature.** The half of
+> this tool that reads git history cannot tell what language it is looking at, and on a
+> TypeScript monorepo (vite, held out and declared in advance) co-change reaches F1
+> **0.524** at precision 0.809, against 0.14–0.19 on every Python repository — with 12 of
+> 12 paired comparisons excluding zero. Every experiment above was run on Python. That gap
+> is unmeasured, not refuted.
+>
+> Installation, the CLI, the HTTP API and the MCP server all work as documented below;
+> 819 tests pass on CPython 3.10–3.13 across Linux, macOS and Windows. Nothing here is
+> being taken away.
+
 ## See the codebase
 
 ![A selected CodeSextant symbol with its source and resolved callers](https://raw.githubusercontent.com/Zeroxrain99/CodeSextant/master/docs/assets/visual-map-symbol-inspector.png)

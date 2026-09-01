@@ -8,6 +8,12 @@ down, in one place, with the reason attached to each item.
 the status line in the same commit as the work.** A roadmap that lags the code is worse
 than none, because it is believed.
 
+> **Status: paused, 2026-09-01.** Phase E ran and answered "有用嗎" with *no measurable
+> difference* (E2, 20 pairs), and the experiment that would have tested the other half of
+> the first demand was costed and refused (E4). No row below is being worked. The one
+> unmeasured direction with a positive signal behind it is language coverage — see
+> `plan.md` §8 for what is paused and what is not.
+
 **This file is the work list. [`docs/plan.md`](plan.md) is the goal it serves** -- the
 two demands, the seven problems each row has to map to, the resource ceilings, and the
 five drift rules that decide whether a row belongs here at all. Where the two disagree,
