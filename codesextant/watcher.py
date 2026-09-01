@@ -36,6 +36,17 @@ def watch_enabled() -> bool:
         "0", "false", "no", "off")
 
 
+# Backends that do subtree recursion in the kernel, where one scheduled path costs the
+# same as one directory. Everything else -- inotify, and the polling fallback that walks
+# the tree in Python -- is charged per directory, so an unknown backend gets the pruning
+# treatment because that is the safe side of this trade.
+_KERNEL_RECURSIVE_OBSERVERS = frozenset({"FSEventsObserver", "WindowsApiObserver"})
+
+
+def _kernel_recursive(observer) -> bool:
+    return type(observer).__name__ in _KERNEL_RECURSIVE_OBSERVERS
+
+
 def _max_watched_dirs() -> int:
     """A ceiling for the repository that is still enormous after skipping build output.
 
@@ -147,6 +158,8 @@ class _ProjectWatch:
                     if destination:
                         paths.append(destination)
                 for event_path in paths:
+                    if mgr._is_ignored(event_path):
+                        continue
                     if event.is_directory or (
                         os.path.splitext(event_path)[1].lower()
                         in symbols.SUPPORTED_EXTENSIONS
@@ -181,23 +194,34 @@ class _ProjectWatch:
                 f", capped at {_max_watched_dirs()}" if capped else "")
 
     def _watch_tree(self, obs, handler) -> tuple[int, int, bool]:
-        """Watch the directories that hold source, and only those.
+        """Watch the directories that hold source, and only those -- where that is cheaper.
 
-        `recursive=True` over a repository root is one call and the wrong one: watchdog
-        puts a watch on every directory under it, including `node_modules`, `.venv`,
-        `build` and `.git`. Measured on a project shaped like a real front end -- 1,317
-        directories, 22 of them source -- that is 98.3% of the watches spent on files
-        this tool never reads. On Linux they are inotify descriptors against a per-user
-        cap, and everywhere they are an event storm on every install or build.
+        `recursive=True` over a repository root puts an inotify watch on every directory
+        under it, including `node_modules`, `.venv`, `build` and `.git`. Measured on a
+        project shaped like a real front end -- 1,317 directories, 22 of them source --
+        that is 98.3% of the watches spent on files this tool never reads, against a cap
+        that is per *user*, so exhausting it breaks every editor on the machine.
 
-        So the tree is walked with the *indexer's own* skip list and each surviving
-        directory gets its own non-recursive watch. New directories are picked up in
-        `_Handler.on_created`, which is where a recursive watch's one advantage went.
+        **But that is a fact about inotify, not about watching**, and the first version
+        of this method treated it as general. FSEvents and ReadDirectoryChangesW do the
+        recursion in the kernel: one scheduled path covers the whole subtree, so N
+        non-recursive watches there cost N times what one recursive watch costs. The
+        same reasoning that says "prune" on Linux says "do not prune" on macOS and
+        Windows, and CI said so too -- every macOS job failed, because a directory
+        created after start was never picked up.
+
+        So the walk is for backends that charge per directory. The event filter in
+        `_Handler._add` is not: build output is ignored on every platform, because the
+        storm it makes on every install is what wakes the debounce timer regardless of
+        how the watch was obtained.
 
         A cap is kept for the repository that is enormous even after skipping: past it
         the watcher stops adding, and says so, rather than exhausting a system limit
         that would break every other tool on the machine too.
         """
+        if _kernel_recursive(obs):
+            obs.schedule(handler, self.repo_path, recursive=True)
+            return 1, 0, False
         ceiling = _max_watched_dirs()
         watched = skipped = 0
         capped = False
@@ -219,16 +243,36 @@ class _ProjectWatch:
                 capped = True
         return watched, skipped, capped
 
+    def _is_ignored(self, path: str) -> bool:
+        """Is this path inside build or dependency output?
+
+        Applied to every event on every platform. Pruning the *walk* only helps where
+        watches are charged per directory; a recursive watch still delivers every
+        `node_modules` write, and each one of those restarts a debounce timer for an
+        index that will never read the file.
+        """
+        try:
+            relative = os.path.relpath(path, self.repo_path)
+        except ValueError:      # a different drive on Windows: not ours to care about
+            return True
+        if relative.startswith(".." + os.sep) or relative == "..":
+            return True
+        return any(part in engine._SKIP_DIRS
+                   for part in relative.replace("\\", "/").split("/"))
+
     def _watch_new_directory(self, path: str) -> None:
         """Extend the watch to a directory created after start().
 
-        The one thing `recursive=True` gave for free. Without it a newly created package
-        would be invisible until the next attach.
+        The one thing `recursive=True` gave for free, and only needed where the walk was
+        pruned -- a kernel-recursive backend already covers the new directory, and
+        scheduling it again would double-deliver every event under it.
         """
         observer, handler = self._observer, getattr(self, "_handler", None)
         if observer is None or handler is None:
             return
-        if os.path.basename(path) in engine._SKIP_DIRS or not os.path.isdir(path):
+        if _kernel_recursive(observer):
+            return
+        if self._is_ignored(path) or not os.path.isdir(path):
             return
         try:
             observer.schedule(handler, path, recursive=False)

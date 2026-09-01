@@ -22,7 +22,8 @@ import urllib.error
 
 import pytest
 
-from codesextant import client as client_module, daemon
+from codesextant import client as client_module
+from codesextant import daemon
 
 
 def _fail_on_ensure(*_a, **_k):
