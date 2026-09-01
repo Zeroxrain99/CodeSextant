@@ -666,6 +666,47 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   containing the sha. **A leak found after the run is the run thrown away; check
   isolation before spending agents, not after.**
 
+- **E2 ran, and the answer is that it makes no measurable difference.** Twenty pairs,
+  forty trials, 3.61M tokens, zero contaminated. **Quality is an identity rather than a
+  null: in 20 of 20 pairs both arms edited exactly the same subset of the true companion
+  files.** Eleven pairs edited different file *sets*, but every difference lay outside
+  the truth, which is why all three modes read 0.000 with a zero-width interval -- the
+  first thing that looked like a scorer bug and was not. Tokens pooled **-5.4%
+  (-5,052 [-14,158, +2,711])**: interval includes zero, sign test 11 cheaper to 9
+  dearer, per-pair sd **19,537 -- 3.9x the mean it must resolve**. 80% power on that
+  effect needs 118 pairs; on 20%, nine. **A large effect would have shown here and did
+  not.** `hidden`, the stratum the tool exists for, has the point estimate on the wrong
+  sign. The tool was genuinely used: 71 invocations across all 20 arms. Write-up and
+  caveats in `experiments/results/E2.md`. **Retrieval numbers are not outcome numbers,
+  and this project had only ever measured retrieval.**
+
+- **Isolating the checkout is not isolating the trial.** The repositories under test are
+  public and the task instruction *is* the upstream commit message, so three of the
+  first eight trials fetched the answer over the network: one cloned the project and
+  diffed against the answer's blob, one called a repository API for the full patch and
+  curled the `.patch` URL, one searched upstream for the commit by its own instruction
+  text. Taking the answer off the disk did not take away the road to it. What closed it:
+  `git`, `curl` and `wget` refusing a code host container-wide; a paragraph in **both**
+  prompts, identical, so it cannot favour an arm; and `contaminated()` reading tool
+  calls rather than prose. Three false positives had to be fixed out of that check
+  before it was worth anything -- an unattributed container-wide git log flagged all 23
+  finished trials at once, a call naming an unrelated tooling repository, and a call
+  that came back `Access denied` and therefore taught the agent nothing. **A signal that
+  fires on every case is not a signal.**
+
+- **One agent per checkout, and the race has no failure mode.** A trial whose cost
+  reading never arrived was re-prepared and re-run while its first agent was still
+  working; that agent finished four minutes later and wrote its edits into the freshly
+  rebuilt tree, handing the second agent a task already done. Nothing failed --
+  `prepare` reported success and `leaks()` came back clean. Caught from file mtimes.
+  `prepare` now presumes a prepared-but-uncollected run to be live and refuses to
+  rebuild it without `--force`.
+
+- **The runner's own token figure moved 2.2% between two reports of the same agent**
+  (168,556 then 164,917; tool calls identical at 114 both times). Any effect near that
+  size is not resolvable by this instrument, which is most of why the E2 cost result is
+  reported as "not detectable" rather than as a saving.
+
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is
   scored by `--score` on an old dump in one second instead of an hour. Four candidates

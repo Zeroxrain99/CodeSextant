@@ -1,0 +1,1268 @@
+[
+ {
+  "run_id": "run_01",
+  "task_id": "flask@eb5dd9f5ef",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "changed": [
+   "CHANGES.rst",
+   "src/flask/__init__.py",
+   "src/flask/app.py",
+   "src/flask/helpers.py",
+   "tests/test_helpers.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 83069,
+   "tool_uses": 45,
+   "duration_ms": 360412
+  },
+  "cost": {
+   "tokens": 83069.0,
+   "tool_calls": 45.0,
+   "seconds": 360.412
+  }
+ },
+ {
+  "run_id": "run_02",
+  "task_id": "alembic@d06857c136",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "changed": [
+   "alembic/util/compat.py",
+   "alembic/util/messaging.py",
+   "docs/build/batch.rst",
+   "docs/build/branches.rst",
+   "docs/build/front.rst",
+   "docs/build/unreleased/py27.rst",
+   "docs/build/unreleased/stable.rst",
+   "setup.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . setup.py",
+   "guards .",
+   "check .",
+   "check ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 91243,
+   "tool_uses": 35,
+   "duration_ms": 384596
+  },
+  "cost": {
+   "tokens": 91243.0,
+   "tool_calls": 35.0,
+   "seconds": 384.596
+  }
+ },
+ {
+  "run_id": "run_03",
+  "task_id": "alembic@cc16397b98",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "changed": [
+   "tests/test_environment.py",
+   "tests/test_script_consumption.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 154269,
+   "tool_uses": 63,
+   "duration_ms": 965628
+  },
+  "cost": {
+   "tokens": 154269.0,
+   "tool_calls": 63.0,
+   "seconds": 965.628
+  }
+ },
+ {
+  "run_id": "run_04",
+  "task_id": "alembic@717202241e",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "changed": [
+   ".github/workflows/run-test.yaml",
+   "alembic/__init__.py",
+   "alembic/util/compat.py",
+   "docs/build/changelog.rst",
+   "docs/build/front.rst",
+   "docs/build/unreleased/py37.rst",
+   "setup.cfg"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.8,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . alembic/__init__.py --symbol __version__",
+   "guards .",
+   "check ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 68758,
+   "tool_uses": 37,
+   "duration_ms": 200643
+  },
+  "cost": {
+   "tokens": 68758.0,
+   "tool_calls": 37.0,
+   "seconds": 200.643
+  }
+ },
+ {
+  "run_id": "run_05",
+  "task_id": "flask@eb5dd9f5ef",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "changed": [
+   "CHANGES.rst",
+   "src/flask/__init__.py",
+   "src/flask/app.py",
+   "src/flask/helpers.py",
+   "tests/test_helpers.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . src/flask/app.py --symbol Flask",
+   "guards .",
+   "check ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 84091,
+   "tool_uses": 45,
+   "duration_ms": 344544
+  },
+  "cost": {
+   "tokens": 84091.0,
+   "tool_calls": 45.0,
+   "seconds": 344.544
+  }
+ },
+ {
+  "run_id": "run_06",
+  "task_id": "pytest@771ab77e13",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "changed": [
+   "changelog/14586.bugfix.rst",
+   "doc/en/reference/reference.rst",
+   "src/_pytest/logging.py",
+   "testing/logging/test_formatter.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . testing/logging/test_formatter.py --symbol _get_auto_indent",
+   "guards .",
+   "check ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 66755,
+   "tool_uses": 38,
+   "duration_ms": 292474
+  },
+  "cost": {
+   "tokens": 66755.0,
+   "tool_calls": 38.0,
+   "seconds": 292.474
+  }
+ },
+ {
+  "run_id": "run_07",
+  "task_id": "pytest@840b2d69f6",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "changed": [
+   ".pre-commit-config.yaml",
+   "pyproject.toml",
+   "src/_pytest/config/findpaths.py",
+   "src/_pytest/terminal.py",
+   "src/_pytest/timing.py",
+   "testing/_py/test_local.py",
+   "testing/test_assertrewrite.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . src/_pytest/terminal.py",
+   "guards .",
+   "check ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 97215,
+   "tool_uses": 54,
+   "duration_ms": 785195
+  },
+  "cost": {
+   "tokens": 97215.0,
+   "tool_calls": 54.0,
+   "seconds": 785.195
+  }
+ },
+ {
+  "run_id": "run_08",
+  "task_id": "flask@3a5532b4ed",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "changed": [
+   "setup.py",
+   "tox.ini"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 76015,
+   "tool_uses": 28,
+   "duration_ms": 291233
+  },
+  "cost": {
+   "tokens": 76015.0,
+   "tool_calls": 28.0,
+   "seconds": 291.233
+  }
+ },
+ {
+  "run_id": "run_09",
+  "task_id": "flask@6fb1101f70",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "changed": [
+   "CHANGES.rst",
+   "src/flask/__init__.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 51091,
+   "tool_uses": 23,
+   "duration_ms": 123191
+  },
+  "cost": {
+   "tokens": 51091.0,
+   "tool_calls": 23.0,
+   "seconds": 123.191
+  }
+ },
+ {
+  "run_id": "run_10",
+  "task_id": "alembic@cc16397b98",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "changed": [
+   "tests/test_script_consumption.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . tests/test_script_consumption.py --symbol OnlineTransactionalDDLTest",
+   "guards .",
+   "check ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 110023,
+   "tool_uses": 57,
+   "duration_ms": 741234
+  },
+  "cost": {
+   "tokens": 110023.0,
+   "tool_calls": 57.0,
+   "seconds": 741.234
+  }
+ },
+ {
+  "run_id": "run_11",
+  "task_id": "flask@3a5532b4ed",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "changed": [
+   "setup.py",
+   "tox.ini"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . setup.py",
+   "guards .",
+   "check .",
+   "guards ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 81636,
+   "tool_uses": 34,
+   "duration_ms": 293751
+  },
+  "cost": {
+   "tokens": 81636.0,
+   "tool_calls": 34.0,
+   "seconds": 293.751
+  }
+ },
+ {
+  "run_id": "run_12",
+  "task_id": "flask@99afbb277d",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "changed": [
+   "CHANGES.rst",
+   "docs/blueprints.rst",
+   "src/flask/blueprints.py",
+   "tests/test_blueprints.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 86323,
+   "tool_uses": 40,
+   "duration_ms": 387239
+  },
+  "cost": {
+   "tokens": 86323.0,
+   "tool_calls": 40.0,
+   "seconds": 387.239
+  }
+ },
+ {
+  "run_id": "run_13",
+  "task_id": "pytest@15ab2c7940",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "changed": [
+   "src/_pytest/debugging.py",
+   "src/_pytest/hookspec.py",
+   "src/_pytest/runner.py",
+   "testing/test_debugging.py",
+   "testing/test_runner.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.5,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 95463,
+   "tool_uses": 62,
+   "duration_ms": 762302
+  },
+  "cost": {
+   "tokens": 95463.0,
+   "tool_calls": 62.0,
+   "seconds": 762.302
+  }
+ },
+ {
+  "run_id": "run_14",
+  "task_id": "pytest@15ab2c7940",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "changed": [
+   "src/_pytest/debugging.py",
+   "src/_pytest/hookspec.py",
+   "src/_pytest/runner.py",
+   "testing/test_runner.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.5,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . src/_pytest/debugging.py --symbol PdbInvoke",
+   "preflight . src/_pytest/runner.py --symbol check_interactive_exception",
+   "check .",
+   "guards .",
+   "check ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 103145,
+   "tool_uses": 62,
+   "duration_ms": 598992
+  },
+  "cost": {
+   "tokens": 103145.0,
+   "tool_calls": 62.0,
+   "seconds": 598.992
+  }
+ },
+ {
+  "run_id": "run_15",
+  "task_id": "flask@da60039486",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "changed": [
+   "CHANGES.rst",
+   "src/flask/cli.py",
+   "tests/test_apps/cliapp/app.py",
+   "tests/test_cli.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight repo src/flask/cli.py --symbol parse_args",
+   "check repo",
+   "guards repo"
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 89435,
+   "tool_uses": 53,
+   "duration_ms": 504535
+  },
+  "cost": {
+   "tokens": 89435.0,
+   "tool_calls": 53.0,
+   "seconds": 504.535
+  }
+ },
+ {
+  "run_id": "run_16",
+  "task_id": "pytest@bd6877e587",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "changed": [
+   "changelog/13448.improvement.rst",
+   "src/_pytest/nodes.py",
+   "testing/test_nodes.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . src/_pytest/nodes.py --symbol _check_initialpaths_for_relpath",
+   "guards .",
+   "check .",
+   "guards ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 106902,
+   "tool_uses": 77,
+   "duration_ms": 1822010
+  },
+  "cost": {
+   "tokens": 106902.0,
+   "tool_calls": 77.0,
+   "seconds": 1822.01
+  }
+ },
+ {
+  "run_id": "run_17",
+  "task_id": "pytest@bd6877e587",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "changed": [
+   "changelog/13448.improvement.rst",
+   "src/_pytest/nodes.py",
+   "testing/test_collection.py",
+   "testing/test_nodes.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 168556,
+   "tool_uses": 114,
+   "duration_ms": 2806973
+  },
+  "cost": {
+   "tokens": 168556.0,
+   "tool_calls": 114.0,
+   "seconds": 2806.973
+  }
+ },
+ {
+  "run_id": "run_18",
+  "task_id": "alembic@0f61c47aba",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "changed": [
+   "docs/build/conf.py",
+   "docs/build/requirements.txt"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . docs/build/conf.py",
+   "guards .",
+   "check .",
+   "guards ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 68032,
+   "tool_uses": 30,
+   "duration_ms": 257544
+  },
+  "cost": {
+   "tokens": 68032.0,
+   "tool_calls": 30.0,
+   "seconds": 257.544
+  }
+ },
+ {
+  "run_id": "run_19",
+  "task_id": "flask@165af0a090",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "changed": [
+   ".pre-commit-config.yaml",
+   "requirements/dev.txt",
+   "requirements/docs.txt",
+   "requirements/tests.txt",
+   "requirements/typing.txt",
+   "src/flask/app.py",
+   "src/flask/testing.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.6666666666666666,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 111072,
+   "tool_uses": 53,
+   "duration_ms": 668526
+  },
+  "cost": {
+   "tokens": 111072.0,
+   "tool_calls": 53.0,
+   "seconds": 668.526
+  }
+ },
+ {
+  "run_id": "run_20",
+  "task_id": "flask@99afbb277d",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "changed": [
+   "CHANGES.rst",
+   "src/flask/blueprints.py",
+   "tests/test_blueprints.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight /tmp/e2run/runs/run_20/repo tests/test_blueprints.py --symbol test_nested_blueprint_url_prefix",
+   "guards /tmp/e2run/runs/run_20/repo",
+   "check ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 74357,
+   "tool_uses": 35,
+   "duration_ms": 309520
+  },
+  "cost": {
+   "tokens": 74357.0,
+   "tool_calls": 35.0,
+   "seconds": 309.52
+  }
+ },
+ {
+  "run_id": "run_21",
+  "task_id": "pytest@e3facc0f81",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "changed": [
+   "changelog/13861.improvement.rst",
+   "src/_pytest/raises.py",
+   "testing/python/raises.py",
+   "testing/python/raises_group.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight repo testing/python/raises_group.py --symbol test_raises_group",
+   "guards repo",
+   "check repo"
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 77363,
+   "tool_uses": 41,
+   "duration_ms": 348739
+  },
+  "cost": {
+   "tokens": 77363.0,
+   "tool_calls": 41.0,
+   "seconds": 348.739
+  }
+ },
+ {
+  "run_id": "run_22",
+  "task_id": "flask@8285adf5a4",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "changed": [
+   "examples/celery/pyproject.toml",
+   "examples/javascript/pyproject.toml",
+   "examples/tutorial/pyproject.toml",
+   "src/flask/cli.py",
+   "src/flask/json/provider.py",
+   "tests/conftest.py",
+   "tests/test_cli.py",
+   "uv.lock"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.25,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 176553,
+   "tool_uses": 100,
+   "duration_ms": 1315825
+  },
+  "cost": {
+   "tokens": 176553.0,
+   "tool_calls": 100.0,
+   "seconds": 1315.825
+  }
+ },
+ {
+  "run_id": "run_23",
+  "task_id": "flask@6fb1101f70",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "changed": [
+   "CHANGES.rst",
+   "src/flask/__init__.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . src/flask/__init__.py --symbol __version__",
+   "guards .",
+   "check ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 51383,
+   "tool_uses": 26,
+   "duration_ms": 130939
+  },
+  "cost": {
+   "tokens": 51383.0,
+   "tool_calls": 26.0,
+   "seconds": 130.939
+  }
+ },
+ {
+  "run_id": "run_24",
+  "task_id": "alembic@b19ac41f19",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "changed": [
+   ".github/workflows/run-test.yaml",
+   "alembic/__init__.py",
+   "alembic/util/compat.py",
+   "docs/build/changelog.rst",
+   "docs/build/front.rst",
+   "docs/build/unreleased/1350.rst",
+   "setup.cfg"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.4444444444444444,
+   "forgot_the_guard": 0.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 61043,
+   "tool_uses": 33,
+   "duration_ms": 330640
+  },
+  "cost": {
+   "tokens": 61043.0,
+   "tool_calls": 33.0,
+   "seconds": 330.64
+  }
+ },
+ {
+  "run_id": "run_25",
+  "task_id": "pytest@771ab77e13",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "changed": [
+   "changelog/14586.bugfix.rst",
+   "doc/en/reference/reference.rst",
+   "src/_pytest/logging.py",
+   "testing/logging/test_formatter.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 72808,
+   "tool_uses": 44,
+   "duration_ms": 336649
+  },
+  "cost": {
+   "tokens": 72808.0,
+   "tool_calls": 44.0,
+   "seconds": 336.649
+  }
+ },
+ {
+  "run_id": "run_26",
+  "task_id": "pytest@840b2d69f6",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "changed": [
+   ".pre-commit-config.yaml",
+   "pyproject.toml",
+   "src/_pytest/config/findpaths.py",
+   "src/_pytest/terminal.py",
+   "src/_pytest/timing.py",
+   "testing/_py/test_local.py",
+   "testing/test_assertrewrite.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 77512,
+   "tool_uses": 45,
+   "duration_ms": 722405
+  },
+  "cost": {
+   "tokens": 77512.0,
+   "tool_calls": 45.0,
+   "seconds": 722.405
+  }
+ },
+ {
+  "run_id": "run_27",
+  "task_id": "alembic@b19ac41f19",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "changed": [
+   ".github/workflows/run-test.yaml",
+   "alembic/__init__.py",
+   "alembic/util/compat.py",
+   "docs/build/changelog.rst",
+   "docs/build/front.rst",
+   "docs/build/unreleased/py38.rst",
+   "setup.cfg"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.4444444444444444,
+   "forgot_the_guard": 0.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . alembic/__init__.py --symbol __version__",
+   "guards .",
+   "check .",
+   "check ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 63202,
+   "tool_uses": 35,
+   "duration_ms": 267774
+  },
+  "cost": {
+   "tokens": 63202.0,
+   "tool_calls": 35.0,
+   "seconds": 267.774
+  }
+ },
+ {
+  "run_id": "run_28",
+  "task_id": "alembic@717202241e",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "changed": [
+   ".github/workflows/run-test.yaml",
+   "alembic/__init__.py",
+   "alembic/util/compat.py",
+   "docs/build/changelog.rst",
+   "docs/build/front.rst",
+   "docs/build/unreleased/py37.rst",
+   "setup.cfg"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.8,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 70820,
+   "tool_uses": 35,
+   "duration_ms": 214098
+  },
+  "cost": {
+   "tokens": 70820.0,
+   "tool_calls": 35.0,
+   "seconds": 214.098
+  }
+ },
+ {
+  "run_id": "run_29",
+  "task_id": "pytest@4da7c19177",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "changed": [
+   "changelog/14864.bugfix.rst",
+   "src/_pytest/pathlib.py",
+   "testing/test_pathlib.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": 1.0
+  },
+  "invocations": [
+   "preflight . src/_pytest/pathlib.py --symbol samefile_nofollow",
+   "check .",
+   "guards ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 65369,
+   "tool_uses": 33,
+   "duration_ms": 551458
+  },
+  "cost": {
+   "tokens": 65369.0,
+   "tool_calls": 33.0,
+   "seconds": 551.458
+  }
+ },
+ {
+  "run_id": "run_30",
+  "task_id": "pytest@4da7c19177",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "changed": [
+   "changelog/14864.bugfix.rst",
+   "src/_pytest/pathlib.py",
+   "testing/test_collection.py",
+   "testing/test_pathlib.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": 1.0
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 76612,
+   "tool_uses": 37,
+   "duration_ms": 405911
+  },
+  "cost": {
+   "tokens": 76612.0,
+   "tool_calls": 37.0,
+   "seconds": 405.911
+  }
+ },
+ {
+  "run_id": "run_31",
+  "task_id": "pytest@e3facc0f81",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "changed": [
+   "changelog/13861.improvement.rst",
+   "src/_pytest/raises.py",
+   "testing/python/raises.py",
+   "testing/python/raises_group.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 81399,
+   "tool_uses": 43,
+   "duration_ms": 411365
+  },
+  "cost": {
+   "tokens": 81399.0,
+   "tool_calls": 43.0,
+   "seconds": 411.365
+  }
+ },
+ {
+  "run_id": "run_32",
+  "task_id": "flask@8285adf5a4",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "changed": [
+   "pyproject.toml",
+   "src/flask/cli.py",
+   "src/flask/json/provider.py",
+   "uv.lock"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.25,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . src/flask/cli.py",
+   "guards .",
+   "preflight . src/flask/cli.py --symbol CertParamType",
+   "check .",
+   "guards ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 197550,
+   "tool_uses": 128,
+   "duration_ms": 1668441
+  },
+  "cost": {
+   "tokens": 197550.0,
+   "tool_calls": 128.0,
+   "seconds": 1668.441
+  }
+ },
+ {
+  "run_id": "run_33",
+  "task_id": "pytest@4722f2472d",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "changed": [
+   "src/_pytest/fixtures.py",
+   "testing/example_scripts/fixtures/test_getfixturevalue_dynamic.py",
+   "testing/python/fixtures.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 88641,
+   "tool_uses": 54,
+   "duration_ms": 1211568
+  },
+  "cost": {
+   "tokens": 88641.0,
+   "tool_calls": 54.0,
+   "seconds": 1211.568
+  }
+ },
+ {
+  "run_id": "run_34",
+  "task_id": "alembic@802e62fa40",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "changed": [
+   "alembic/ddl/mysql.py",
+   "docs/build/unreleased/mysql_change_column_comment.rst",
+   "tests/test_mysql.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.5,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . tests/test_mysql.py --symbol test_alter_column_existing_comment",
+   "preflight . alembic/ddl/mysql.py --symbol alter_column",
+   "check .",
+   "guards ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 81413,
+   "tool_uses": 45,
+   "duration_ms": 383594
+  },
+  "cost": {
+   "tokens": 81413.0,
+   "tool_calls": 45.0,
+   "seconds": 383.594
+  }
+ },
+ {
+  "run_id": "run_35",
+  "task_id": "flask@165af0a090",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "changed": [
+   ".pre-commit-config.yaml",
+   "requirements/dev.txt",
+   "requirements/docs.txt",
+   "requirements/tests.txt",
+   "requirements/typing.txt",
+   "src/flask/app.py",
+   "src/flask/testing.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.6666666666666666,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . src/flask/app.py",
+   "guards .",
+   "check .",
+   "guards ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 92861,
+   "tool_uses": 43,
+   "duration_ms": 578952
+  },
+  "cost": {
+   "tokens": 92861.0,
+   "tool_calls": 43.0,
+   "seconds": 578.952
+  }
+ },
+ {
+  "run_id": "run_36",
+  "task_id": "alembic@d06857c136",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "changed": [
+   "alembic/util/compat.py",
+   "alembic/util/messaging.py",
+   "docs/build/batch.rst",
+   "docs/build/branches.rst",
+   "docs/build/front.rst",
+   "docs/build/unreleased/production_stable.rst",
+   "docs/build/unreleased/py26.rst",
+   "setup.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 82590,
+   "tool_uses": 36,
+   "duration_ms": 314616
+  },
+  "cost": {
+   "tokens": 82590.0,
+   "tool_calls": 36.0,
+   "seconds": 314.616
+  }
+ },
+ {
+  "run_id": "run_37",
+  "task_id": "pytest@4722f2472d",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "changed": [
+   "changelog/14369.improvement.rst",
+   "src/_pytest/fixtures.py",
+   "testing/example_scripts/fixtures/test_getfixturevalue_dynamic.py",
+   "testing/python/fixtures.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [
+   "preflight . src/_pytest/fixtures.py --symbol getfixtureclosure",
+   "check .",
+   "guards ."
+  ],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 84423,
+   "tool_uses": 43,
+   "duration_ms": 732006
+  },
+  "cost": {
+   "tokens": 84423.0,
+   "tool_calls": 43.0,
+   "seconds": 732.006
+  }
+ },
+ {
+  "run_id": "run_38",
+  "task_id": "flask@da60039486",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "changed": [
+   "CHANGES.rst",
+   "src/flask/cli.py",
+   "tests/test_cli.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 95301,
+   "tool_uses": 52,
+   "duration_ms": 540651
+  },
+  "cost": {
+   "tokens": 95301.0,
+   "tool_calls": 52.0,
+   "seconds": 540.651
+  }
+ },
+ {
+  "run_id": "run_39",
+  "task_id": "alembic@802e62fa40",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "changed": [
+   "alembic/ddl/mysql.py",
+   "docs/build/unreleased/580.rst",
+   "tests/test_mysql.py"
+  ],
+  "scored": {
+   "changed_a_broke_b": 0.5,
+   "forgot_the_guard": 1.0,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 68183,
+   "tool_uses": 32,
+   "duration_ms": 219483
+  },
+  "cost": {
+   "tokens": 68183.0,
+   "tool_calls": 32.0,
+   "seconds": 219.483
+  }
+ },
+ {
+  "run_id": "run_40",
+  "task_id": "alembic@0f61c47aba",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "changed": [
+   "docs/build/conf.py",
+   "docs/build/requirements.txt"
+  ],
+  "scored": {
+   "changed_a_broke_b": 1.0,
+   "forgot_the_guard": null,
+   "rebuilt_the_wheel": null
+  },
+  "invocations": [],
+  "global_invocations": [],
+  "usage": {
+   "subagent_tokens": 78878,
+   "tool_uses": 47,
+   "duration_ms": 367177
+  },
+  "cost": {
+   "tokens": 78878.0,
+   "tool_calls": 47.0,
+   "seconds": 367.177
+  }
+ }
+]
