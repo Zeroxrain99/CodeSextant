@@ -1,0 +1,4478 @@
+[
+  {
+    "id": "flask@dc11cdb4a4",
+    "instruction": "move send_file and send_from_directory to Werkzeug\nThe implementations were moved to Werkzeug, Flask's functions become\nwrappers around Werkzeug to pass some Flask-specific values.\n\ncache_timeout is renamed to max_age. SEND_FILE_MAX_AGE_DEFAULT,\napp.send_file_max_age_default, and app.get_send_file_max_age defaults\nto None. This tells the browser to use conditional requests rather than\na 12 hour cache.\n\nattachment_filename is renamed to download_name, and is always sent if\na name is known.\n\nDeprecate helpers.safe_join in favor of werkzeug.utils.safe_join.\n\nRemoved most of the send_file tests, they're tested in Werkzeug.\n\nIn the file upload example, renamed the uploaded_file view to\ndownload_file to avoid a common source of confusion.",
+    "parent": "15a49e72977d7a44ec4f54de7078053fbfb4f3b6",
+    "repo": "flask",
+    "sha": "dc11cdb4a4627b9f8c79e47e39aa7e1357151896",
+    "start_in": "src/flask/helpers.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "docs/config.rst",
+        "docs/patterns/fileuploads.rst",
+        "src/flask/app.py",
+        "tests/test_blueprints.py",
+        "tests/test_helpers.py",
+        "tests/test_regression.py"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "docs/config.rst",
+        "docs/patterns/fileuploads.rst",
+        "src/flask/app.py",
+        "src/flask/helpers.py",
+        "tests/test_blueprints.py",
+        "tests/test_helpers.py",
+        "tests/test_regression.py"
+      ],
+      "guard_files": [
+        "src/flask/app.py",
+        "tests/test_blueprints.py",
+        "tests/test_helpers.py",
+        "tests/test_regression.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@9b44bf2818",
+    "instruction": "Improve decorator typing (#4676)\n* Add a missing setupmethod decorator\n\n* Improve the decorator typing\n\nThis will allow type checkers to understand that the decorators return\nthe same function signature as passed as an argument. This follows the\nguidelines from\nhttps://mypy.readthedocs.io/en/stable/generics.html#declaring-decorators.\n\nI've chosen to keep a TypeVar per module and usage as I think\nencouraged by PEP 695, which I hope is accepted as the syntax is much\nnicer.",
+    "parent": "d7482cd765351e7495bfce45f9fb55732e91ab3a",
+    "repo": "flask",
+    "sha": "9b44bf2818d8e3cde422ad7f43fb33dfc6737289",
+    "start_in": "src/flask/scaffold.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "src/flask/app.py",
+        "src/flask/blueprints.py",
+        "src/flask/typing.py",
+        "src/flask/views.py",
+        "tests/typing/typing_route.py"
+      ],
+      "files": [
+        "src/flask/app.py",
+        "src/flask/blueprints.py",
+        "src/flask/scaffold.py",
+        "src/flask/typing.py",
+        "src/flask/views.py",
+        "tests/typing/typing_route.py"
+      ],
+      "guard_files": [
+        "src/flask/app.py",
+        "src/flask/blueprints.py",
+        "src/flask/views.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@d5aadba4d3",
+    "instruction": "improve type hints for send_file and send_from_directory",
+    "parent": "6414df97562e623221c1ee2072d38e84f87b02d9",
+    "repo": "flask",
+    "sha": "d5aadba4d34f6070377e88429b178ba08eea5349",
+    "start_in": "src/flask/helpers.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "src/flask/scaffold.py"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/helpers.py",
+        "src/flask/scaffold.py"
+      ],
+      "guard_files": [
+        "src/flask/scaffold.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@218534a9f2",
+    "instruction": "remove deprecated json encoding parameter",
+    "parent": "2bd7aed1a4e257b00df4282b96e7e96edc4567f6",
+    "repo": "flask",
+    "sha": "218534a9f20c98600e7c41321edb4063a8e158ca",
+    "start_in": "src/flask/json/__init__.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/json/__init__.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@eb5dd9f5ef",
+    "instruction": "add aborter object to app",
+    "parent": "a25d234cdddf584528dd6af21db736b6faad27af",
+    "repo": "flask",
+    "sha": "eb5dd9f5ef255c578cbbe13c1cb4dd11389d5519",
+    "start_in": "src/flask/app.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "src/flask/__init__.py",
+        "src/flask/helpers.py",
+        "tests/test_helpers.py"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/__init__.py",
+        "src/flask/app.py",
+        "src/flask/helpers.py",
+        "tests/test_helpers.py"
+      ],
+      "guard_files": [
+        "src/flask/helpers.py",
+        "tests/test_helpers.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@54c3f87af9",
+    "instruction": "fix type hint for `cli_runner.invoke`",
+    "parent": "ea08f155d8d37d515559534bbe0f80ef5185466c",
+    "repo": "flask",
+    "sha": "54c3f87af9f6c0d6622cec2c3d9695b0229fb8fa",
+    "start_in": "src/flask/testing.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/testing.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@4f7156f2c3",
+    "instruction": "configure and check trusted_hosts",
+    "parent": "10bdf61a0f751f3cb000f8f8ac5ac5b4bb535677",
+    "repo": "flask",
+    "sha": "4f7156f2c3271613b34d04040b502b9d7ae35eb9",
+    "start_in": "tests/test_request.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "docs/config.rst",
+        "src/flask/app.py"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "docs/config.rst",
+        "src/flask/app.py",
+        "tests/test_request.py"
+      ],
+      "guard_files": [
+        "src/flask/app.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@58f3536a8f",
+    "instruction": "error for render_template outside app context",
+    "parent": "7096b2c4b13660998ad9a7bc845c3e6c5779afaa",
+    "repo": "flask",
+    "sha": "58f3536a8f5dfc18e559c518ae38cba52bec90a9",
+    "start_in": "src/flask/templating.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/templating.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@410e5ab7ed",
+    "instruction": "Accept `AsyncIterable` for responses",
+    "parent": "bfffe87d4c2ea255b9a51432bebb3d28741245c4",
+    "repo": "flask",
+    "sha": "410e5ab7ed0ef326fa8b5164a633863f137ffff5",
+    "start_in": "src/flask/typing.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/typing.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@15a3e82823",
+    "instruction": "extend deprecation for renamed send_file params",
+    "parent": "48f2afbf900560af061d50c73e4d3f9422ce4dbe",
+    "repo": "flask",
+    "sha": "15a3e82823c894185771486510027a65295bcf94",
+    "start_in": "src/flask/helpers.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/helpers.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@8e589daaf2",
+    "instruction": "Fix typing of jinja decorators (#4109)",
+    "parent": "a960236117442bec67f89c30dfa014e05483da5a",
+    "repo": "flask",
+    "sha": "8e589daaf2cec6a10262b8ff88801127f2fa14fd",
+    "start_in": "src/flask/typing.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/typing.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@fc03d0dfab",
+    "instruction": "setup method on registered blueprint is error",
+    "parent": "2a33c1785412075c09f9f55b3e25f2bc995ca461",
+    "repo": "flask",
+    "sha": "fc03d0dfab64945169e1114cdc1fb39519a1e0c1",
+    "start_in": "src/flask/blueprints.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/blueprints.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@293041a290",
+    "instruction": "deprecate __version__ attribute",
+    "parent": "153433f612585409f3494a3c44160d888c02612d",
+    "repo": "flask",
+    "sha": "293041a290178dc1d526075372960c3ca589d366",
+    "start_in": "src/flask/__init__.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "pyproject.toml"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "pyproject.toml",
+        "src/flask/__init__.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@99afbb277d",
+    "instruction": "Fix blueprint nested url_prefix\nThis ensures that the url_prefix is correctly applied, no matter if\nset during the registration override or when constructing the\nblueprint.",
+    "parent": "a541c2ac8b05c2b23e11bd8540088fce1abc2373",
+    "repo": "flask",
+    "sha": "99afbb277d25d3b052e00b9a8da216054d51d62a",
+    "start_in": "tests/test_blueprints.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "src/flask/blueprints.py"
+      ],
+      "files": [
+        "src/flask/blueprints.py",
+        "tests/test_blueprints.py"
+      ],
+      "guard_files": [
+        "src/flask/blueprints.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@f8cb0b0dd5",
+    "instruction": "update docs about json",
+    "parent": "ca2bfbb0ac66fbbeeedbf6bbe317bee45cb23d29",
+    "repo": "flask",
+    "sha": "f8cb0b0dd5ea30729db6b131aeeb30915ea4860b",
+    "start_in": "src/flask/app.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "docs/quickstart.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "docs/quickstart.rst",
+        "src/flask/app.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@b473e7c97c",
+    "instruction": "use Jinja's tojson filter",
+    "parent": "fdf5d11b515aa2d0937ccc31ef7f20b94d3a8794",
+    "repo": "flask",
+    "sha": "b473e7c97c7c557e64fb84236c7d346b6ad16736",
+    "start_in": "tests/test_json.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "docs/api.rst",
+        "docs/patterns/jquery.rst",
+        "docs/templating.rst",
+        "src/flask/app.py",
+        "src/flask/json/__init__.py"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "docs/api.rst",
+        "docs/patterns/jquery.rst",
+        "docs/templating.rst",
+        "src/flask/app.py",
+        "src/flask/json/__init__.py",
+        "tests/test_json.py"
+      ],
+      "guard_files": [
+        "src/flask/app.py",
+        "src/flask/json/__init__.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@9f0da9b770",
+    "instruction": "cli loader handles kwargs in app factory",
+    "parent": "c3f923d0e0aba3ed5b6013c5d022021e4ae059cf",
+    "repo": "flask",
+    "sha": "9f0da9b770abfe3376ca0bbb09c535b42071feeb",
+    "start_in": "src/flask/cli.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "tests/test_cli.py"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/cli.py",
+        "tests/test_cli.py"
+      ],
+      "guard_files": [
+        "tests/test_cli.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@fdab801fbb",
+    "instruction": "add redirect method to app",
+    "parent": "bd56d19b167822a9a23e2e9e2a07ccccc36baa8d",
+    "repo": "flask",
+    "sha": "fdab801fbbd9de5adbdb3320ca4a1cb116c892f5",
+    "start_in": "src/flask/helpers.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "src/flask/__init__.py",
+        "src/flask/app.py",
+        "tests/test_helpers.py"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/__init__.py",
+        "src/flask/app.py",
+        "src/flask/helpers.py",
+        "tests/test_helpers.py"
+      ],
+      "guard_files": [
+        "src/flask/app.py",
+        "tests/test_helpers.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@a74e266474",
+    "instruction": "skip coverage for TYPE_CHECKING",
+    "parent": "127df57a06ec7b1a8b698206b1bdefc93248de5a",
+    "repo": "flask",
+    "sha": "a74e266474f0981e9fc0d54d5dc430386823e4d7",
+    "start_in": "src/flask/app.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "src/flask/blueprints.py",
+        "src/flask/ctx.py",
+        "src/flask/globals.py",
+        "src/flask/helpers.py",
+        "src/flask/json/__init__.py",
+        "src/flask/logging.py",
+        "src/flask/scaffold.py",
+        "src/flask/sessions.py",
+        "src/flask/templating.py",
+        "src/flask/testing.py",
+        "src/flask/typing.py",
+        "src/flask/wrappers.py"
+      ],
+      "files": [
+        "src/flask/app.py",
+        "src/flask/blueprints.py",
+        "src/flask/ctx.py",
+        "src/flask/globals.py",
+        "src/flask/helpers.py",
+        "src/flask/json/__init__.py",
+        "src/flask/logging.py",
+        "src/flask/scaffold.py",
+        "src/flask/sessions.py",
+        "src/flask/templating.py",
+        "src/flask/testing.py",
+        "src/flask/typing.py",
+        "src/flask/wrappers.py"
+      ],
+      "guard_files": [
+        "src/flask/blueprints.py",
+        "src/flask/ctx.py",
+        "src/flask/helpers.py",
+        "src/flask/json/__init__.py",
+        "src/flask/scaffold.py",
+        "src/flask/sessions.py",
+        "src/flask/testing.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@438edcdf01",
+    "instruction": "Allow self as an argument to url_for\nThis makes the Flask.url_for self argument positional only (Flask\nsupports Python 3.8+) thereby restoring the ability to pass self as a\nvalue argument to url_for.",
+    "parent": "b7c1290528f907c9f41afcdfd33a2227c73e26d3",
+    "repo": "flask",
+    "sha": "438edcdf01c392619449a6bdbb18f6cf72ef7bb9",
+    "start_in": "tests/test_helpers.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "src/flask/app.py"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/app.py",
+        "tests/test_helpers.py"
+      ],
+      "guard_files": [
+        "src/flask/app.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@6fb1101f70",
+    "instruction": "start version 2.0.1.dev0",
+    "parent": "2f0c62f5e6e290843f03c1fa70817c7a3c7fd661",
+    "repo": "flask",
+    "sha": "6fb1101f7075b4ff8197f3ef3b9fecfa41dc34ee",
+    "start_in": "src/flask/__init__.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/__init__.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@e22021d531",
+    "instruction": "start version 2.0.2.dev0",
+    "parent": "bc90801c2ada42d3cf112a3b5701bfdbb8b6211c",
+    "repo": "flask",
+    "sha": "e22021d531499af87f65d75f1e37e6329e7385ed",
+    "start_in": "src/flask/__init__.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/__init__.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@373f0dd82e",
+    "instruction": "update requirements (#3823)",
+    "parent": "3b57c19e3bd6acf729ae40ece710b20f7f5997e7",
+    "repo": "flask",
+    "sha": "373f0dd82e68ab7cac7a77344e715dbe68faebd3",
+    "start_in": "src/flask/blueprints.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        ".pre-commit-config.yaml",
+        "requirements/dev.txt",
+        "requirements/docs.txt",
+        "requirements/tests.txt",
+        "src/flask/scaffold.py",
+        "tests/test_basic.py"
+      ],
+      "files": [
+        ".pre-commit-config.yaml",
+        "requirements/dev.txt",
+        "requirements/docs.txt",
+        "requirements/tests.txt",
+        "src/flask/blueprints.py",
+        "src/flask/scaffold.py",
+        "tests/test_basic.py"
+      ],
+      "guard_files": [
+        "src/flask/scaffold.py",
+        "tests/test_basic.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@fbb6f0bc4c",
+    "instruction": "all teardown callbacks are called despite errors",
+    "parent": "7b0088693ece1bd3a9238a6fdf56ed8df7a4d43b",
+    "repo": "flask",
+    "sha": "fbb6f0bc4c60a0bada0e03c3480d0ccf30a3c1df",
+    "start_in": "tests/test_helpers.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "docs/appcontext.rst",
+        "src/flask/app.py",
+        "src/flask/ctx.py",
+        "src/flask/helpers.py",
+        "tests/test_appctx.py",
+        "tests/test_basic.py",
+        "tests/test_blueprints.py",
+        "tests/test_testing.py"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "docs/appcontext.rst",
+        "src/flask/app.py",
+        "src/flask/ctx.py",
+        "src/flask/helpers.py",
+        "tests/test_appctx.py",
+        "tests/test_basic.py",
+        "tests/test_blueprints.py",
+        "tests/test_helpers.py",
+        "tests/test_testing.py"
+      ],
+      "guard_files": [
+        "src/flask/app.py",
+        "src/flask/ctx.py",
+        "src/flask/helpers.py",
+        "tests/test_appctx.py",
+        "tests/test_basic.py",
+        "tests/test_blueprints.py",
+        "tests/test_testing.py"
+      ],
+      "reuse": {
+        "tests/test_appctx.py": [
+          "FlaskClient"
+        ]
+      }
+    }
+  },
+  {
+    "id": "flask@3ba37d2afe",
+    "instruction": "fix uninstalled package tests under tox",
+    "parent": "88bcf78439b66b5fcba9f4d3a1c56307f98dbf1d",
+    "repo": "flask",
+    "sha": "3ba37d2afe6511c3f3153248f7342174bea5b131",
+    "start_in": "src/flask/scaffold.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "tests/test_instance_config.py",
+        "tox.ini"
+      ],
+      "files": [
+        "src/flask/scaffold.py",
+        "tests/test_instance_config.py",
+        "tox.ini"
+      ],
+      "guard_files": [
+        "tests/test_instance_config.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@ab1fbef29a",
+    "instruction": "prefer --app over FLASK_APP in docs",
+    "parent": "99fa3c36abc03cd5b3407df34dce74e879ea377a",
+    "repo": "flask",
+    "sha": "ab1fbef29a073fe5950ea2357f6a3a0d280eb506",
+    "start_in": "tests/conftest.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/cli.rst",
+        "docs/config.rst",
+        "docs/debugging.rst",
+        "docs/patterns/appfactories.rst",
+        "docs/patterns/packages.rst",
+        "docs/quickstart.rst",
+        "docs/reqcontext.rst",
+        "docs/server.rst",
+        "docs/tutorial/database.rst",
+        "docs/tutorial/deploy.rst",
+        "docs/tutorial/factory.rst",
+        "docs/tutorial/install.rst",
+        "examples/javascript/README.rst",
+        "examples/tutorial/README.rst"
+      ],
+      "files": [
+        "docs/cli.rst",
+        "docs/config.rst",
+        "docs/debugging.rst",
+        "docs/patterns/appfactories.rst",
+        "docs/patterns/packages.rst",
+        "docs/quickstart.rst",
+        "docs/reqcontext.rst",
+        "docs/server.rst",
+        "docs/tutorial/database.rst",
+        "docs/tutorial/deploy.rst",
+        "docs/tutorial/factory.rst",
+        "docs/tutorial/install.rst",
+        "examples/javascript/README.rst",
+        "examples/tutorial/README.rst",
+        "tests/conftest.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@cfda270899",
+    "instruction": "update pallets-sphinx-themes",
+    "parent": "69e6d59ac8dd5ba6a5242acafa5b50c7b56c84d1",
+    "repo": "flask",
+    "sha": "cfda27089932a102953da73fdab17cf9814334e4",
+    "start_in": "docs/conf.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "requirements/dev.txt",
+        "requirements/docs.txt"
+      ],
+      "files": [
+        "docs/conf.py",
+        "requirements/dev.txt",
+        "requirements/docs.txt"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@da60039486",
+    "instruction": "Handle help arg by itself the same as no args\nWhen the 'flask' command is used with only the '--help' parameter, this\nchange will make sure to try and load the app before the help callback\nis run. This was previously only being done when the 'flask' command was\nused by itself. This meant when passing in '--help', any custom commands\nwere not getting shown in the help message. With this change, custom\ncommands will be included in the help message when running 'flask' on\nthe command line by itself or with the '--help' parameter.",
+    "parent": "08c480b3b31e896698bb773069026a61eb53d158",
+    "repo": "flask",
+    "sha": "da600394865c06a4772c433c1a560453dcf4f868",
+    "start_in": "src/flask/cli.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/cli.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@3a5532b4ed",
+    "instruction": "update pallets projects minimum versions",
+    "parent": "f8f0caf5c6e560b8e7fd322cbfd140c2bf7aa61b",
+    "repo": "flask",
+    "sha": "3a5532b4ed0db5cfd826e7fd2006ede6e873b028",
+    "start_in": "setup.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "tox.ini"
+      ],
+      "files": [
+        "setup.py",
+        "tox.ini"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@2846abaefe",
+    "instruction": "start version 2.1.0.dev0",
+    "parent": "6fb1101f7075b4ff8197f3ef3b9fecfa41dc34ee",
+    "repo": "flask",
+    "sha": "2846abaefed01f1da0d58ca3a83a2a09bea71e9c",
+    "start_in": "src/flask/__init__.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "CHANGES.rst"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "src/flask/__init__.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@bd26928fdb",
+    "instruction": "Prefer flask run --debug in docs",
+    "parent": "4bc0e4943dfa637361aec2bb18dc9e1fabeaad12",
+    "repo": "flask",
+    "sha": "bd26928fdb2476fca62f0e621e8f2870250ac2bc",
+    "start_in": "src/flask/cli.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/_static/pycharm-run-config.png",
+        "docs/cli.rst",
+        "docs/config.rst",
+        "docs/debugging.rst",
+        "docs/quickstart.rst",
+        "docs/server.rst",
+        "docs/tutorial/factory.rst",
+        "examples/tutorial/README.rst"
+      ],
+      "files": [
+        "docs/_static/pycharm-run-config.png",
+        "docs/cli.rst",
+        "docs/config.rst",
+        "docs/debugging.rst",
+        "docs/quickstart.rst",
+        "docs/server.rst",
+        "docs/tutorial/factory.rst",
+        "examples/tutorial/README.rst",
+        "src/flask/cli.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@261e4a6cf2",
+    "instruction": "fix flake8 bugbear errors",
+    "parent": "8f13f5b6d672f1ba434f9c8ebe2c1b1dd385962e",
+    "repo": "flask",
+    "sha": "261e4a6cf287180b69c4db407791e43ce90e50ad",
+    "start_in": "tests/test_appctx.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".flake8",
+        "tests/test_basic.py"
+      ],
+      "files": [
+        ".flake8",
+        "tests/test_appctx.py",
+        "tests/test_basic.py"
+      ],
+      "guard_files": [
+        "tests/test_basic.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@2e8fe7b2f2",
+    "instruction": "drop support for python 3.7",
+    "parent": "9659b11a45281662c6aa1194dc95b46b1f566ba6",
+    "repo": "flask",
+    "sha": "2e8fe7b2f2b541a60c90c625446647b22c5cacc2",
+    "start_in": "src/flask/app.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/tests.yaml",
+        ".pre-commit-config.yaml",
+        "CHANGES.rst",
+        "docs/extensiondev.rst",
+        "docs/installation.rst",
+        "examples/celery/pyproject.toml",
+        "pyproject.toml",
+        "requirements/tests.in",
+        "requirements/tests.txt",
+        "src/flask/helpers.py",
+        "src/flask/sessions.py",
+        "tests/typing/typing_route.py",
+        "tox.ini"
+      ],
+      "files": [
+        ".github/workflows/tests.yaml",
+        ".pre-commit-config.yaml",
+        "CHANGES.rst",
+        "docs/extensiondev.rst",
+        "docs/installation.rst",
+        "examples/celery/pyproject.toml",
+        "pyproject.toml",
+        "requirements/tests.in",
+        "requirements/tests.txt",
+        "src/flask/app.py",
+        "src/flask/helpers.py",
+        "src/flask/sessions.py",
+        "tests/typing/typing_route.py",
+        "tox.ini"
+      ],
+      "guard_files": [
+        "src/flask/helpers.py",
+        "src/flask/sessions.py"
+      ],
+      "reuse": {
+        "src/flask/app.py": [
+          "iscoroutinefunction"
+        ]
+      }
+    }
+  },
+  {
+    "id": "flask@e13373f838",
+    "instruction": "enable secret key rotation",
+    "parent": "7522c4bcdb10449dc919e0ffbdebb92fe66822b5",
+    "repo": "flask",
+    "sha": "e13373f838ab34027c5a80e16a6cb8262d41eab7",
+    "start_in": "tests/test_basic.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "CHANGES.rst",
+        "docs/config.rst",
+        "pyproject.toml",
+        "src/flask/app.py",
+        "src/flask/sessions.py",
+        "tests/type_check/typing_app_decorators.py",
+        "tests/type_check/typing_error_handler.py",
+        "tests/type_check/typing_route.py",
+        "tests/typing/typing_app_decorators.py",
+        "tests/typing/typing_error_handler.py",
+        "tests/typing/typing_route.py"
+      ],
+      "files": [
+        "CHANGES.rst",
+        "docs/config.rst",
+        "pyproject.toml",
+        "src/flask/app.py",
+        "src/flask/sessions.py",
+        "tests/test_basic.py",
+        "tests/type_check/typing_app_decorators.py",
+        "tests/type_check/typing_error_handler.py",
+        "tests/type_check/typing_route.py",
+        "tests/typing/typing_app_decorators.py",
+        "tests/typing/typing_error_handler.py",
+        "tests/typing/typing_route.py"
+      ],
+      "guard_files": [
+        "src/flask/app.py",
+        "src/flask/sessions.py"
+      ],
+      "reuse": {
+        "tests/type_check/typing_app_decorators.py": [
+          "Flask",
+          "Response"
+        ],
+        "tests/type_check/typing_error_handler.py": [
+          "Flask"
+        ],
+        "tests/type_check/typing_route.py": [
+          "Flask",
+          "Response",
+          "View",
+          "jsonify",
+          "render_template",
+          "stream_template"
+        ]
+      }
+    }
+  },
+  {
+    "id": "flask@99b34f7148",
+    "instruction": "move and update flake8 config",
+    "parent": "8bfc0581e7b81240b3d672da73e9a0a2e848c3b3",
+    "repo": "flask",
+    "sha": "99b34f7148b77d4b1311593590629c2bc8e8e772",
+    "start_in": "tests/test_appctx.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".flake8",
+        "examples/javascript/js_example/__init__.py",
+        "setup.cfg",
+        "tests/test_apps/blueprintapp/__init__.py",
+        "tests/test_basic.py"
+      ],
+      "files": [
+        ".flake8",
+        "examples/javascript/js_example/__init__.py",
+        "setup.cfg",
+        "tests/test_appctx.py",
+        "tests/test_apps/blueprintapp/__init__.py",
+        "tests/test_basic.py"
+      ],
+      "guard_files": [
+        "tests/test_basic.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@eea31f29a5",
+    "instruction": "use pip-compile to pin dev requirements",
+    "parent": "8e2fb4633ea48b228479a5af6ef23c39c34d68d2",
+    "repo": "flask",
+    "sha": "eea31f29a50eeb30ec3c314bb2a6de4c931095c1",
+    "start_in": "setup.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".pre-commit-config.yaml",
+        ".readthedocs.yaml",
+        "CONTRIBUTING.rst",
+        "MANIFEST.in",
+        "docs/requirements.txt",
+        "requirements/dev.in",
+        "requirements/dev.txt",
+        "requirements/docs.in",
+        "requirements/docs.txt",
+        "requirements/tests.in",
+        "requirements/tests.txt",
+        "tox.ini"
+      ],
+      "files": [
+        ".pre-commit-config.yaml",
+        ".readthedocs.yaml",
+        "CONTRIBUTING.rst",
+        "MANIFEST.in",
+        "docs/requirements.txt",
+        "requirements/dev.in",
+        "requirements/dev.txt",
+        "requirements/docs.in",
+        "requirements/docs.txt",
+        "requirements/tests.in",
+        "requirements/tests.txt",
+        "setup.py",
+        "tox.ini"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@6f6e3289da",
+    "instruction": "remove javascript fetch polyfill",
+    "parent": "c7f2ab8e7a512bd643bc640ce015bbe48e74e16e",
+    "repo": "flask",
+    "sha": "6f6e3289da182593fb296da072049ade729adeea",
+    "start_in": "examples/javascript/js_example/views.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "examples/javascript/README.rst",
+        "examples/javascript/js_example/templates/base.html",
+        "examples/javascript/js_example/templates/fetch.html",
+        "examples/javascript/js_example/templates/plain.html",
+        "examples/javascript/js_example/templates/xhr.html",
+        "examples/javascript/setup.cfg",
+        "examples/javascript/tests/test_js_example.py"
+      ],
+      "files": [
+        "examples/javascript/README.rst",
+        "examples/javascript/js_example/templates/base.html",
+        "examples/javascript/js_example/templates/fetch.html",
+        "examples/javascript/js_example/templates/plain.html",
+        "examples/javascript/js_example/templates/xhr.html",
+        "examples/javascript/js_example/views.py",
+        "examples/javascript/setup.cfg",
+        "examples/javascript/tests/test_js_example.py"
+      ],
+      "guard_files": [
+        "examples/javascript/tests/test_js_example.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@a0a61acdec",
+    "instruction": "drop support for Python 2.7 and 3.5",
+    "parent": "7673835b3da50575a14213814ea1ccefa860260f",
+    "repo": "flask",
+    "sha": "a0a61acdecd925cf2a1ffe5fb7acd27c1695f1d8",
+    "start_in": "setup.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".azure-pipelines.yml",
+        "CHANGES.rst",
+        "setup.cfg",
+        "src/flask/__init__.py",
+        "tests/test_instance_config.py",
+        "tox.ini"
+      ],
+      "files": [
+        ".azure-pipelines.yml",
+        "CHANGES.rst",
+        "setup.cfg",
+        "setup.py",
+        "src/flask/__init__.py",
+        "tests/test_instance_config.py",
+        "tox.ini"
+      ],
+      "guard_files": [
+        "tests/test_instance_config.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@da6d075dfd",
+    "instruction": "update dev dependencies",
+    "parent": "85793d6c223dd845e8f218403a5ced83041d37e1",
+    "repo": "flask",
+    "sha": "da6d075dfde71b2e2a64f39b29ba957d5ffb00b0",
+    "start_in": "src/flask/sessions.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/pre-commit.yaml",
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".pre-commit-config.yaml",
+        "uv.lock"
+      ],
+      "files": [
+        ".github/workflows/pre-commit.yaml",
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".pre-commit-config.yaml",
+        "src/flask/sessions.py",
+        "uv.lock"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@1d610e44b3",
+    "instruction": "drop support for Python 3.8",
+    "parent": "e8b91cd38aadafdf733558bbcea4810fa65bb849",
+    "repo": "flask",
+    "sha": "1d610e44b396d11113bb6a5d168cc5e996a6dfb9",
+    "start_in": "src/flask/typing.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/tests.yaml",
+        "CHANGES.rst",
+        "docs/async-await.rst",
+        "docs/extensiondev.rst",
+        "docs/installation.rst",
+        "pyproject.toml",
+        "src/flask/app.py",
+        "src/flask/config.py",
+        "src/flask/helpers.py",
+        "src/flask/sansio/scaffold.py",
+        "tox.ini"
+      ],
+      "files": [
+        ".github/workflows/tests.yaml",
+        "CHANGES.rst",
+        "docs/async-await.rst",
+        "docs/extensiondev.rst",
+        "docs/installation.rst",
+        "pyproject.toml",
+        "src/flask/app.py",
+        "src/flask/config.py",
+        "src/flask/helpers.py",
+        "src/flask/sansio/scaffold.py",
+        "src/flask/typing.py",
+        "tox.ini"
+      ],
+      "guard_files": [
+        "src/flask/app.py",
+        "src/flask/config.py",
+        "src/flask/helpers.py",
+        "src/flask/sansio/scaffold.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@165af0a090",
+    "instruction": "update dev dependencies",
+    "parent": "235c52fa10094135746d04a5b6a7bea8125357f0",
+    "repo": "flask",
+    "sha": "165af0a090e229e94ccd93896efc15b9fe0488da",
+    "start_in": "src/flask/app.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/pre-commit.yaml",
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".pre-commit-config.yaml",
+        "requirements/dev.txt",
+        "requirements/docs.txt",
+        "requirements/tests.txt",
+        "requirements/typing.txt",
+        "src/flask/testing.py"
+      ],
+      "files": [
+        ".github/workflows/pre-commit.yaml",
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".pre-commit-config.yaml",
+        "requirements/dev.txt",
+        "requirements/docs.txt",
+        "requirements/tests.txt",
+        "requirements/typing.txt",
+        "src/flask/app.py",
+        "src/flask/testing.py"
+      ],
+      "guard_files": [
+        "src/flask/testing.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@3a35977d5f",
+    "instruction": "stop ignoring flake8 e402",
+    "parent": "78b42b9ac288c20c107a3b6779c322acb45be3d4",
+    "repo": "flask",
+    "sha": "3a35977d5fbcc424688d32154d250bc0bae918d6",
+    "start_in": "tests/test_apps/blueprintapp/__init__.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".flake8",
+        "examples/javascript/js_example/__init__.py"
+      ],
+      "files": [
+        ".flake8",
+        "examples/javascript/js_example/__init__.py",
+        "tests/test_apps/blueprintapp/__init__.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@1263d3bd14",
+    "instruction": "remove deprecated code",
+    "parent": "a0a61acdecd925cf2a1ffe5fb7acd27c1695f1d8",
+    "repo": "flask",
+    "sha": "1263d3bd142e4964da123f4e59088aa2968ec7e5",
+    "start_in": "src/flask/app.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "src/flask/__init__.py",
+        "src/flask/_compat.py",
+        "src/flask/config.py",
+        "src/flask/logging.py",
+        "src/flask/testing.py",
+        "tests/test_deprecations.py",
+        "tests/test_logging.py",
+        "tests/test_testing.py"
+      ],
+      "files": [
+        "src/flask/__init__.py",
+        "src/flask/_compat.py",
+        "src/flask/app.py",
+        "src/flask/config.py",
+        "src/flask/logging.py",
+        "src/flask/testing.py",
+        "tests/test_deprecations.py",
+        "tests/test_logging.py",
+        "tests/test_testing.py"
+      ],
+      "guard_files": [
+        "src/flask/testing.py",
+        "tests/test_logging.py",
+        "tests/test_testing.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@33145c3699",
+    "instruction": "Set default encoding to UTF-8 for load_dotenv",
+    "parent": "6d9d79c70da0104474564dfed510fc74eef1cb85",
+    "repo": "flask",
+    "sha": "33145c36991c503aeb1e5870c27b720ec80d5079",
+    "start_in": "src/flask/cli.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "tests/test_apps/.env",
+        "tests/test_cli.py"
+      ],
+      "files": [
+        "src/flask/cli.py",
+        "tests/test_apps/.env",
+        "tests/test_cli.py"
+      ],
+      "guard_files": [
+        "tests/test_cli.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@08d3185e87",
+    "instruction": "update pre-commit hooks",
+    "parent": "6000e80acf931b05b4911c3fa7f3ba33e2b80e64",
+    "repo": "flask",
+    "sha": "08d3185e87cfeccc4bf4d26ee5c4c0dfd4ec8564",
+    "start_in": "src/flask/ctx.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".pre-commit-config.yaml",
+        "src/flask/helpers.py"
+      ],
+      "files": [
+        ".pre-commit-config.yaml",
+        "src/flask/ctx.py",
+        "src/flask/helpers.py"
+      ],
+      "guard_files": [
+        "src/flask/helpers.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@b337d21058",
+    "instruction": "update dev dependencies",
+    "parent": "c77b099cbb979269d45df06753cadd8abc662e23",
+    "repo": "flask",
+    "sha": "b337d210583a3f5f84d0f70b56ae9a82b029dab5",
+    "start_in": "src/flask/json/provider.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".pre-commit-config.yaml",
+        "requirements/build.txt",
+        "requirements/dev.txt",
+        "requirements/docs.txt",
+        "requirements/tests.txt",
+        "requirements/typing.txt"
+      ],
+      "files": [
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".pre-commit-config.yaml",
+        "requirements/build.txt",
+        "requirements/dev.txt",
+        "requirements/docs.txt",
+        "requirements/tests.txt",
+        "requirements/typing.txt",
+        "src/flask/json/provider.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@8285adf5a4",
+    "instruction": "update dev dependencies",
+    "parent": "1d49747264554dee31f5627d4249d09aaaeced39",
+    "repo": "flask",
+    "sha": "8285adf5a4f572dbf7a0a3b8f3a96ca0b19c50a4",
+    "start_in": "src/flask/cli.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/lock.yaml",
+        ".github/workflows/pre-commit.yaml",
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".github/workflows/zizmor.yaml",
+        ".pre-commit-config.yaml",
+        "src/flask/json/provider.py",
+        "uv.lock"
+      ],
+      "files": [
+        ".github/workflows/lock.yaml",
+        ".github/workflows/pre-commit.yaml",
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".github/workflows/zizmor.yaml",
+        ".pre-commit-config.yaml",
+        "src/flask/cli.py",
+        "src/flask/json/provider.py",
+        "uv.lock"
+      ],
+      "guard_files": [
+        "src/flask/json/provider.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@52adf2ec21",
+    "instruction": "rename default branch in files",
+    "parent": "6fb1101f7075b4ff8197f3ef3b9fecfa41dc34ee",
+    "repo": "flask",
+    "sha": "52adf2ec219a0cb9abcfd116ec104c9a362c602a",
+    "start_in": "docs/conf.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/tests.yaml",
+        "CONTRIBUTING.rst",
+        "README.rst",
+        "examples/tutorial/README.rst"
+      ],
+      "files": [
+        ".github/workflows/tests.yaml",
+        "CONTRIBUTING.rst",
+        "README.rst",
+        "docs/conf.py",
+        "examples/tutorial/README.rst"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@f04c5e6964",
+    "instruction": "update dev dependencies",
+    "parent": "c07b201ce336c3e49ae3b6fa81aaf4fb871d90ba",
+    "repo": "flask",
+    "sha": "f04c5e696400badaa52b3450ded53e9091c2078a",
+    "start_in": "src/flask/ctx.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/pre-commit.yaml",
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".pre-commit-config.yaml",
+        "src/flask/helpers.py",
+        "src/flask/sansio/app.py",
+        "src/flask/sansio/scaffold.py",
+        "src/flask/sessions.py",
+        "src/flask/testing.py",
+        "uv.lock"
+      ],
+      "files": [
+        ".github/workflows/pre-commit.yaml",
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".pre-commit-config.yaml",
+        "src/flask/ctx.py",
+        "src/flask/helpers.py",
+        "src/flask/sansio/app.py",
+        "src/flask/sansio/scaffold.py",
+        "src/flask/sessions.py",
+        "src/flask/testing.py",
+        "uv.lock"
+      ],
+      "guard_files": [
+        "src/flask/helpers.py",
+        "src/flask/sansio/app.py",
+        "src/flask/sansio/scaffold.py",
+        "src/flask/sessions.py",
+        "src/flask/testing.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@1b552d0b01",
+    "instruction": "remove ContextVar compat",
+    "parent": "e609dddd604bd8c808145973d91dcb8bb56a9906",
+    "repo": "flask",
+    "sha": "1b552d0b0163e1c1ae3d4895438a9ce2b2bc098e",
+    "start_in": "src/flask/app.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "docs/async-await.rst",
+        "docs/installation.rst",
+        "requirements/dev.txt",
+        "requirements/tests.in",
+        "requirements/tests.txt"
+      ],
+      "files": [
+        "docs/async-await.rst",
+        "docs/installation.rst",
+        "requirements/dev.txt",
+        "requirements/tests.in",
+        "requirements/tests.txt",
+        "src/flask/app.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "flask@3709c4a9a8",
+    "instruction": "update ruff hook and noqa",
+    "parent": "709f83f6a32da8cdaec196d7b785ab6827322008",
+    "repo": "flask",
+    "sha": "3709c4a9a87e6ce8c26dc4a951e1df52ac9ecad0",
+    "start_in": "src/flask/app.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".pre-commit-config.yaml",
+        "src/flask/sessions.py"
+      ],
+      "files": [
+        ".pre-commit-config.yaml",
+        "src/flask/app.py",
+        "src/flask/sessions.py"
+      ],
+      "guard_files": [
+        "src/flask/sessions.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@05c837dc31",
+    "instruction": "Seems better to make the lower-level function more agnostic.",
+    "parent": "6f93bd03849570ce53f7bb3608e29442378b4d1a",
+    "repo": "pytest",
+    "sha": "05c837dc3178814b581fd378cdda9363c2392ecd",
+    "start_in": "src/_pytest/assertion/util.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "src/_pytest/assertion/__init__.py"
+      ],
+      "files": [
+        "src/_pytest/assertion/__init__.py",
+        "src/_pytest/assertion/util.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@2c555d62fa",
+    "instruction": "fix approx rel for timedelta: accept float, compute rel * expected (#14466)\nAdd validation for negative and NaN tolerances in ApproxTimedelta\n\nThe PR forgot to validate rel and abs for timedelta the same way\nApproxScalar does. Without these checks, a negative rel produces a\nnegative timedelta tolerance that makes every comparison silently\nreturn False, and NaN rel throws a confusing error message.\n\n- Raise ValueError for negative rel\n- Raise ValueError for NaN rel\n- Raise ValueError for negative abs (timedelta)",
+    "parent": "fbab7c5dfe63a22f545207e8dc163ed61ad51d98",
+    "repo": "pytest",
+    "sha": "2c555d62fa2c51ccb0c4c1cdd6243149ce4ffa97",
+    "start_in": "testing/python/approx.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "src/_pytest/python_api.py"
+      ],
+      "files": [
+        "src/_pytest/python_api.py",
+        "testing/python/approx.py"
+      ],
+      "guard_files": [
+        "src/_pytest/python_api.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@15ab2c7940",
+    "instruction": "Instead of special casing in the debugging plugin, it seems more correct\nto just not treat `unittest.SkipTest` as an interactive exception,\nsimilarly to pytest's own `Skipped`. The `pytest_make_collect_report`\nhook in runner.py already treats them the same. This fixes the issue\nmore generally.",
+    "parent": "3dc7d3807bdf556ed26f7393cffc2d46c8a0b0cc",
+    "repo": "pytest",
+    "sha": "15ab2c7940f0d22d2a3f48146b55547a6979e6e7",
+    "start_in": "src/_pytest/debugging.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/13917.bugfix.rst",
+        "src/_pytest/runner.py"
+      ],
+      "files": [
+        "changelog/13917.bugfix.rst",
+        "src/_pytest/debugging.py",
+        "src/_pytest/runner.py"
+      ],
+      "guard_files": [
+        "src/_pytest/runner.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@d84fccb8a8",
+    "instruction": "reduce gc_collect_harder default to 1 on CPython",
+    "parent": "9d0a874137c8d1a1286035765f149deb6706d2c5",
+    "repo": "pytest",
+    "sha": "d84fccb8a840641287b4873a411346d22591f02d",
+    "start_in": "src/_pytest/unraisableexception.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/14441.improvement.rst"
+      ],
+      "files": [
+        "changelog/14441.improvement.rst",
+        "src/_pytest/unraisableexception.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@95e0cf22fa",
+    "instruction": "Initially wanted to rename it to `MyArgumentParser` to make it clearer\nit's an `argparse.ArgumentParser`. But \"My\" looks funny, so change to\n`Pytest` similar to `PytestPluginManager`.",
+    "parent": "b7e9612df013f5e694f8e9f8361b886fc8f18c68",
+    "repo": "pytest",
+    "sha": "95e0cf22fa1f9fa01a372216572f97a8e614205c",
+    "start_in": "src/_pytest/config/argparsing.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "src/_pytest/helpconfig.py"
+      ],
+      "files": [
+        "src/_pytest/config/argparsing.py",
+        "src/_pytest/helpconfig.py"
+      ],
+      "guard_files": [
+        "src/_pytest/helpconfig.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@547eb13614",
+    "instruction": "The nodeid-visibility/baseid deprecation previously allowed None\n(global) visibility. But this visibility is no longer needed, should use\nSession visibility instead. So let's include it in the deprecation as\nwell, this way we can have a clean break in pytest 10.",
+    "parent": "ac4edb0451aa0600699619ccf1d217cdcab95e70",
+    "repo": "pytest",
+    "sha": "547eb136142d4952515367625f6830eec5ec4c3c",
+    "start_in": "src/_pytest/fixtures.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/14004.deprecation.rst",
+        "doc/en/deprecations.rst",
+        "src/_pytest/python.py",
+        "testing/deprecated_test.py",
+        "testing/python/metafunc.py"
+      ],
+      "files": [
+        "changelog/14004.deprecation.rst",
+        "doc/en/deprecations.rst",
+        "src/_pytest/fixtures.py",
+        "src/_pytest/python.py",
+        "testing/deprecated_test.py",
+        "testing/python/metafunc.py"
+      ],
+      "guard_files": [
+        "src/_pytest/python.py",
+        "testing/deprecated_test.py",
+        "testing/python/metafunc.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@82e9b97caf",
+    "instruction": "pytest auto-detects and uses more verbose output when running in CI.\n\nChange tox:regendoc to remove those environment variables, because we do not want extra verbose output in the user documentation.\n\nSee #13938 (comment).",
+    "parent": "f837d25750a4ffb257167931a68590a94b402ad7",
+    "repo": "pytest",
+    "sha": "82e9b97caf576de2144b414c58edc87fed5873e7",
+    "start_in": "src/_pytest/compat.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "tox.ini"
+      ],
+      "files": [
+        "src/_pytest/compat.py",
+        "tox.ini"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@ab44bec1fa",
+    "instruction": "I am going to add another field, then it will start being ambiguous, so\nmake it kw-only to ensure clarity.",
+    "parent": "543d9aac933cd122ef509e3056cfc3959e128b3f",
+    "repo": "pytest",
+    "sha": "ab44bec1fae928052bdff86bd0094f212a8c7abe",
+    "start_in": "testing/test_config.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "src/_pytest/config/findpaths.py",
+        "testing/test_findpaths.py"
+      ],
+      "files": [
+        "src/_pytest/config/findpaths.py",
+        "testing/test_config.py",
+        "testing/test_findpaths.py"
+      ],
+      "guard_files": [
+        "src/_pytest/config/findpaths.py",
+        "testing/test_findpaths.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@e3facc0f81",
+    "instruction": "Improve clarity of 'expected exception' error messages (#13861)\nThis PR addresses a TODO in testing/python/raises_group.py that pointed out a poorly structured sentence in a test's expected error message.",
+    "parent": "79392133b63bc79efde860eb94901108b88cfcd6",
+    "repo": "pytest",
+    "sha": "e3facc0f8115a52606151c436ab3cb0816dbc0c3",
+    "start_in": "testing/python/raises_group.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/13861.improvement.rst",
+        "src/_pytest/raises.py",
+        "testing/python/raises.py"
+      ],
+      "files": [
+        "changelog/13861.improvement.rst",
+        "src/_pytest/raises.py",
+        "testing/python/raises.py",
+        "testing/python/raises_group.py"
+      ],
+      "guard_files": [
+        "src/_pytest/raises.py",
+        "testing/python/raises.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@c24de8840a",
+    "instruction": "In _check_exceptions, the diagnostic loop at line 1368 uses i_exp (last\nvalue from the earlier enumerate loop) instead of i_failed (the current\nloop variable). This causes incorrect result lookups when building the\nfailure message for unmatched expected exceptions: in the added test, it\nwould show `It matches TypeError() which was paired with TypeError` also\non the `ValueError`.",
+    "parent": "974ed48b696d706b7e7cc834ddca9bb0edd488a4",
+    "repo": "pytest",
+    "sha": "c24de8840a0a3c1fd9ecbe334b05d0d496b25014",
+    "start_in": "testing/python/raises_group.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/14220.bugfix.rst",
+        "src/_pytest/raises.py"
+      ],
+      "files": [
+        "changelog/14220.bugfix.rst",
+        "src/_pytest/raises.py",
+        "testing/python/raises_group.py"
+      ],
+      "guard_files": [
+        "src/_pytest/raises.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@9ef4cd0797",
+    "instruction": "python_api: improve approx assert message on mappings with only extra elements\nFix #13722",
+    "parent": "d2d57e3d7fc942e15136fcf0d3e50999cfe4ef76",
+    "repo": "pytest",
+    "sha": "9ef4cd0797940815fd4a5ced64e5e25961a73a95",
+    "start_in": "testing/python/approx.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/13722.bugfix.rst",
+        "src/_pytest/python_api.py"
+      ],
+      "files": [
+        "changelog/13722.bugfix.rst",
+        "src/_pytest/python_api.py",
+        "testing/python/approx.py"
+      ],
+      "guard_files": [
+        "src/_pytest/python_api.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@c02465cee0",
+    "instruction": "Support PEP420 (implicit namespace packages) as `--pyargs` target. (#13426)\nPreviously, when running `--pyargs pkg`, if you didn't have `pkg/__init__.py`, pytest would fail with `ERROR: module or package not found: pkg (missing __init__.py?)`.\n\nIf used in conjunction with `consider_namespace_packages` in config, pytest discovers the package and tests inside it correctly.\n\nIf used in conjunction with `consider_namespace_packages` in config, test\nmodules get correct `__package__` and `__name__` attributes as well.\n\nIn addition, remove `\"namespace\"` origin handling -- this value isn't used since python 3.8.\nSee:\n- https://github.com/python/cpython/pull/5481\n- https://docs.python.org/3/library/importlib.html#importlib.machinery.ModuleSpec.submodule_search_locations\n\nFixes #478\nFixes #2371\nFixes #10569",
+    "parent": "1d7d63555e431d4562bcacbdc97038b0613d20ba",
+    "repo": "pytest",
+    "sha": "c02465cee0250cd8040a06032ec8732a6228bd13",
+    "start_in": "testing/test_collection.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/478.feature.rst",
+        "doc/en/reference/reference.rst",
+        "src/_pytest/main.py",
+        "testing/test_main.py"
+      ],
+      "files": [
+        "changelog/478.feature.rst",
+        "doc/en/reference/reference.rst",
+        "src/_pytest/main.py",
+        "testing/test_collection.py",
+        "testing/test_main.py"
+      ],
+      "guard_files": [
+        "src/_pytest/main.py",
+        "testing/test_main.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@36704f9b54",
+    "instruction": "Fix elision of long collections in assertion messages with -vv (#14748)\nThe message part of `assert cond, msg` went through\n`saferepr(obj, maxsize)`, where `-vv` maps to `maxsize=None`. That lifts\nthe overall string-length cap, but `SafeRepr` still inherits reprlib's\nper-container limits (`maxlist=6` etc.), so e.g. `assert False, dir(\"\")`\nstayed elided with `...` at any verbosity \u2014 the exact reproducer from\nissue #12307, which #12662 only partially fixed (it covered long scalar\nreprs but not collections).\n\nUse the `_saferepr` helper instead, as originally proposed in #12322:\nit routes `maxsize=None` to `saferepr_unlimited()`, which uses a plain\n`repr()`, matching how asserted expressions are already displayed at\nhigh verbosity.\n\nCloses #12322\nFixes #12307",
+    "parent": "344c23787cdb3431dcc441b8b63ee9950f04b921",
+    "repo": "pytest",
+    "sha": "36704f9b54c40b3de715f5d5d28666faf566b843",
+    "start_in": "testing/test_assertrewrite.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/12307.bugfix.rst",
+        "src/_pytest/assertion/rewrite.py"
+      ],
+      "files": [
+        "changelog/12307.bugfix.rst",
+        "src/_pytest/assertion/rewrite.py",
+        "testing/test_assertrewrite.py"
+      ],
+      "guard_files": [
+        "src/_pytest/assertion/rewrite.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@338851a980",
+    "instruction": "In my test suite, I have some objects that rely on garbage collection to\nbe cleaned up correctly. This is not amazing, but it's how the code is\nstructured for now. If I interrupt tests with Ctrl+C, or by manually\nraising KeyboardInterrupt in a test, these objects are not cleaned up\nany more.\n\ncall_and_report re-raises Exit and KeyboardInterrupt, which breaks the\ncleanup logic in runtestprotocol that unsets the item funcargs (which is\nwhere my objects end up living as references, as they're passed in as\nfixtures).\n\nBy just wrapping the entire block with try: ... finally: ..., cleanup\nworks again as expected.",
+    "parent": "5898e9c7a1b8aee15c4c834298ba7ed32ce92cb9",
+    "repo": "pytest",
+    "sha": "338851a980a1255d7ff3799e13fa35200f7392e0",
+    "start_in": "src/_pytest/runner.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/13626.bugfix.rst",
+        "testing/test_runner.py"
+      ],
+      "files": [
+        "changelog/13626.bugfix.rst",
+        "src/_pytest/runner.py",
+        "testing/test_runner.py"
+      ],
+      "guard_files": [
+        "testing/test_runner.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@4da7c19177",
+    "instruction": "On Windows st_ino holds the file ID, which file systems are free to not\nsupport; WinFsp mounts such as sshfs-win report 0 for every file, because\nSFTP has no inode field to fill it from. os.path.samestat() then reports\nany two files on the volume as the same file, so the Windows short-path\nfallback in Session.collect() matched every node and nothing got pruned:\npassing a single file collected the whole suite.\n\nTreat a zero file ID as unknown and fall back to path comparison, which\nis what the other platforms do anyway.\n\nFixes #14864.",
+    "parent": "5fd2be03b1f8b5eef48d507d001ebf0a82e875a1",
+    "repo": "pytest",
+    "sha": "4da7c191777f87caeba77f3ca27ff7724c862214",
+    "start_in": "testing/test_pathlib.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/14864.bugfix.rst",
+        "src/_pytest/pathlib.py"
+      ],
+      "files": [
+        "changelog/14864.bugfix.rst",
+        "src/_pytest/pathlib.py",
+        "testing/test_pathlib.py"
+      ],
+      "guard_files": [
+        "src/_pytest/pathlib.py"
+      ],
+      "reuse": {
+        "testing/test_pathlib.py": [
+          "samefile_nofollow"
+        ]
+      }
+    }
+  },
+  {
+    "id": "pytest@8571cf8d44",
+    "instruction": "Deprecate `self` in class-scoped fixtures on base classes (#14071)\nCloses #14011\nCloses #10819",
+    "parent": "21be7a259424e509e3d667082a138bcc8fc45c00",
+    "repo": "pytest",
+    "sha": "8571cf8d44a390c4c61f82c9b5a825ae393b1203",
+    "start_in": "testing/deprecated_test.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "changelog/10819.deprecation.rst",
+        "doc/en/deprecations.rst",
+        "src/_pytest/deprecated.py",
+        "src/_pytest/fixtures.py"
+      ],
+      "files": [
+        "changelog/10819.deprecation.rst",
+        "doc/en/deprecations.rst",
+        "src/_pytest/deprecated.py",
+        "src/_pytest/fixtures.py",
+        "testing/deprecated_test.py"
+      ],
+      "guard_files": [
+        "src/_pytest/fixtures.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@3f831e600a",
+    "instruction": "Continuation of 72ae3dbf9608a70df683d081cf53146a8d79f1ea.\n\nThe previous fix was a minimal change to make the existing code at least\nconsider fixtures overrides, and handles the common case (direct\noverride chains), but still wasn't correct, as it didn't handle\noverride chains involving an intermediary (not the overridden) fixture.\n\nTo make this work, the algorithm needs to change. Now instead of a\nsimple breadth-first search, we do a depth-first search, which more\nclosely simulates the runtime behavior, and allows us the to check the\n\"stack\" of fixtures so we can use the correct fixture index (depth in\nthe override chain).\n\nThis is more expensive but should be OK.\n\nRefs #13773.",
+    "parent": "8606fdcd3b334780085c52dab5480c6eab53c64f",
+    "repo": "pytest",
+    "sha": "3f831e600ad1d4cfa35a928485de4659cdbe5a26",
+    "start_in": "src/_pytest/fixtures.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "testing/python/fixtures.py"
+      ],
+      "files": [
+        "src/_pytest/fixtures.py",
+        "testing/python/fixtures.py"
+      ],
+      "guard_files": [
+        "testing/python/fixtures.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@ecac57287b",
+    "instruction": "Remove `PytestRemovedIn9Warning` (#14299)\nPer our deprecation policy.\n\nFix #13893.",
+    "parent": "6aafcdce9022149fcc977205676d1bc12ab43b9b",
+    "repo": "pytest",
+    "sha": "ecac57287b679cc707fb4d22aa9d48426eaacac4",
+    "start_in": "doc/en/conf.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "doc/en/reference/reference.rst",
+        "src/_pytest/warning_types.py",
+        "src/_pytest/warnings.py",
+        "src/pytest/__init__.py",
+        "testing/test_warnings.py"
+      ],
+      "files": [
+        "doc/en/conf.py",
+        "doc/en/reference/reference.rst",
+        "src/_pytest/warning_types.py",
+        "src/_pytest/warnings.py",
+        "src/pytest/__init__.py",
+        "testing/test_warnings.py"
+      ],
+      "guard_files": [
+        "src/_pytest/warning_types.py",
+        "src/_pytest/warnings.py",
+        "testing/test_warnings.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@fc8f56bd21",
+    "instruction": "When Session re-collects a parent Directory (handle_dupes=False for file\nCLI args), fresh child nodes were created. Since fixture registration\nuses node identity for matching, the new Directory children didn't match\nfixtures registered with the original instances.\n\nReuse previously-seen Directory children (by path) when re-collecting a\nparent. Module/File nodes are still recreated to preserve\n--keep-duplicates semantics.",
+    "parent": "eb79044cea1c2c7b6e58ebcce17c55da871fef6c",
+    "repo": "pytest",
+    "sha": "fc8f56bd211128db4dd33b1a9ad42f50d9c8a3f8",
+    "start_in": "testing/test_conftest.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "src/_pytest/main.py"
+      ],
+      "files": [
+        "src/_pytest/main.py",
+        "testing/test_conftest.py"
+      ],
+      "guard_files": [
+        "src/_pytest/main.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@9719431702",
+    "instruction": "[refactor] Stream assertion explanations through truncation\nThe assertion-repr hook returns a lazy iterator; feed it through a new\n``materialize_with_truncation`` that pulls only until the truncation\nbudget is reached, instead of building the whole explanation as a list\nand truncating it afterwards.\n\nBecause the diff is no longer materialised in full, the exact hidden-line\ncount can no longer be computed: the truncation footer drops it\n(\"...Full output truncated (N lines hidden)...\" becomes \"...Full output\ntruncated...\"). Docs and the approx test are updated to match.",
+    "parent": "e37541375cbd8abaa030f0989eb9b7624befbdaf",
+    "repo": "pytest",
+    "sha": "971943170245c247273172a47c21abd380a801bd",
+    "start_in": "src/_pytest/assertion/truncate.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "doc/en/example/reportingdemo.rst",
+        "doc/en/how-to/output.rst",
+        "src/_pytest/assertion/__init__.py",
+        "testing/python/approx.py",
+        "testing/test_assertion.py"
+      ],
+      "files": [
+        "doc/en/example/reportingdemo.rst",
+        "doc/en/how-to/output.rst",
+        "src/_pytest/assertion/__init__.py",
+        "src/_pytest/assertion/truncate.py",
+        "testing/python/approx.py",
+        "testing/test_assertion.py"
+      ],
+      "guard_files": [
+        "testing/python/approx.py",
+        "testing/test_assertion.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@6f1b078537",
+    "instruction": "--no-summary was skipping the entire pytest_terminal_summary hook, which\nsilenced third-party plugins (e.g. coverage) as well as pytest's own\nFAILURES/ERRORS sections. Still suppress TerminalReporter's built-in\nsummary body, but always call the hook so plugins can report.\n\nCloses #14724\n\n\n---------",
+    "parent": "85003621822f9c10063940068ccacc9c12b8c73f",
+    "repo": "pytest",
+    "sha": "6f1b078537cf4ab14d0a7b29972c4e73f23a9011",
+    "start_in": "src/_pytest/terminal.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/14724.improvement.rst",
+        "testing/test_terminal.py"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/14724.improvement.rst",
+        "src/_pytest/terminal.py",
+        "testing/test_terminal.py"
+      ],
+      "guard_files": [
+        "testing/test_terminal.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@df4af6a62b",
+    "instruction": "Dumb terminals are incapable of handling color, so this test would fail\nwhen ran in such an environment.",
+    "parent": "f1e3fee981aa1942310fa53f912487b31347cb73",
+    "repo": "pytest",
+    "sha": "df4af6a62b14f3b713cc10a6e1f4069136fc9f2a",
+    "start_in": "testing/io/test_terminalwriter.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/12244.contrib.rst"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/12244.contrib.rst",
+        "testing/io/test_terminalwriter.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@e1e1874cda",
+    "instruction": "rename AbstractMatcher -> AbstractRaises, Matcher->RaisesExc. Add docs on RaisesGroup&RaisesExc. Add warnings to group_contains. Remove group_contains example from getting-started page",
+    "parent": "4737c8cf95eb6b65d936d51479d29dbbfa009575",
+    "repo": "pytest",
+    "sha": "e1e1874cda7b8ee51172092158ab774960fa8d6c",
+    "start_in": "testing/python/raises_group.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "changelog/11538.feature.rst",
+        "changelog/11671.feature.rst",
+        "changelog/12504.feature.rst",
+        "doc/en/conf.py",
+        "doc/en/getting-started.rst",
+        "doc/en/how-to/assert.rst",
+        "doc/en/reference/reference.rst",
+        "src/_pytest/_code/code.py",
+        "src/_pytest/_raises_group.py",
+        "src/_pytest/mark/structures.py",
+        "src/_pytest/python_api.py",
+        "src/_pytest/skipping.py",
+        "src/pytest/__init__.py",
+        "testing/typing_raises_group.py"
+      ],
+      "files": [
+        "changelog/11538.feature.rst",
+        "changelog/11671.feature.rst",
+        "changelog/12504.feature.rst",
+        "doc/en/conf.py",
+        "doc/en/getting-started.rst",
+        "doc/en/how-to/assert.rst",
+        "doc/en/reference/reference.rst",
+        "src/_pytest/_code/code.py",
+        "src/_pytest/_raises_group.py",
+        "src/_pytest/mark/structures.py",
+        "src/_pytest/python_api.py",
+        "src/_pytest/skipping.py",
+        "src/pytest/__init__.py",
+        "testing/python/raises_group.py",
+        "testing/typing_raises_group.py"
+      ],
+      "guard_files": [
+        "doc/en/conf.py",
+        "src/_pytest/_code/code.py",
+        "src/_pytest/_raises_group.py",
+        "src/_pytest/mark/structures.py",
+        "src/_pytest/python_api.py",
+        "src/_pytest/skipping.py",
+        "testing/typing_raises_group.py"
+      ],
+      "reuse": {
+        "testing/python/raises_group.py": [
+          "ExceptionInfo"
+        ]
+      }
+    }
+  },
+  {
+    "id": "pytest@771ab77e13",
+    "instruction": "Reject negative log_auto_indent values (#14586)\n* Reject negative log_auto_indent values\n\n* Changelog added",
+    "parent": "d575dba9343a4dca757e4be6af82836031f99500",
+    "repo": "pytest",
+    "sha": "771ab77e131d19124daf0d558baaed38c9d4833e",
+    "start_in": "testing/logging/test_formatter.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "changelog/14586.bugfix.rst",
+        "src/_pytest/logging.py"
+      ],
+      "files": [
+        "changelog/14586.bugfix.rst",
+        "src/_pytest/logging.py",
+        "testing/logging/test_formatter.py"
+      ],
+      "guard_files": [
+        "src/_pytest/logging.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@bc57e69aaa",
+    "instruction": "When using pytest.warns(match=...), even if a warning of the expected type was emitted, the first sentence of the error message said \"DID NOT WARN\" when the regex did not match. Since this made it seem as though no warning had been emitted at all, I updated it to make the situation clearer.\n\nCloses #11225",
+    "parent": "75609e71415e67c0f74492d192ca99ca94a3f582",
+    "repo": "pytest",
+    "sha": "bc57e69aaa01ae0271463f3cd85e8388d16da55e",
+    "start_in": "testing/test_recwarn.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/11225.improvement.rst",
+        "doc/en/how-to/capture-warnings.rst",
+        "src/_pytest/recwarn.py"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/11225.improvement.rst",
+        "doc/en/how-to/capture-warnings.rst",
+        "src/_pytest/recwarn.py",
+        "testing/test_recwarn.py"
+      ],
+      "guard_files": [
+        "src/_pytest/recwarn.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@0354e9045b",
+    "instruction": "docs(cacheprovider): add missing docstrings (#13665)\n Closes #13625\n\n---------",
+    "parent": "d1e931a9dac3c14833d62a6263478a64ea0c634c",
+    "repo": "pytest",
+    "sha": "0354e9045b4eace8e9050f529581fcfb772a18ec",
+    "start_in": "src/_pytest/cacheprovider.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "changelog/13625.doc.rst"
+      ],
+      "files": [
+        "changelog/13625.doc.rst",
+        "src/_pytest/cacheprovider.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@198eff1604",
+    "instruction": "Consider entry points for PYTEST_PLUGINS and pytest_plugins (#14752)\nThe PYTEST_PLUGINS environment variable and the pytest_plugins global\nvariable previously accepted only importable module names, while the -p\ncommand-line option also accepted entry point names of installed plugins.\n\nPass consider_entry_points=True when importing plugin specs so that all\nthree mechanisms behave consistently (#12624).  As a side effect, plugins\nspecified by entry point name through these mechanisms now show up in the\n'plugins:' line of the terminal header and in --traceconfig output, since\nentry-point loading records distribution info (#12615).\n\nBased on the original implementation by Marcel Telka in #12616.",
+    "parent": "f1211ba21d1df2f55cf2ba1523b9d7b6c6a9ef56",
+    "repo": "pytest",
+    "sha": "198eff1604e7b649e3fdcf306306517070d19235",
+    "start_in": "testing/test_pluginmanager.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/12624.improvement.rst",
+        "doc/en/how-to/plugins.rst",
+        "doc/en/how-to/writing_plugins.rst",
+        "doc/en/reference/reference.rst",
+        "src/_pytest/config/__init__.py",
+        "testing/test_config.py"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/12624.improvement.rst",
+        "doc/en/how-to/plugins.rst",
+        "doc/en/how-to/writing_plugins.rst",
+        "doc/en/reference/reference.rst",
+        "src/_pytest/config/__init__.py",
+        "testing/test_config.py",
+        "testing/test_pluginmanager.py"
+      ],
+      "guard_files": [
+        "src/_pytest/config/__init__.py",
+        "testing/test_config.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@611bb13108",
+    "instruction": "Allow hiding a parameter set from test name (#13229)\nFixes #13228\n\n---------",
+    "parent": "9cf2cae94355cd83ad7e8d88f976c5a524c98cfb",
+    "repo": "pytest",
+    "sha": "611bb13108c249d2789014a631242f765efe1644",
+    "start_in": "testing/python/metafunc.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/13228.feature.rst",
+        "doc/en/reference/reference.rst",
+        "src/_pytest/mark/__init__.py",
+        "src/_pytest/mark/structures.py",
+        "src/_pytest/python.py",
+        "src/pytest/__init__.py",
+        "testing/test_mark.py"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/13228.feature.rst",
+        "doc/en/reference/reference.rst",
+        "src/_pytest/mark/__init__.py",
+        "src/_pytest/mark/structures.py",
+        "src/_pytest/python.py",
+        "src/pytest/__init__.py",
+        "testing/python/metafunc.py",
+        "testing/test_mark.py"
+      ],
+      "guard_files": [
+        "src/_pytest/mark/__init__.py",
+        "src/_pytest/mark/structures.py",
+        "src/_pytest/python.py",
+        "testing/test_mark.py"
+      ],
+      "reuse": {
+        "testing/python/metafunc.py": [
+          "Failed"
+        ]
+      }
+    }
+  },
+  {
+    "id": "pytest@bd6877e587",
+    "instruction": "Improve `nodes._check_initialpaths_for_relpath` performance (#13448)\nUse `Path` facilities to greatly improve performance of `nodes._check_initialpaths_for_relpath` (see #13448 for performance comparison).\n\n\n---------",
+    "parent": "6f8681342bf2d41aea3fbc252b4abcb475ed2d9c",
+    "repo": "pytest",
+    "sha": "bd6877e5874b50ee57d0f63b342a67298ee9a1c3",
+    "start_in": "src/_pytest/nodes.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/13420.improvement.rst"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/13420.improvement.rst",
+        "src/_pytest/nodes.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@f36b07a432",
+    "instruction": "Regressed in b665afc848a83f7498b9a52c467ec255bbd208a1.\n\nFix #14608.",
+    "parent": "680f9f3ed3faaaa9a4fd1d8120618cd17cdee2d0",
+    "repo": "pytest",
+    "sha": "f36b07a432100b55e4c0fd768b1d9339dd7c3415",
+    "start_in": "testing/test_conftest.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/14608.bugfix.rst",
+        "src/_pytest/config/__init__.py"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/14608.bugfix.rst",
+        "src/_pytest/config/__init__.py",
+        "testing/test_conftest.py"
+      ],
+      "guard_files": [
+        "src/_pytest/config/__init__.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@eced426fd3",
+    "instruction": "use callable protocols for pytest.skip/exit/fail/xfail instead of _WithException wrapper with __call__ attribute (#13445)\nThis is a more canonical way of typing generic callbacks/decorators\n(see https://mypy.readthedocs.io/en/stable/protocols.html#callback-protocols)\n\nThis helps with potential issues/ambiguity with __call__ semanics in\ntype checkers -- according to python spec, __call__ needs to be present\non the class, rather than as an instance attribute to be considered callable.\n\nThis worked in mypy because it didn't handle the spec 100% correctly (in this case this has no negative consequences)\n\nHowever, ty type checker is stricter/more correct about it and every pytest.skip usage results in:\n\n```\nerror[call-non-callable]: Object of type _WithException[Unknown, <class 'Skipped'>] is not callable\n```\n\nFor more context, see:\n\n[ty] Understand classes that inherit from subscripted Protocol[] as generic astral-sh/ruff#17832 (comment)\nhttps://discuss.python.org/t/when-should-we-assume-callable-types-are-method-descriptors/92938\n\nTesting:\n\nTested with running mypy against the following snippet:\n\nimport pytest\nreveal_type(pytest.skip)\nreveal_type(pytest.skip.Exception)\nreveal_type(pytest.skip(reason=\"whatever\"))\n\nBefore the change:\n\n```\n$ mypy test_pytest_skip.py\ntest_pytest_skip.py:2: note: Revealed type is \"_pytest.outcomes._WithException[def (reason: builtins.str =, *, allow_module_level: builtins.bool =) -> Never, def (msg: Union[builtins.str, None] =, pytrace: builtins.bool =, allow_module_level: builtins.bool =, *, _use_item_location: builtins.bool =) -> _pytest.outcomes.Skipped]\"\ntest_pytest_skip.py:3: note: Revealed type is \"def (msg: Union[builtins.str, None] =, pytrace: builtins.bool =, allow_module_level: builtins.bool =, *, _use_item_location: builtins.bool =) -> _pytest.outcomes.Skipped\"\ntest_pytest_skip.py:4: note: Revealed type is \"Never\"\n```\n\nAfter the change:\n\n```\n$ mypy test_pytest_skip.py\ntest_pytest_skip.py:2: note: Revealed type is \"_pytest.outcomes._Skip\"\ntest_pytest_skip.py:3: note: Revealed type is \"type[_pytest.outcomes.Skipped]\"\ntest_pytest_skip.py:4: note: Revealed type is \"Never\"\n```\n\nty type checker is also inferring the same types correctly now.\n\nAll types are matching and propagated correctly (most importantly, Never as a result of pytest.skip(...) call).",
+    "parent": "e6f24ed2dd6c8bfd5285e2c32bbf317d0fa48ad7",
+    "repo": "pytest",
+    "sha": "eced426fd3ee620b73e19ba1790f856594127694",
+    "start_in": "src/_pytest/outcomes.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/13445.bugfix.rst",
+        "testing/python/collect.py"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/13445.bugfix.rst",
+        "src/_pytest/outcomes.py",
+        "testing/python/collect.py"
+      ],
+      "guard_files": [
+        "testing/python/collect.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@06665395ae",
+    "instruction": "- Move `import stat` to module level (no lazy import)\n- Bound parent chmod by start_path to prevent escaping rm_rf scope\n- Use `p.is_dir()` and `rm_rf(p)` consistently with Path objects\n- Rewrite changelog to be user-facing (no internal function names)",
+    "parent": "b124f8696e4b5486c45ff80521fde9090b640804",
+    "repo": "pytest",
+    "sha": "06665395aef938e749d70f76725a6ab611c09e8a",
+    "start_in": "src/_pytest/pathlib.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "changelog/7940.bugfix.rst"
+      ],
+      "files": [
+        "changelog/7940.bugfix.rst",
+        "src/_pytest/pathlib.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@f93656d611",
+    "instruction": "Make ScopeName public to enable downstream type checking  (#14325)\nCloses #14137",
+    "parent": "80f54926278ad4a489030c8c189b359bf2b9658a",
+    "repo": "pytest",
+    "sha": "f93656d611f3c9cd22f346dfeda52cddb778c589",
+    "start_in": "src/_pytest/fixtures.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/14137.improvement.rst",
+        "doc/en/conf.py",
+        "src/_pytest/mark/structures.py",
+        "src/_pytest/python.py",
+        "src/_pytest/scope.py",
+        "src/pytest/__init__.py",
+        "testing/typing_checks.py"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/14137.improvement.rst",
+        "doc/en/conf.py",
+        "src/_pytest/fixtures.py",
+        "src/_pytest/mark/structures.py",
+        "src/_pytest/python.py",
+        "src/_pytest/scope.py",
+        "src/pytest/__init__.py",
+        "testing/typing_checks.py"
+      ],
+      "guard_files": [
+        "doc/en/conf.py",
+        "src/_pytest/mark/structures.py",
+        "src/_pytest/python.py",
+        "src/_pytest/scope.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@0d6fbdeffa",
+    "instruction": "Fix duplicated exception chain output for exceptions without a traceback (#14781)\n* Fix duplicated exception chain output for exceptions without a traceback\n\n\n* Add regression tests for duplicate exception chain output\n\n\n---------",
+    "parent": "a3a62a0ebd43ec848b979227421e2b7ba93a9dc9",
+    "repo": "pytest",
+    "sha": "0d6fbdeffa57c796123f62f81f7dd370d9b7ecdc",
+    "start_in": "testing/code/test_excinfo.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/8321.bugfix.rst",
+        "src/_pytest/_code/code.py"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/8321.bugfix.rst",
+        "src/_pytest/_code/code.py",
+        "testing/code/test_excinfo.py"
+      ],
+      "guard_files": [
+        "src/_pytest/_code/code.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@b054cac53a",
+    "instruction": "Add a changelog entry explaining the fix for fixture resolution failures\nwhen multiple CLI paths share ancestor directories, and a comment on\nthe dedup code explaining why post-processing was chosen over a\nsession-global deduplication mechanism.",
+    "parent": "fc8f56bd211128db4dd33b1a9ad42f50d9c8a3f8",
+    "repo": "pytest",
+    "sha": "b054cac53a643612c54872374151d19dfeba981f",
+    "start_in": "src/_pytest/main.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "changelog/14635.bugfix.rst"
+      ],
+      "files": [
+        "changelog/14635.bugfix.rst",
+        "src/_pytest/main.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@d0be8bd046",
+    "instruction": "[ruff] Enable C400 (unnecessary generator)\nOne 'list(<genexp>)' in Source.__init__ becomes a list comprehension.",
+    "parent": "d89ac92ef0d7eb924e2831f334ba942b739ca4ae",
+    "repo": "pytest",
+    "sha": "d0be8bd0468e303646b347787f048de48e87493b",
+    "start_in": "src/_pytest/_code/source.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "pyproject.toml"
+      ],
+      "files": [
+        "pyproject.toml",
+        "src/_pytest/_code/source.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@a0e3a49f19",
+    "instruction": "Add basic implementation of PEP657 style expression markers in tracebacks (#13102)\n* Add very basic implementation of PEP657 style line markers in tracebacks\n\n* Version guard the py3.11 attributes\n\n* Change version guard to make mypy happy. Also, stop using private traceback function\n\n* Version guard unit test\n\n* Fix repr cycle test\n\n* Add changelog entry\n\n* Add pragma no cover for branch where column info is missing",
+    "parent": "bfb86483d5d4797bbb323bfe883d2934f3235ffb",
+    "repo": "pytest",
+    "sha": "a0e3a49f194175bec96a551791b2b02b23e06a09",
+    "start_in": "src/_pytest/_code/code.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/10224.improvement.rst",
+        "src/_pytest/_code/source.py",
+        "testing/code/test_excinfo.py"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/10224.improvement.rst",
+        "src/_pytest/_code/code.py",
+        "src/_pytest/_code/source.py",
+        "testing/code/test_excinfo.py"
+      ],
+      "guard_files": [
+        "src/_pytest/_code/source.py",
+        "testing/code/test_excinfo.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@3d58e8d6d3",
+    "instruction": "Fix gh pr new command (#13639)\nCloses #13638",
+    "parent": "3ce3fceea2161c8991ef5e72232d7a7a42102565",
+    "repo": "pytest",
+    "sha": "3d58e8d6d35017aa118952c5265860c5ed23aa4d",
+    "start_in": "scripts/prepare-release-pr.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/13638.contrib.rst"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/13638.contrib.rst",
+        "scripts/prepare-release-pr.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@e7c732299e",
+    "instruction": "`parsefactories` is the function which discovers fixtures on a given\nholder object (module, class, etc). Previously it was made idempotent\nusing a `holderobjseen` map, which made it only process a given\nholderobj once.\n\nHowever, a single obj can be legitimately processed multiple times for\ndifferent nodes. In particular, in pytest core this happens with\n`--doctest-modules` -- a python module is processed once as regular\nPython and once as doctest, which both support fixtures.\n\nBefore 46478fad53774fad76d829f51679824d0131a0b3 we were using `nodeid`\nfor fixture visibility, which ended up working \"accidentally\" since both\n`Module` and `DoctestModule` happen to have the same `nodeid`. But now\nwe use `Node` visibility, and the nodes are different, so the fixtures\ndefined in the module only end up being visible to the `DoctestModule`\n(which runs `parsefactories` first).\n\nFix this by removing the `parsefactories`, remove the idempotency and\nallowing multiple plugins to collect fixtures from the same obj.\n\nThis particularly means that e.g. `module`-scoped autouse fixtures will\nnow run *twice* with `--doctest-modules`.\n\nSee discussion in issue and PR for other options we've considered.\n\nCloses #14533.",
+    "parent": "b33a27d12b93311cf6c41b77ebf2994e555e52f9",
+    "repo": "pytest",
+    "sha": "e7c732299e4326c1ca72d5a13a2a3d69aec35ea6",
+    "start_in": "testing/test_doctest.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "AUTHORS",
+        "changelog/14533.breaking.rst",
+        "doc/en/how-to/doctest.rst",
+        "src/_pytest/fixtures.py"
+      ],
+      "files": [
+        "AUTHORS",
+        "changelog/14533.breaking.rst",
+        "doc/en/how-to/doctest.rst",
+        "src/_pytest/fixtures.py",
+        "testing/test_doctest.py"
+      ],
+      "guard_files": [
+        "src/_pytest/fixtures.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@836cfbac1f",
+    "instruction": "In case of hanging filesystems (e.g. unreachable sshfs), `lsof` can\nhang for a long time (3 minutes in my case). Set a more reasonable\ntimeout and skip the affected test (like already done with other problems\nregarding lsof) in such a case.",
+    "parent": "3b002340cdb626f7f8ff1b377855d5b107e72164",
+    "repo": "pytest",
+    "sha": "836cfbac1f49c069191b5859fbc1c1763e5077ea",
+    "start_in": "testing/test_capture.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "changelog/13621.contrib.rst"
+      ],
+      "files": [
+        "changelog/13621.contrib.rst",
+        "testing/test_capture.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@d4907e8499",
+    "instruction": "Deprecated feature scheduled for removal in pytest 9. Part of #13893.",
+    "parent": "d889ca0f3b8c45f92ef90f34e67ddbaa2c988134",
+    "repo": "pytest",
+    "sha": "d4907e8499fc4c36493b61437b56cf2eabfdcebf",
+    "start_in": "src/_pytest/nodes.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "doc/en/deprecations.rst",
+        "src/_pytest/config/compat.py",
+        "src/_pytest/deprecated.py",
+        "src/_pytest/python.py",
+        "testing/deprecated_test.py",
+        "testing/test_nodes.py"
+      ],
+      "files": [
+        "doc/en/deprecations.rst",
+        "src/_pytest/config/compat.py",
+        "src/_pytest/deprecated.py",
+        "src/_pytest/nodes.py",
+        "src/_pytest/python.py",
+        "testing/deprecated_test.py",
+        "testing/test_nodes.py"
+      ],
+      "guard_files": [
+        "src/_pytest/python.py",
+        "testing/deprecated_test.py",
+        "testing/test_nodes.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@b277fa42c8",
+    "instruction": "[ruff] Enable SIM118 ('key in dict' instead of 'key in dict.keys()')\nIterating a dict already yields its keys.",
+    "parent": "9254e97776c4bb96623f23a92bceb6544501fd56",
+    "repo": "pytest",
+    "sha": "b277fa42c807173e329ed6a8a6e443f25e49586e",
+    "start_in": "src/_pytest/approx.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "pyproject.toml",
+        "src/_pytest/assertion/rewrite.py",
+        "testing/conftest.py",
+        "testing/test_reports.py"
+      ],
+      "files": [
+        "pyproject.toml",
+        "src/_pytest/approx.py",
+        "src/_pytest/assertion/rewrite.py",
+        "testing/conftest.py",
+        "testing/test_reports.py"
+      ],
+      "guard_files": [
+        "src/_pytest/assertion/rewrite.py",
+        "testing/test_reports.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@03da9f0ccb",
+    "instruction": "Rename `python_api.py` to `approx.py`\nThe `python_api.py` file used to also contain the implementation of\n`raises`, but that was moved to its own file a while ago. Now\n`python_api.py` only houses the `approx` code, so let's rename it to the\nmore obvious and less generic `approx.py`.",
+    "parent": "913e58644d279f7afc37a06461803aa7ce9dcce0",
+    "repo": "pytest",
+    "sha": "03da9f0ccb88c27630146cfc296d51be4ad9d389",
+    "start_in": "src/pytest/__init__.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "src/_pytest/approx.py",
+        "src/_pytest/assertion/_compare_any.py",
+        "src/_pytest/doctest.py",
+        "src/_pytest/python_api.py",
+        "testing/python/approx.py",
+        "testing/test_reports.py"
+      ],
+      "files": [
+        "src/_pytest/approx.py",
+        "src/_pytest/assertion/_compare_any.py",
+        "src/_pytest/doctest.py",
+        "src/_pytest/python_api.py",
+        "src/pytest/__init__.py",
+        "testing/python/approx.py",
+        "testing/test_reports.py"
+      ],
+      "guard_files": [
+        "src/_pytest/approx.py",
+        "src/_pytest/assertion/_compare_any.py",
+        "src/_pytest/doctest.py",
+        "testing/python/approx.py",
+        "testing/test_reports.py"
+      ],
+      "reuse": {
+        "src/_pytest/approx.py": [
+          "Sized"
+        ]
+      }
+    }
+  },
+  {
+    "id": "pytest@4722f2472d",
+    "instruction": "(I am talking here about `names_closure`/`fixturenames`.)\n\nBefore 72ae3dbf9608a70df683d081cf53146a8d79f1ea, the static traversal\norder was BFS (unlike the dynamic order which is DFS). So it was natural\nthat `initialnames` was always at the beginning of the closure, since it\nconsists the initial working set. When we changed to DFS, we kept this.\nBut it's a bit weird, now the initialnames are in BFS, but all\ntransitive dependencies are in DFS.\n\nRemove this special case, making both the static and dynamic order fully\nDFS.",
+    "parent": "8e53c6bf531c3afe8fe41687ae339cf8727c7e07",
+    "repo": "pytest",
+    "sha": "4722f2472dfb2dad48420cc22e24cd06256ac7bc",
+    "start_in": "src/_pytest/fixtures.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "testing/example_scripts/fixtures/test_getfixturevalue_dynamic.py",
+        "testing/python/fixtures.py"
+      ],
+      "files": [
+        "src/_pytest/fixtures.py",
+        "testing/example_scripts/fixtures/test_getfixturevalue_dynamic.py",
+        "testing/python/fixtures.py"
+      ],
+      "guard_files": [
+        "testing/example_scripts/fixtures/test_getfixturevalue_dynamic.py",
+        "testing/python/fixtures.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@0e9db5fa5a",
+    "instruction": "Clarify `pytest_collection_finish` occurs after setting `session.items` (#14088)",
+    "parent": "33d5a09a76c49e8fd6de440814cdc925c2fa1062",
+    "repo": "pytest",
+    "sha": "0e9db5fa5a8de151ab43e5d71e0e8192e0456b9d",
+    "start_in": "src/_pytest/hookspec.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".gitignore",
+        "changelog/14088.doc.rst",
+        "doc/en/reference/reference.rst"
+      ],
+      "files": [
+        ".gitignore",
+        "changelog/14088.doc.rst",
+        "doc/en/reference/reference.rst",
+        "src/_pytest/hookspec.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "pytest@840b2d69f6",
+    "instruction": "[ruff] Upgrade ruff to 0.15.7\nupdates:\n- [github.com/astral-sh/ruff-pre-commit: v0.14.14 \u2192 v0.15.7](https://github.com/astral-sh/ruff-pre-commit/compare/v0.14.14...v0.15.7)",
+    "parent": "ade2314b9424fc79580e2d102a486f66776c2274",
+    "repo": "pytest",
+    "sha": "840b2d69f6a5628623d8764360d82d5571ba66fa",
+    "start_in": "src/_pytest/terminal.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".pre-commit-config.yaml",
+        "pyproject.toml",
+        "src/_pytest/config/findpaths.py"
+      ],
+      "files": [
+        ".pre-commit-config.yaml",
+        "pyproject.toml",
+        "src/_pytest/config/findpaths.py",
+        "src/_pytest/terminal.py"
+      ],
+      "guard_files": [
+        "src/_pytest/config/findpaths.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@8bf6926bb3",
+    "instruction": "add inline_reference parameter\nAdded ``inline_references`` parameter to :meth:`.Operations.add_column`\nwhich allows rendering of ``REFERENCES`` clauses inline within the ``ADD\nCOLUMN`` directive rather than as a separate ``ADD CONSTRAINT`` directive.\nThis syntax is supported by PostgreSQL, Oracle, MySQL 5.7+, and MariaDB\n10.5+, and can provide performance benefits on large tables by avoiding\nfull table validation when adding a nullable foreign key column.",
+    "parent": "8c0e2528af2fcec3dfaa731dbfb4805b62698d3c",
+    "repo": "alembic",
+    "sha": "8bf6926bb386018ff41a7c92a5eb55ef56bed175",
+    "start_in": "tests/test_op.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/ddl/base.py",
+        "alembic/ddl/impl.py",
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/operations/ops.py",
+        "alembic/operations/toimpl.py",
+        "docs/build/unreleased/1780.rst",
+        "tests/test_batch.py"
+      ],
+      "files": [
+        "alembic/ddl/base.py",
+        "alembic/ddl/impl.py",
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/operations/ops.py",
+        "alembic/operations/toimpl.py",
+        "docs/build/unreleased/1780.rst",
+        "tests/test_batch.py",
+        "tests/test_op.py"
+      ],
+      "guard_files": [
+        "alembic/ddl/base.py",
+        "alembic/ddl/impl.py",
+        "alembic/operations/base.py",
+        "alembic/operations/ops.py",
+        "alembic/operations/toimpl.py",
+        "tests/test_batch.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@5b34e1c564",
+    "instruction": "Add DROP CONSTRAINT to MySQL for mariadb\nAdded support for DROP CONSTRAINT to the MySQL Alembic\ndialect to support MariaDB 10.2 which now has real\nCHECK constraints.  Note this change does **not**\nadd autogenerate support, only support for op.drop_constraint()\nto work.",
+    "parent": "f5af1c0823199d0aca152c9885ace36c5829a36a",
+    "repo": "alembic",
+    "sha": "5b34e1c564527450b3a483ab11de04962589fdbb",
+    "start_in": "tests/test_mysql.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/ddl/mysql.py",
+        "docs/build/unreleased/479.rst"
+      ],
+      "files": [
+        "alembic/ddl/mysql.py",
+        "docs/build/unreleased/479.rst",
+        "tests/test_mysql.py"
+      ],
+      "guard_files": [
+        "alembic/ddl/mysql.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@db12e19185",
+    "instruction": "fix `server_default` type hint\n### Description\n\nThe docstring of `alter_column` states: \"Set to `None` to have the default removed\". The type hint should accept None.\n\n### Checklist\n\nThis pull request is:\n\n- [ ] A documentation / typographical error fix\n\t- Good to go, no issue or tests are needed\n- [x] A short code fix\n\t- please include the issue number, and create an issue if none exists, which\n\t  must include a complete example of the issue.  one line code fixes without an\n\t  issue and demonstration will not be accepted.\n\t- Please include: `Fixes: #<issue number>` in the commit message\n\t- please include tests.   one line code fixes without tests will not be accepted.\n- [ ] A new feature implementation\n\t- please include the issue number, and create an issue if none exists, which must\n\t  include a complete example of how the feature would look.\n\t- Please include: `Fixes: #<issue number>` in the commit message\n\t- please include tests.",
+    "parent": "8a91c8c837bc8753118e00742309b4e27876ef44",
+    "repo": "alembic",
+    "sha": "db12e1918556dd463847db9ffb3e761231df9b1d",
+    "start_in": "alembic/operations/base.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/op.pyi",
+        "alembic/operations/ops.py"
+      ],
+      "files": [
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/operations/ops.py"
+      ],
+      "guard_files": [
+        "alembic/operations/ops.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@f4d439e1db",
+    "instruction": "implement revision_environment for merge\nFixed issue where the ``revision_environment`` directive in ``alembic.ini``\nwas ignored by the ``alembic merge`` command, leading to issues when other\nconfigurational elements depend upon ``env.py`` being invoked within the\ncommand.",
+    "parent": "bf6f14907b72db76ac23635789754489e3208655",
+    "repo": "alembic",
+    "sha": "f4d439e1db4fb10caa371644a288d7719f1a81a0",
+    "start_in": "tests/test_command.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/command.py",
+        "docs/build/unreleased/1299.rst"
+      ],
+      "files": [
+        "alembic/command.py",
+        "docs/build/unreleased/1299.rst",
+        "tests/test_command.py"
+      ],
+      "guard_files": [
+        "alembic/command.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@b208733686",
+    "instruction": "Improve typing of `op.execute`\nUpdate type annotation for `sqltext` argument of `op.execute` to support\nall the documented acceptable types.\nAdd unit tests for `str` and `TextClause` use cases for `sqltext` argument.\nSmall repetition cleanup of documentation.",
+    "parent": "8542a09459daa9a75a73ab8e4c109686255e4f34",
+    "repo": "alembic",
+    "sha": "b2087336869511c5c6f766a1df455b76d8d23ce9",
+    "start_in": "tests/test_op.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/context.pyi",
+        "alembic/ddl/impl.py",
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/operations/ops.py",
+        "alembic/runtime/environment.py",
+        "alembic/runtime/migration.py",
+        "docs/build/unreleased/op_execute.rst",
+        "tools/write_pyi.py"
+      ],
+      "files": [
+        "alembic/context.pyi",
+        "alembic/ddl/impl.py",
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/operations/ops.py",
+        "alembic/runtime/environment.py",
+        "alembic/runtime/migration.py",
+        "docs/build/unreleased/op_execute.rst",
+        "tests/test_op.py",
+        "tools/write_pyi.py"
+      ],
+      "guard_files": [
+        "alembic/ddl/impl.py",
+        "alembic/operations/base.py",
+        "alembic/operations/ops.py",
+        "alembic/runtime/environment.py",
+        "alembic/runtime/migration.py",
+        "tools/write_pyi.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@7ed092df5c",
+    "instruction": "Ensure proxy transaction still present on exit before closing\nFixed regression caused by the SQLAlchemy 1.4/2.0 compatibility switch\nwhere calling ``.rollback()`` or ``.commit()`` explicitly within the\n``context.begin_transaction()`` context manager would cause it to fail when\nthe block ended, as it did not expect that the transaction was manually\nclosed.",
+    "parent": "dd9c4d695c4463c872b25f59b6a8742bbc047150",
+    "repo": "alembic",
+    "sha": "7ed092df5c4a16990942333a8a43743d02ce18ff",
+    "start_in": "tests/test_environment.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/runtime/migration.py",
+        "docs/build/unreleased/829.rst"
+      ],
+      "files": [
+        "alembic/runtime/migration.py",
+        "docs/build/unreleased/829.rst",
+        "tests/test_environment.py"
+      ],
+      "guard_files": [
+        "alembic/runtime/migration.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@7e95b81548",
+    "instruction": "Clarify and correct PostgreSQL server default comparison for py37\nFixed issue where server default comparison on the PostgreSQL dialect would\nfail for a blank string on Python 3.7 only, due to a change in regular\nexpression behavior in Python 3.7.",
+    "parent": "4fb14eeca8dee9d7ec3b2ef2db2d11a329e84abe",
+    "repo": "alembic",
+    "sha": "7e95b81548dde1c363945cd3937b27af90f20459",
+    "start_in": "alembic/ddl/postgresql.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "docs/build/unreleased/541.rst",
+        "tests/test_postgresql.py"
+      ],
+      "files": [
+        "alembic/ddl/postgresql.py",
+        "docs/build/unreleased/541.rst",
+        "tests/test_postgresql.py"
+      ],
+      "guard_files": [
+        "tests/test_postgresql.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@69f389268e",
+    "instruction": "Added detection of Table prefixes in the create table render\nAdded rendering for the ``Table.prefixes`` element to autogenerate so that\nthe rendered Python code includes these directives. Pull request courtesy\nRodrigo Ce Moretto.",
+    "parent": "9a11c3595aa82e82e3ca2a819a8dda8caf7a0440",
+    "repo": "alembic",
+    "sha": "69f389268e3a5f638502dce19e9635b274c6b5ff",
+    "start_in": "tests/test_autogen_render.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/autogenerate/render.py",
+        "docs/build/unreleased/721.rst"
+      ],
+      "files": [
+        "alembic/autogenerate/render.py",
+        "docs/build/unreleased/721.rst",
+        "tests/test_autogen_render.py"
+      ],
+      "guard_files": [
+        "alembic/autogenerate/render.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@df75e85489",
+    "instruction": "keyword only arguments in ops\nArgument signatures of Alembic operations now enforce keyword-only\narguments as passed as keyword and not positionally, such as\n:paramref:`.Operations.create_table.schema`,\n:paramref:`.Operations.add_column.type_`, etc.",
+    "parent": "92e54a0e1c96cecd99397cb1aee9c3bb28f780c6",
+    "repo": "alembic",
+    "sha": "df75e85489b9ae69fffff2c5ad2594b30bed2fd4",
+    "start_in": "alembic/operations/ops.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "docs/build/unreleased/1130.rst",
+        "tests/test_batch.py",
+        "tests/test_mssql.py",
+        "tests/test_mysql.py",
+        "tests/test_oracle.py",
+        "tests/test_postgresql.py"
+      ],
+      "files": [
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/operations/ops.py",
+        "docs/build/unreleased/1130.rst",
+        "tests/test_batch.py",
+        "tests/test_mssql.py",
+        "tests/test_mysql.py",
+        "tests/test_oracle.py",
+        "tests/test_postgresql.py"
+      ],
+      "guard_files": [
+        "alembic/operations/base.py",
+        "tests/test_batch.py",
+        "tests/test_mssql.py",
+        "tests/test_mysql.py",
+        "tests/test_oracle.py",
+        "tests/test_postgresql.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@0f61c47aba",
+    "instruction": "add sphinx_copybutton",
+    "parent": "ce6144efc6648986733fb9bbb981e95a4a739f61",
+    "repo": "alembic",
+    "sha": "0f61c47abaebb06228f31d9992b1423fd54cdb2e",
+    "start_in": "docs/build/conf.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "docs/build/requirements.txt"
+      ],
+      "files": [
+        "docs/build/conf.py",
+        "docs/build/requirements.txt"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@3e178bd6d7",
+    "instruction": "Raise an exception if any loop or cycle found in a revision graph constructed.\nThe revision tree is now checked for cycles and loops between revision\nfiles when the revision environment is loaded up.  Scenarios such as a\nrevision pointing to itself, or a revision that can reach itself via a\nloop, are handled and will raise the :class:`.CycleDetected` exception when\nthe environment is loaded (expressed from the Alembic commandline as a\nfailure message and nonzero return code). Previously, these situations were\nsilently ignored up front, and the behavior of revision traversal would\neither be silently incorrect, or would produce errors such as\n:class:`.RangeNotAncestorError`.  Pull request courtesy Koichiro Den.",
+    "parent": "8fb588f3cf2c09ca040a45d2f56f6dec14a1ddbf",
+    "repo": "alembic",
+    "sha": "3e178bd6d728fc2b0924fb25427e8e83c3431096",
+    "start_in": "tests/test_revision.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/script/revision.py",
+        "docs/build/unreleased/757.rst"
+      ],
+      "files": [
+        "alembic/script/revision.py",
+        "docs/build/unreleased/757.rst",
+        "tests/test_revision.py"
+      ],
+      "guard_files": [
+        "alembic/script/revision.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@cc582bd05f",
+    "instruction": "ensure rename_column works on SQLite\nModified SQLite's dialect to render \"ALTER TABLE <t> RENAME COLUMN\" when\n:meth:`.Operations.alter_column` is used with a straight rename, supporting\nSQLite's recently added column rename feature.",
+    "parent": "e09ef30d879daa00895098d0fca2a2a58065292b",
+    "repo": "alembic",
+    "sha": "cc582bd05fb96785e2460c1fc9a92460b7101946",
+    "start_in": "alembic/ddl/sqlite.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "docs/build/unreleased/1576.rst",
+        "tests/test_sqlite.py"
+      ],
+      "files": [
+        "alembic/ddl/sqlite.py",
+        "docs/build/unreleased/1576.rst",
+        "tests/test_sqlite.py"
+      ],
+      "guard_files": [
+        "tests/test_sqlite.py"
+      ],
+      "reuse": {
+        "alembic/ddl/sqlite.py": [
+          "ColumnName",
+          "format_column_name"
+        ]
+      }
+    }
+  },
+  {
+    "id": "alembic@802e62fa40",
+    "instruction": "Include existing_comment in MySQLChangeColumn\nFixed issue where emitting a change of column name for MySQL did not\npreserve the column comment, even if it were specified as existing_comment.",
+    "parent": "8961731820f9c7f905296e5fdcfb57e43d2948eb",
+    "repo": "alembic",
+    "sha": "802e62fa40b062fc344b1fbadc151e801f91836c",
+    "start_in": "tests/test_mysql.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/ddl/mysql.py",
+        "docs/build/unreleased/594.rst"
+      ],
+      "files": [
+        "alembic/ddl/mysql.py",
+        "docs/build/unreleased/594.rst",
+        "tests/test_mysql.py"
+      ],
+      "guard_files": [
+        "alembic/ddl/mysql.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@4fff3d29db",
+    "instruction": "get write_pyi to support lowercase types with pipes\nThe specific form of `tuple[] | None` produces a `types.UnionType`\nin some way that seems to not be what it has ever been previously\n(an explicit Union will give you `<class 'typing._UnionGenericAlias'>`,\napparently).  so repr() this specific case so we can move to newer\ntyping formats.\n\nAs a test, this moves the type of partial_reordering to the newer\nformat.\n\nAlso, write output file using shutil.move from tempfile, so that\ncrashes of write_pyi dont corrupt the file.\n\nAdd version checks for black, python version\n\nbump minimum python version to 3.12 as 3.11 seems to have problems\nwe dont need to fix",
+    "parent": "feada2888143efad43c1581811f33dc8a2944a58",
+    "repo": "alembic",
+    "sha": "4fff3d29db492a9026cde0d4e3146f572d4280fc",
+    "start_in": "tools/write_pyi.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/script/write_hooks.py",
+        "tests/requirements.py"
+      ],
+      "files": [
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/script/write_hooks.py",
+        "tests/requirements.py",
+        "tools/write_pyi.py"
+      ],
+      "guard_files": [
+        "alembic/operations/base.py",
+        "alembic/script/write_hooks.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@2719c0ef19",
+    "instruction": "Remove usage of no longer needed compat code",
+    "parent": "fba449536c8ae4417492eba3ead6408b481513ab",
+    "repo": "alembic",
+    "sha": "2719c0ef1917af0b74b9d642a75c9b6dd5cf537a",
+    "start_in": "alembic/script/revision.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/autogenerate/render.py",
+        "alembic/config.py",
+        "alembic/ddl/impl.py",
+        "alembic/ddl/postgresql.py",
+        "alembic/operations/schemaobj.py",
+        "alembic/testing/assertions.py",
+        "alembic/testing/fixtures.py",
+        "alembic/testing/schemacompare.py",
+        "alembic/util/compat.py",
+        "alembic/util/langhelpers.py",
+        "alembic/util/messaging.py",
+        "alembic/util/sqla_compat.py",
+        "tests/test_script_consumption.py"
+      ],
+      "files": [
+        "alembic/autogenerate/render.py",
+        "alembic/config.py",
+        "alembic/ddl/impl.py",
+        "alembic/ddl/postgresql.py",
+        "alembic/operations/schemaobj.py",
+        "alembic/script/revision.py",
+        "alembic/testing/assertions.py",
+        "alembic/testing/fixtures.py",
+        "alembic/testing/schemacompare.py",
+        "alembic/util/compat.py",
+        "alembic/util/langhelpers.py",
+        "alembic/util/messaging.py",
+        "alembic/util/sqla_compat.py",
+        "tests/test_script_consumption.py"
+      ],
+      "guard_files": [
+        "alembic/autogenerate/render.py",
+        "alembic/config.py",
+        "alembic/ddl/impl.py",
+        "alembic/ddl/postgresql.py",
+        "alembic/operations/schemaobj.py",
+        "alembic/testing/assertions.py",
+        "alembic/testing/fixtures.py",
+        "alembic/util/langhelpers.py",
+        "alembic/util/sqla_compat.py",
+        "tests/test_script_consumption.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@6bb4f5efb4",
+    "instruction": "Support computed reflection.\nAdjusted autogen comparison to accommodate for backends that support\ncomputed column reflection, dependent on SQLAlchemy version 1.3.16 or\nhigher. This emits a warning if the SQL expression inside of a\n:class:`.Computed` value changes between the metadata and the database, as\nthese expressions can't be changed without dropping and recreating the\ncolumn.",
+    "parent": "d2457c772128fdf0a94084feaaa2844387d92c2b",
+    "repo": "alembic",
+    "sha": "6bb4f5efb47d9c672a363dc1e588a7ac2c50037b",
+    "start_in": "alembic/autogenerate/compare.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/669.rst",
+        "tests/requirements.py",
+        "tests/test_autogen_computed.py"
+      ],
+      "files": [
+        "alembic/autogenerate/compare.py",
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/669.rst",
+        "tests/requirements.py",
+        "tests/test_autogen_computed.py"
+      ],
+      "guard_files": [
+        "alembic/util/sqla_compat.py",
+        "tests/test_autogen_computed.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@e3c5fc317e",
+    "instruction": "Vendor python3 formatargspec, import from collections.abc\nResolved remaining Python 3 deprecation warnings, covering\nthe use of inspect.formatargspec() with a vendored version\ncopied from the Python standard library, importing\ncollections.abc above Python 3.3 when testing against abstract\nbase classes, fixed one occurrence of log.warn(), as well as a few\ninvalid escape sequences.\n\nAdd DeprecationWarning to the test suite as an error raise\nas has been the case within SQLAlchemy for some time now.",
+    "parent": "12545d3d293d7b32aaef011c7605c3d640e4ac4f",
+    "repo": "alembic",
+    "sha": "e3c5fc317ed306890c65b28c7ab75aa806cd2633",
+    "start_in": "alembic/util/compat.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/operations/base.py",
+        "alembic/testing/provision.py",
+        "alembic/testing/warnings.py",
+        "alembic/util/langhelpers.py",
+        "alembic/util/messaging.py",
+        "docs/build/unreleased/507.rst",
+        "tests/test_op.py",
+        "tests/test_version_traversal.py"
+      ],
+      "files": [
+        "alembic/operations/base.py",
+        "alembic/testing/provision.py",
+        "alembic/testing/warnings.py",
+        "alembic/util/compat.py",
+        "alembic/util/langhelpers.py",
+        "alembic/util/messaging.py",
+        "docs/build/unreleased/507.rst",
+        "tests/test_op.py",
+        "tests/test_version_traversal.py"
+      ],
+      "guard_files": [
+        "alembic/operations/base.py",
+        "alembic/testing/warnings.py",
+        "alembic/util/langhelpers.py",
+        "tests/test_op.py",
+        "tests/test_version_traversal.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@fdcc5bf973",
+    "instruction": "Add multiple revision support to stamp, support purge\nAdded new ``--purge`` flag to the ``alembic stamp`` command, which will\nunconditionally erase the version table before stamping anything.  This is\nuseful for development where non-existent version identifiers might be left\nwithin the table.  Additionally, ``alembic.stamp`` now supports a list of\nrevision identifiers, which are intended to allow setting up muliple heads\nat once.  Overall handling of version identifiers within the\n``alembic.stamp`` command has been improved with many new tests and\nuse cases added.",
+    "parent": "3398e6b5a5175009c9d7047df0c1bbf9891c6610",
+    "repo": "alembic",
+    "sha": "fdcc5bf973fec758eaf67cf8e8ad48985caffb65",
+    "start_in": "tests/test_command.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/command.py",
+        "alembic/config.py",
+        "alembic/runtime/migration.py",
+        "alembic/script/base.py",
+        "alembic/testing/env.py",
+        "alembic/testing/fixtures.py",
+        "alembic/util/__init__.py",
+        "docs/build/unreleased/473.rst"
+      ],
+      "files": [
+        "alembic/command.py",
+        "alembic/config.py",
+        "alembic/runtime/migration.py",
+        "alembic/script/base.py",
+        "alembic/testing/env.py",
+        "alembic/testing/fixtures.py",
+        "alembic/util/__init__.py",
+        "docs/build/unreleased/473.rst",
+        "tests/test_command.py"
+      ],
+      "guard_files": [
+        "alembic/command.py",
+        "alembic/runtime/migration.py",
+        "alembic/script/base.py",
+        "alembic/testing/env.py",
+        "alembic/testing/fixtures.py",
+        "alembic/util/__init__.py"
+      ],
+      "reuse": {
+        "alembic/testing/fixtures.py": [
+          "_sqlite_file_db"
+        ],
+        "alembic/util/__init__.py": [
+          "unique_list"
+        ],
+        "tests/test_command.py": [
+          "multi_heads_fixture"
+        ]
+      }
+    }
+  },
+  {
+    "id": "alembic@a41d5e604f",
+    "instruction": "Copy column that's already attached\nModified the ``add_column()`` operation such that the ``Column`` object in\nuse is shallow copied to a new instance if that ``Column`` is already\nattached to a ``table()`` or ``Table``. This accommodates for the change\nmade in SQLAlchemy issue #5618 which prohibits a ``Column`` from being\nassociated with multiple ``table()`` objects. This resumes support for\nusing a ``Column`` inside of an Alembic operation that already refers to a\nparent ``table()`` or ``Table`` as well as allows operation objects just\nautogenerated to work.",
+    "parent": "9a11c3595aa82e82e3ca2a819a8dda8caf7a0440",
+    "repo": "alembic",
+    "sha": "a41d5e604fbea1e4c1723db9b826b394c702e34b",
+    "start_in": "tests/test_op.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/operations/toimpl.py",
+        "docs/build/unreleased/753.rst"
+      ],
+      "files": [
+        "alembic/operations/toimpl.py",
+        "docs/build/unreleased/753.rst",
+        "tests/test_op.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@1ae4455690",
+    "instruction": "uniquify cols for FK table object\nFixed issue where using a directive such as ``op.create_foreign_key()`` to\ncreate a self-referential constraint on a single table where the same\ncolumn were present on both sides (e.g. within a composite foreign key)\nwould produce an error under SQLAlchemy 2.0 and a warning under SQLAlchemy\n1.4 indicating that a duplicate column were being added to a table.",
+    "parent": "3d9b1128cd6bf03ecb45003587c0eedfb9552b07",
+    "repo": "alembic",
+    "sha": "1ae44556907f14f92874f05d05242cb57bb0f855",
+    "start_in": "tests/test_op.py",
+    "stratum": "grep_reachable",
+    "truth": {
+      "companions": [
+        "alembic/operations/schemaobj.py",
+        "docs/build/unreleased/1215.rst"
+      ],
+      "files": [
+        "alembic/operations/schemaobj.py",
+        "docs/build/unreleased/1215.rst",
+        "tests/test_op.py"
+      ],
+      "guard_files": [
+        "alembic/operations/schemaobj.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@407316635c",
+    "instruction": "Enable SQL Server testing and fix autogen issues\nFixed assorted autogenerate issues with SQL Server:\n\n* ignore default reflected identity on primary_key columns\n* improve server default comparison\n\nUpdated test_autogen_fks for modern levels of FK\ncapabilities",
+    "parent": "3d0ab3ddda45564a7f3bbd65c810242b9e673845",
+    "repo": "alembic",
+    "sha": "407316635cdb8edf95f8ee7bd06a5f2dd01eda26",
+    "start_in": "tests/test_autogen_fks.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "alembic/autogenerate/compare.py",
+        "alembic/ddl/impl.py",
+        "alembic/ddl/mssql.py",
+        "alembic/ddl/postgresql.py",
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/787.rst",
+        "tests/requirements.py",
+        "tests/test_autogen_computed.py",
+        "tests/test_autogen_diffs.py",
+        "tox.ini"
+      ],
+      "files": [
+        "alembic/autogenerate/compare.py",
+        "alembic/ddl/impl.py",
+        "alembic/ddl/mssql.py",
+        "alembic/ddl/postgresql.py",
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/787.rst",
+        "tests/requirements.py",
+        "tests/test_autogen_computed.py",
+        "tests/test_autogen_diffs.py",
+        "tests/test_autogen_fks.py",
+        "tox.ini"
+      ],
+      "guard_files": [
+        "alembic/autogenerate/compare.py",
+        "alembic/ddl/impl.py",
+        "alembic/ddl/mssql.py",
+        "alembic/ddl/postgresql.py",
+        "alembic/util/sqla_compat.py",
+        "tests/test_autogen_computed.py",
+        "tests/test_autogen_diffs.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@e3adbb056a",
+    "instruction": "Remove formatargspec work from create_method_proxy\nSimplified the internal scheme used to generate the ``alembic.op`` namespace\nto no longer attempt to generate full method signatures (e.g. rather than\ngeneric ``*args, **kw``) as this was not working in most cases anyway, while\nin rare circumstances it would in fact sporadically have access to the real\nargument names and then fail when generating the function due to missing\nsymbols in the argument signature.",
+    "parent": "e5005ba5dd0fb07a52480bc14dd5eac6f2a77f67",
+    "repo": "alembic",
+    "sha": "e3adbb056a7d1fb1da5610c29c9de10009a91873",
+    "start_in": "alembic/util/langhelpers.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/build/unreleased/548.rst"
+      ],
+      "files": [
+        "alembic/util/langhelpers.py",
+        "docs/build/unreleased/548.rst"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@d06857c136",
+    "instruction": "- move to \"stable\", modernize a bit",
+    "parent": "b20fe6bfc911898af2ff722f343101832cdf11ec",
+    "repo": "alembic",
+    "sha": "d06857c136039264bf8f0d508655f648aa51b355",
+    "start_in": "setup.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/build/front.rst"
+      ],
+      "files": [
+        "docs/build/front.rst",
+        "setup.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@e49691ef7e",
+    "instruction": "Add cwd post-write hook option\nFixes #822\n\nImplements a `.cwd` suboption for post-write hooks.\n\nFor example, one can do\n```ini\n[post_write_hooks]\nhooks = pre-commit\n\npre-commit.type = console_scripts\npre-commit.entrypoint = pre-commit\npre-commit.options = run --files REVISION_SCRIPT_FILENAME\npre-commit.cwd = %(here)s\n```\n\nThis feature is illustrated by the last line above.\n\n### Description\n\n* Improve the names of some variables recently created in #820 in order to make the code more readable.\n* Add `cwd` as an option which is passed directly into `subprocess.run()`\n* Add a brief description to the documentation, together with an example with `pre-commit`.\n<!-- Describe your changes in detail -->\n\n### Checklist\n<!-- go over following points. check them with an `x` if they do apply, (they turn into clickable checkboxes once the PR is submitted, so no need to do everything at once)\n\n-->\n\nThis pull request is:\n\nA new feature implementation\n\n- [X] please include the issue number, and create an issue if none exists, which must\n- [X] include a complete example of how the feature would look.\n- [X] Please include: `Fixes: #<issue number>` in the commit message\n- [x] **please include tests.**\n\n**Help requested:** I can't think of any simple way to write a test. Does anyone have a suggestion???",
+    "parent": "d4146eceb4258ab5a4af9fa6c711e6677e19e91b",
+    "repo": "alembic",
+    "sha": "e49691ef7e822ec24c2c733a1c442be9ba3cccda",
+    "start_in": "alembic/script/write_hooks.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/build/autogenerate.rst",
+        "docs/build/unreleased/822.rst",
+        "tests/test_post_write.py"
+      ],
+      "files": [
+        "alembic/script/write_hooks.py",
+        "docs/build/autogenerate.rst",
+        "docs/build/unreleased/822.rst",
+        "tests/test_post_write.py"
+      ],
+      "guard_files": [
+        "tests/test_post_write.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@c1cb5f6bc7",
+    "instruction": "Fix autogenerate issue in nulls not distinct\nFixed issue with ``NULLS NOT DISTINCT`` detection in postgresql that\nwould keep detecting changes in the index or unique constraint.",
+    "parent": "0e17b2050d590a7238dbdb917541dfdd2915a98a",
+    "repo": "alembic",
+    "sha": "c1cb5f6bc7c2e387f3b02d1f5cb8c00b0434b366",
+    "start_in": "tests/test_autogen_composition.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "alembic/autogenerate/compare.py",
+        "alembic/ddl/impl.py",
+        "alembic/ddl/mssql.py",
+        "alembic/ddl/postgresql.py",
+        "docs/build/changelog.rst",
+        "docs/build/unreleased/1291.rst",
+        "tests/test_postgresql.py"
+      ],
+      "files": [
+        "alembic/autogenerate/compare.py",
+        "alembic/ddl/impl.py",
+        "alembic/ddl/mssql.py",
+        "alembic/ddl/postgresql.py",
+        "docs/build/changelog.rst",
+        "docs/build/unreleased/1291.rst",
+        "tests/test_autogen_composition.py",
+        "tests/test_postgresql.py"
+      ],
+      "guard_files": [
+        "alembic/autogenerate/compare.py",
+        "alembic/ddl/impl.py",
+        "alembic/ddl/mssql.py",
+        "alembic/ddl/postgresql.py",
+        "tests/test_postgresql.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@eeee44eaff",
+    "instruction": "Repair de-quoting logic used for pre-1.4 SQLAlchemy versions\nFixed regression in 1.4.0 due to :ticket:`647` where unique constraint\ncomparison with mixed case constraint names while not using a naming\nconvention would produce false positives during autogenerate.",
+    "parent": "7b1cfb82d6f0da7a588ba23b18bc76791068883b",
+    "repo": "alembic",
+    "sha": "eeee44eaffae75b9a3d0496ccf478cc74bacef0c",
+    "start_in": "tests/test_autogen_indexes.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/654.rst"
+      ],
+      "files": [
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/654.rst",
+        "tests/test_autogen_indexes.py"
+      ],
+      "guard_files": [
+        "alembic/util/sqla_compat.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@3c0dac89e6",
+    "instruction": "ensure downrev/dependencies in tuple form before using \"in\"\nFixed regression where new \"loop detection\" feature introduced in\n:ticket:`757` produced false positives for revision names that have\noverlapping substrings between revision number and down revision and/or\ndependency, if the downrev/dependency were not in sequence form.",
+    "parent": "e43d175233f206336c0637488e9ed231f421539a",
+    "repo": "alembic",
+    "sha": "3c0dac89e65475e97107adbb5c975ab7855d08db",
+    "start_in": "tests/test_revision.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "alembic/script/revision.py",
+        "docs/build/unreleased/784.rst"
+      ],
+      "files": [
+        "alembic/script/revision.py",
+        "docs/build/unreleased/784.rst",
+        "tests/test_revision.py"
+      ],
+      "guard_files": [
+        "alembic/script/revision.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@d18af2d6d1",
+    "instruction": "support 2.0 style variants\nImplemented support for recognizing and rendering SQLAlchemy \"variant\"\ntypes going forward into SQLAlchemy 2.0, where the architecture of\n\"variant\" datatypes will be changing.\n\nSpecifically any TypeEngine can now have \"variants\" by looking\nin the _variant_mapping dictionary collection associated with the\ntype directly.",
+    "parent": "bb2cf1e56cbc443dc96e80f7d6c32929330bf89e",
+    "repo": "alembic",
+    "sha": "d18af2d6d1c49cc86b878d654b3404bb26614be6",
+    "start_in": "alembic/autogenerate/render.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/variant.rst"
+      ],
+      "files": [
+        "alembic/autogenerate/render.py",
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/variant.rst"
+      ],
+      "guard_files": [
+        "alembic/util/sqla_compat.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@cbc13309a1",
+    "instruction": "set next version at 1.10.0\nWill rebase current 1.10 gerrits to this one until we are\nvery close to 1.10 issues being very close to ready for release.\nIn the interim, I'd rather not have an 0.9 branch for emergency\nbugfixes.\n\nWe are mostly here waiting on I226408eed855b923172e5df0bdab005ed2cc9f53\nfor 1.10 to be close to release.",
+    "parent": "b53ec0004a08c40a25a4dbf047c51cd140971a9c",
+    "repo": "alembic",
+    "sha": "cbc13309a154dd59ae428f14fa2e7340a5fcb6fc",
+    "start_in": "alembic/__init__.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/build/changelog.rst"
+      ],
+      "files": [
+        "alembic/__init__.py",
+        "docs/build/changelog.rst"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@bb8ff87c58",
+    "instruction": "document operations in terms of Operations",
+    "parent": "65302c42b2146d488167afb1bd1115696cd14cc2",
+    "repo": "alembic",
+    "sha": "bb8ff87c58e33cdba8fce542aa23d1910d8b3029",
+    "start_in": "alembic/operations/base.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/build/ops.rst"
+      ],
+      "files": [
+        "alembic/operations/base.py",
+        "docs/build/ops.rst"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@abd175bf86",
+    "instruction": "Followup / fixup: apply 'black' code formatting to a couple of missed docstrings\n### Description\nFollow-up / completion of #1220.  That change updated a number of docstrings within the codebase to use standardised `black` code formatting, but a couple of locations had been missed.\n\n### Checklist\n\nThis pull request is:\n\n- [x] A documentation / typographical error fix\n\t- Good to go, no issue or tests are needed",
+    "parent": "84462eee9b742e58e0f1937f17820e946508b4e3",
+    "repo": "alembic",
+    "sha": "abd175bf86b1091fe444b91c4f98dc9ea97ff723",
+    "start_in": "alembic/operations/ops.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "alembic/op.pyi",
+        "docs/build/unreleased/1220.rst"
+      ],
+      "files": [
+        "alembic/op.pyi",
+        "alembic/operations/ops.py",
+        "docs/build/unreleased/1220.rst"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@68ca631575",
+    "instruction": "Remove tests_require\nRemoved the \"test requirements\" from \"setup.py test\", as this command now\nonly emits a removal error in any case and these requirements are unused.",
+    "parent": "3496f19cd52c89f05ca0a8af32adb141caa3db8d",
+    "repo": "alembic",
+    "sha": "68ca631575a812f4f36e7521f11f4f351833282d",
+    "start_in": "setup.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/build/unreleased/592.rst"
+      ],
+      "files": [
+        "docs/build/unreleased/592.rst",
+        "setup.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@f826aada4c",
+    "instruction": "Improve write_pyi usage\nFixes #1524\n### Description\n\nDue to some problems when running write_pyi, this includes the following changes:\n\n1. move the sys.path.append up before alembic is imported - this is using global imports otherwise\n2. use tox to run write_pyi in order to avoid globally installed dependencies\n\n### Checklist\n<!-- go over following points. check them with an `x` if they do apply, (they turn into clickable checkboxes once the PR is submitted, so no need to do everything at once)\n\n-->\n\nThis pull request is:\n\n- [ ] A documentation / typographical error fix\n\t- Good to go, no issue or tests are needed\n- [x] A short code fix\n\t- please include the issue number, and create an issue if none exists, which\n\t  must include a complete example of the issue.  one line code fixes without an\n\t  issue and demonstration will not be accepted.\n\t- Please include: `Fixes: #<issue number>` in the commit message\n\t- please include tests.   one line code fixes without tests will not be accepted.\n- [ ] A new feature implementation\n\t- please include the issue number, and create an issue if none exists, which must\n\t  include a complete example of how the feature would look.\n\t- Please include: `Fixes: #<issue number>` in the commit message\n\t- please include tests.\n\n**Have a nice day!**",
+    "parent": "b6b44c1e90c96b55939b28d73f427eff7b9cb620",
+    "repo": "alembic",
+    "sha": "f826aada4c605ac3bb52e85add7718477c0751a2",
+    "start_in": "tools/write_pyi.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "tox.ini"
+      ],
+      "files": [
+        "tools/write_pyi.py",
+        "tox.ini"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@dac4723c0c",
+    "instruction": "update to mypy 2.3.0",
+    "parent": "5551b5d35f985c99cb8f1af2b3c526b050e4c059",
+    "repo": "alembic",
+    "sha": "dac4723c0c60d8e6aaa4474b369aa20e82cdc618",
+    "start_in": "alembic/operations/base.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "pyproject.toml",
+        "tox.ini"
+      ],
+      "files": [
+        "alembic/operations/base.py",
+        "pyproject.toml",
+        "tox.ini"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@cc16397b98",
+    "instruction": "dont hardcode transaction opened messaging\nAdjustments to the test suite to accommodate for error message changes\noccurring as of SQLAlchemy 1.4.27.",
+    "parent": "7f99ba5d06d646eef03bd3848fae579d0f51e2f6",
+    "repo": "alembic",
+    "sha": "cc16397b98a0450d05732dc8696eece5a42998af",
+    "start_in": "tests/test_script_consumption.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/build/unreleased/test_changes.rst"
+      ],
+      "files": [
+        "docs/build/unreleased/test_changes.rst",
+        "tests/test_script_consumption.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@bf71ce6530",
+    "instruction": "Improve index autogenerare detection on PostgreSQL\nImproved autogenerate compare of expression based indexes on PostgreSQL\nto produce fewer wrong detections.",
+    "parent": "07aae1d88fecb267fdc623d02005dadbbd39948a",
+    "repo": "alembic",
+    "sha": "bf71ce65307dbfd8b9b58c2dc4e844bb423dce21",
+    "start_in": "tests/test_autogen_indexes.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "alembic/ddl/postgresql.py",
+        "docs/build/changelog.rst",
+        "docs/build/unreleased/1270.rst"
+      ],
+      "files": [
+        "alembic/ddl/postgresql.py",
+        "docs/build/changelog.rst",
+        "docs/build/unreleased/1270.rst",
+        "tests/test_autogen_indexes.py"
+      ],
+      "guard_files": [
+        "alembic/ddl/postgresql.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@871a409f69",
+    "instruction": "1.11.0 in changelog file; doc updates",
+    "parent": "32a82f7e4d18c0c1459a30cd91e2265971de10f8",
+    "repo": "alembic",
+    "sha": "871a409f69e07a345ccdfac766ffade80425e6f7",
+    "start_in": "alembic/operations/base.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "alembic/op.pyi",
+        "alembic/operations/ops.py",
+        "alembic/runtime/migration.py",
+        "docs/build/changelog.rst",
+        "docs/build/unreleased/1178.rst",
+        "docs/build/unreleased/1231.rst",
+        "docs/build/unreleased/1237.rst"
+      ],
+      "files": [
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/operations/ops.py",
+        "alembic/runtime/migration.py",
+        "docs/build/changelog.rst",
+        "docs/build/unreleased/1178.rst",
+        "docs/build/unreleased/1231.rst",
+        "docs/build/unreleased/1237.rst"
+      ],
+      "guard_files": [
+        "alembic/operations/ops.py",
+        "alembic/runtime/migration.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@1684d0ee89",
+    "instruction": "Fix downgrade with effective head\nFixed issue where downgrade using a relative revision would\nfail in case of multiple branches with a single effectively\nhead due to interdependencies between revisions.",
+    "parent": "cfe92fac6794515d3aa3b995e288b11d5c9437fa",
+    "repo": "alembic",
+    "sha": "1684d0ee89c0fc6b0b90bc5db614468b31119e9d",
+    "start_in": "tests/test_revision.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "alembic/script/base.py",
+        "alembic/script/revision.py",
+        "alembic/util/compat.py",
+        "docs/build/unreleased/1026.rst",
+        "pyproject.toml"
+      ],
+      "files": [
+        "alembic/script/base.py",
+        "alembic/script/revision.py",
+        "alembic/util/compat.py",
+        "docs/build/unreleased/1026.rst",
+        "pyproject.toml",
+        "tests/test_revision.py"
+      ],
+      "guard_files": [
+        "alembic/script/base.py",
+        "alembic/script/revision.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@3c46243f23",
+    "instruction": "mock _NONE_NAME for < 1.3.24\nFixed regression where Alembic would not run with older SQLAlchemy 1.3\nversions prior to 1.3.24 due to a missing symbol. Workarounds have been\napplied for older 1.3 versions.",
+    "parent": "6f0938086dde93a12e61e47c00c37a9ee9fee8b6",
+    "repo": "alembic",
+    "sha": "3c46243f23bd258744e3417566a52ca3ab312d70",
+    "start_in": "alembic/util/sqla_compat.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/build/unreleased/1196.rst"
+      ],
+      "files": [
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/1196.rst"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@53c15cf1c7",
+    "instruction": "Clarified an error message on failure to find 'migrations' path.\nError message for \"path doesn't exist\" when loading up script environment\nnow displays the absolute path.  Pull request courtesy Rowan Hart.",
+    "parent": "1dc57cd4475f81b6a00cd1723766d014b0d0b9b1",
+    "repo": "alembic",
+    "sha": "53c15cf1c75232f3f19d70c093c6c93c30a679f8",
+    "start_in": "alembic/script/base.py",
+    "stratum": "convention",
+    "truth": {
+      "companions": [
+        "docs/build/unreleased/663.rst"
+      ],
+      "files": [
+        "alembic/script/base.py",
+        "docs/build/unreleased/663.rst"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@dd01224a4c",
+    "instruction": "Fix issues in autogenerate of function index removal\nFixed error raised by alembic when running autogenerate after removing\na function based index.",
+    "parent": "79958bf68da0684ec7c7ffe90b1c5a41360c5906",
+    "repo": "alembic",
+    "sha": "dd01224a4cbc5119aa6738867b7ce28d9c65a73e",
+    "start_in": "tests/test_autogen_render.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "alembic/testing/requirements.py",
+        "alembic/testing/warnings.py",
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/1212.rst",
+        "tests/test_batch.py",
+        "tests/test_sqlite.py"
+      ],
+      "files": [
+        "alembic/testing/requirements.py",
+        "alembic/testing/warnings.py",
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/1212.rst",
+        "tests/test_autogen_render.py",
+        "tests/test_batch.py",
+        "tests/test_sqlite.py"
+      ],
+      "guard_files": [
+        "alembic/util/sqla_compat.py",
+        "tests/test_batch.py",
+        "tests/test_sqlite.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@e460d6756b",
+    "instruction": "Added quiet option to command line\nAdded quiet option to the command line, using the ``-q/--quiet``\noption. This flag will prevent alembic from logging anything\nto stdout.",
+    "parent": "abd175bf86b1091fe444b91c4f98dc9ea97ff723",
+    "repo": "alembic",
+    "sha": "e460d6756b86260460986eea292d30225e20d137",
+    "start_in": "alembic/config.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/run-on-pr.yaml",
+        ".github/workflows/run-test.yaml",
+        "alembic/__init__.py",
+        "alembic/command.py",
+        "alembic/script/base.py",
+        "alembic/script/write_hooks.py",
+        "alembic/util/__init__.py",
+        "alembic/util/langhelpers.py",
+        "alembic/util/messaging.py",
+        "docs/build/unreleased/1109.rst",
+        "tests/test_command.py",
+        "tests/test_script_production.py"
+      ],
+      "files": [
+        ".github/workflows/run-on-pr.yaml",
+        ".github/workflows/run-test.yaml",
+        "alembic/__init__.py",
+        "alembic/command.py",
+        "alembic/config.py",
+        "alembic/script/base.py",
+        "alembic/script/write_hooks.py",
+        "alembic/util/__init__.py",
+        "alembic/util/langhelpers.py",
+        "alembic/util/messaging.py",
+        "docs/build/unreleased/1109.rst",
+        "tests/test_command.py",
+        "tests/test_script_production.py"
+      ],
+      "guard_files": [
+        "alembic/command.py",
+        "alembic/script/base.py",
+        "alembic/script/write_hooks.py",
+        "alembic/util/__init__.py",
+        "alembic/util/langhelpers.py",
+        "tests/test_command.py",
+        "tests/test_script_production.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@b19ac41f19",
+    "instruction": "Alembic 1.13 now supports Python 3.8 and above",
+    "parent": "78159abed333a94f81e1a5e4a25bc31244e5fda6",
+    "repo": "alembic",
+    "sha": "b19ac41f1977835025adf808d0371ccd64c40bce",
+    "start_in": "alembic/__init__.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/run-on-pr.yaml",
+        ".github/workflows/run-test.yaml",
+        "README.unittests.rst",
+        "alembic/util/compat.py",
+        "docs/build/conf.py",
+        "docs/build/front.rst",
+        "docs/build/requirements.txt",
+        "docs/build/unreleased/1359.rst",
+        "setup.cfg"
+      ],
+      "files": [
+        ".github/workflows/run-on-pr.yaml",
+        ".github/workflows/run-test.yaml",
+        "README.unittests.rst",
+        "alembic/__init__.py",
+        "alembic/util/compat.py",
+        "docs/build/conf.py",
+        "docs/build/front.rst",
+        "docs/build/requirements.txt",
+        "docs/build/unreleased/1359.rst",
+        "setup.cfg"
+      ],
+      "guard_files": [
+        "docs/build/conf.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@188dd8b2f0",
+    "instruction": "implement full copy for indexes in batch\nFixed issue in batch mode where CREATE INDEX would not use a new column\nname in the case of a column rename.\n\nIndexes were previously being moved to the new table without any\nsteps to rewrite columns.   We now vendor the copy approach\nfrom table.to_metadata so that there's a new index expressed\nin terms of the new columns.",
+    "parent": "4790411e319df0a367c4f2adbf18bf3cd1862a0b",
+    "repo": "alembic",
+    "sha": "188dd8b2f098e804c8e64956e9c6490d41f1d7ce",
+    "start_in": "tests/test_batch.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "alembic/operations/batch.py",
+        "alembic/util/compat.py",
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/1034.rst"
+      ],
+      "files": [
+        "alembic/operations/batch.py",
+        "alembic/util/compat.py",
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/1034.rst",
+        "tests/test_batch.py"
+      ],
+      "guard_files": [
+        "alembic/operations/batch.py",
+        "alembic/util/sqla_compat.py"
+      ],
+      "reuse": {
+        "alembic/operations/batch.py": [
+          "_copy_expression"
+        ]
+      }
+    }
+  },
+  {
+    "id": "alembic@2eb96e3102",
+    "instruction": "Remove old version notes, prior to version 1.7\nThis also removes some old docs regarding sqlalchemy version prior to version 1",
+    "parent": "381f58bba400cbb37887a7c008a564f063f683ac",
+    "repo": "alembic",
+    "sha": "2eb96e3102beb9046c730af8bd69a21c93d0858a",
+    "start_in": "alembic/operations/base.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "alembic/command.py",
+        "alembic/context.pyi",
+        "alembic/ddl/impl.py",
+        "alembic/op.pyi",
+        "alembic/operations/ops.py",
+        "alembic/runtime/environment.py",
+        "alembic/runtime/migration.py",
+        "alembic/script/write_hooks.py",
+        "docs/build/autogenerate.rst",
+        "docs/build/batch.rst",
+        "docs/build/cookbook.rst",
+        "docs/build/front.rst",
+        "docs/build/tutorial.rst"
+      ],
+      "files": [
+        "alembic/command.py",
+        "alembic/context.pyi",
+        "alembic/ddl/impl.py",
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/operations/ops.py",
+        "alembic/runtime/environment.py",
+        "alembic/runtime/migration.py",
+        "alembic/script/write_hooks.py",
+        "docs/build/autogenerate.rst",
+        "docs/build/batch.rst",
+        "docs/build/cookbook.rst",
+        "docs/build/front.rst",
+        "docs/build/tutorial.rst"
+      ],
+      "guard_files": [
+        "alembic/command.py",
+        "alembic/ddl/impl.py",
+        "alembic/operations/ops.py",
+        "alembic/runtime/environment.py",
+        "alembic/runtime/migration.py",
+        "alembic/script/write_hooks.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@c072e67aa9",
+    "instruction": "updates for mypy 1.16\nsome errors go away, others come in.   basically moving\nignores around.  need to pin to 1.16 at the lowest as these\nwould now fail on earlier mypy versions",
+    "parent": "511dd0379a086c22860bdfbc4e422cfca36dd1d5",
+    "repo": "alembic",
+    "sha": "c072e67aa91eb871a8123eaa26393fd568cc3f2e",
+    "start_in": "alembic/runtime/migration.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "alembic/autogenerate/compare.py",
+        "alembic/autogenerate/rewriter.py",
+        "alembic/runtime/environment.py",
+        "alembic/script/base.py",
+        "tox.ini"
+      ],
+      "files": [
+        "alembic/autogenerate/compare.py",
+        "alembic/autogenerate/rewriter.py",
+        "alembic/runtime/environment.py",
+        "alembic/runtime/migration.py",
+        "alembic/script/base.py",
+        "tox.ini"
+      ],
+      "guard_files": [
+        "alembic/autogenerate/compare.py",
+        "alembic/autogenerate/rewriter.py",
+        "alembic/runtime/environment.py",
+        "alembic/script/base.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@361076e847",
+    "instruction": "Update black, zimports and flake8",
+    "parent": "b729cbbce1fc643557e7d68b31b77090dab082a5",
+    "repo": "alembic",
+    "sha": "361076e847c7c60dd00438f1a612aba799e90b1d",
+    "start_in": "tests/test_version_traversal.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".gitignore",
+        ".pre-commit-config.yaml",
+        "tox.ini"
+      ],
+      "files": [
+        ".gitignore",
+        ".pre-commit-config.yaml",
+        "tests/test_version_traversal.py",
+        "tox.ini"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@499ccb3ed1",
+    "instruction": "Update black to match sqlalchemy version\nAlso add a in the pep8 tox job a check to verify that all files\nare properly formatted",
+    "parent": "6bb4f5efb47d9c672a363dc1e588a7ac2c50037b",
+    "repo": "alembic",
+    "sha": "499ccb3ed186c52925ecfdb81f5e9859dd1e5122",
+    "start_in": "tests/test_mysql.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".gitignore",
+        ".pre-commit-config.yaml",
+        "pyproject.toml",
+        "tox.ini"
+      ],
+      "files": [
+        ".gitignore",
+        ".pre-commit-config.yaml",
+        "pyproject.toml",
+        "tests/test_mysql.py",
+        "tox.ini"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@b11c2000f0",
+    "instruction": "Re-port bootstrap /plugin_base to get combinatoric functions\nThe py.test combinatoric functions are available in\nSQLAlchemy's testing fixtures for version 1.3 and 1.4 only,\nnot 1.1 or 1.2.\n\nThis also needs to port the py.test test collection\nfunction which was improved in SQLAlchemy 1.3 and also\nmade to accommodate for pytest.combinations, so we must\nstill vendor a minimum set of the \"bootstrap\" mechanism\nfor now.",
+    "parent": "177c3de5a7c845bf31a749dc379d84804e405a92",
+    "repo": "alembic",
+    "sha": "b11c2000f0f9c7ba03d69cc760512cb24aac6f22",
+    "start_in": "alembic/testing/plugin/pytestplugin.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "alembic/testing/__init__.py",
+        "alembic/testing/fixture_functions.py",
+        "alembic/testing/plugin/__init__.py",
+        "alembic/testing/plugin/bootstrap.py",
+        "alembic/testing/plugin/plugin_base.py",
+        "alembic/testing/util.py",
+        "tests/conftest.py",
+        "tests/test_autogen_diffs.py"
+      ],
+      "files": [
+        "alembic/testing/__init__.py",
+        "alembic/testing/fixture_functions.py",
+        "alembic/testing/plugin/__init__.py",
+        "alembic/testing/plugin/bootstrap.py",
+        "alembic/testing/plugin/plugin_base.py",
+        "alembic/testing/plugin/pytestplugin.py",
+        "alembic/testing/util.py",
+        "tests/conftest.py",
+        "tests/test_autogen_diffs.py"
+      ],
+      "guard_files": [
+        "tests/test_autogen_diffs.py"
+      ],
+      "reuse": {
+        "alembic/testing/plugin/plugin_base.py": [
+          "config"
+        ],
+        "alembic/testing/util.py": [
+          "config"
+        ]
+      }
+    }
+  },
+  {
+    "id": "alembic@70463e9cae",
+    "instruction": "Implement new `exec` write-hook runner that will execute arbitrary binaries\nAdded new feature to the \"code formatter\" function which allows standalone\nexecutable tools to be run against code, without going through the Python\ninterpreter.  Known as the ``exec`` runner, it complements the existing\n``console_scripts`` runner by allowing non-Python tools such as ``ruff`` to\nbe used.   Pull request courtesy Mihail Milushev.",
+    "parent": "bf6f14907b72db76ac23635789754489e3208655",
+    "repo": "alembic",
+    "sha": "70463e9cae6cf32fb3b0e881a6213fcc690fce12",
+    "start_in": "tests/test_post_write.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "alembic/__init__.py",
+        "alembic/script/write_hooks.py",
+        "alembic/templates/async/alembic.ini.mako",
+        "alembic/templates/generic/alembic.ini.mako",
+        "alembic/templates/multidb/alembic.ini.mako",
+        "docs/build/autogenerate.rst",
+        "docs/build/tutorial.rst",
+        "docs/build/unreleased/1275.rst"
+      ],
+      "files": [
+        "alembic/__init__.py",
+        "alembic/script/write_hooks.py",
+        "alembic/templates/async/alembic.ini.mako",
+        "alembic/templates/generic/alembic.ini.mako",
+        "alembic/templates/multidb/alembic.ini.mako",
+        "docs/build/autogenerate.rst",
+        "docs/build/tutorial.rst",
+        "docs/build/unreleased/1275.rst",
+        "tests/test_post_write.py"
+      ],
+      "guard_files": [
+        "alembic/script/write_hooks.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@abef1d8679",
+    "instruction": "remove DB-based skips on non-backend tests\nfor tests that are testing for SQL compilation only,\nthere's no need to limit based on DB backend since we aren't\nusing it.  this avoids the awkward situation where tests like\ntest_sqlite.py -> test_create_table_with_comment_ignored would\nbe skipped when running the test suite against sqlite, but would\nrun just fine when running against any other DB (because those DBs\ndont have a comment limitation and the test is just a compilation\ntest).",
+    "parent": "35e1cdd117c98449703a9fc82f39ef6ea1c4807d",
+    "repo": "alembic",
+    "sha": "abef1d86797a1883761197deb96b50e18344684d",
+    "start_in": "tests/test_postgresql.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "tests/test_mssql.py",
+        "tests/test_op.py",
+        "tests/test_oracle.py",
+        "tests/test_sqlite.py"
+      ],
+      "files": [
+        "tests/test_mssql.py",
+        "tests/test_op.py",
+        "tests/test_oracle.py",
+        "tests/test_postgresql.py",
+        "tests/test_sqlite.py"
+      ],
+      "guard_files": [
+        "tests/test_mssql.py",
+        "tests/test_op.py",
+        "tests/test_oracle.py",
+        "tests/test_sqlite.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@717202241e",
+    "instruction": "Alembic 1.8 now supports Python 3.7 and above",
+    "parent": "1684d0ee89c0fc6b0b90bc5db614468b31119e9d",
+    "repo": "alembic",
+    "sha": "717202241e3ab30f97cea8f4ec5bbacfd4b180a8",
+    "start_in": "alembic/__init__.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        ".github/workflows/run-test.yaml",
+        "alembic/util/compat.py",
+        "docs/build/front.rst",
+        "docs/build/unreleased/1025.rst",
+        "setup.cfg"
+      ],
+      "files": [
+        ".github/workflows/run-test.yaml",
+        "alembic/__init__.py",
+        "alembic/util/compat.py",
+        "docs/build/front.rst",
+        "docs/build/unreleased/1025.rst",
+        "setup.cfg"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@d770c1ebc5",
+    "instruction": "document argparse limitation",
+    "parent": "537448c34af065476b6679fed3aa7b36cda14c3f",
+    "repo": "alembic",
+    "sha": "d770c1ebc596c58c2d010233457fe62ea04af509",
+    "start_in": "alembic/autogenerate/api.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "docs/build/tutorial.rst",
+        "tests/test_autogen_diffs.py"
+      ],
+      "files": [
+        "alembic/autogenerate/api.py",
+        "docs/build/tutorial.rst",
+        "tests/test_autogen_diffs.py"
+      ],
+      "guard_files": [
+        "tests/test_autogen_diffs.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@3398e6b5a5",
+    "instruction": "- call the next release 1.2.0",
+    "parent": "31296d923fbbf9876f6ed797a66021b5236b720c",
+    "repo": "alembic",
+    "sha": "3398e6b5a5175009c9d7047df0c1bbf9891c6610",
+    "start_in": "alembic/__init__.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "alembic/runtime/migration.py",
+        "docs/build/changelog.rst"
+      ],
+      "files": [
+        "alembic/__init__.py",
+        "alembic/runtime/migration.py",
+        "docs/build/changelog.rst"
+      ],
+      "guard_files": [
+        "alembic/runtime/migration.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@1977047a11",
+    "instruction": "generate .pyi files for proxied classes\nStub .pyi files have been added for the \"dynamically\"\ngenerated Alembic modules ``alembic.op`` and ``alembic.context``, which\ninclude complete function signatures and docstrings, so that the functions\nin these namespaces will have both IDE support (vscode, pycharm, etc) as\nwell as support for typing tools like Mypy. The files themselves are\nstatically generated from their source functions within the source tree.\n\nStill not available is sphinx autodoc from the .pyi file.  so\nwe might want to further modify this to write into the .py directly.\n\nif we do *that*, we could almost get rid of ModuleClsProxy and\njust generate proxying methods fully in op.py.  however, this won't work\nfor the \"extending ops\" use case.",
+    "parent": "6aad68605f510e8b51f42efa812e02b3831d6e33",
+    "repo": "alembic",
+    "sha": "1977047a11124221461ad8daee502bc4c74d5f6c",
+    "start_in": "tools/write_pyi.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "alembic/config.py",
+        "alembic/context.pyi",
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/py.typed",
+        "alembic/script/write_hooks.py",
+        "alembic/testing/__init__.py",
+        "alembic/util/compat.py",
+        "alembic/util/langhelpers.py",
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/py3_typing.rst",
+        "setup.cfg",
+        "tests/test_stubs.py",
+        "tox.ini"
+      ],
+      "files": [
+        "alembic/config.py",
+        "alembic/context.pyi",
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/py.typed",
+        "alembic/script/write_hooks.py",
+        "alembic/testing/__init__.py",
+        "alembic/util/compat.py",
+        "alembic/util/langhelpers.py",
+        "alembic/util/sqla_compat.py",
+        "docs/build/unreleased/py3_typing.rst",
+        "setup.cfg",
+        "tests/test_stubs.py",
+        "tools/write_pyi.py",
+        "tox.ini"
+      ],
+      "guard_files": [
+        "alembic/config.py",
+        "alembic/operations/base.py",
+        "alembic/util/langhelpers.py",
+        "alembic/util/sqla_compat.py",
+        "tests/test_stubs.py"
+      ],
+      "reuse": {
+        "alembic/util/compat.py": [
+          "inspect_formatargspec"
+        ],
+        "tests/test_stubs.py": [
+          "TestBase"
+        ],
+        "tools/write_pyi.py": [
+          "EnvironmentContext",
+          "Operations",
+          "console_scripts",
+          "inspect_formatargspec"
+        ]
+      }
+    }
+  },
+  {
+    "id": "alembic@2cd9e1ae0c",
+    "instruction": "remove pylons template\nalso some other doc updates",
+    "parent": "11839b743d1c13ce04948526fe66f51a12de4429",
+    "repo": "alembic",
+    "sha": "2cd9e1ae0c1c8c6becc43029b71b1c1fd2303dda",
+    "start_in": "alembic/templates/pylons/env.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "alembic/command.py",
+        "alembic/templates/pylons/README",
+        "alembic/templates/pylons/alembic.ini.mako",
+        "alembic/templates/pylons/script.py.mako",
+        "docs/build/front.rst",
+        "docs/build/tutorial.rst",
+        "docs/build/unreleased/764.rst",
+        "docs/build/unreleased/987.rst"
+      ],
+      "files": [
+        "alembic/command.py",
+        "alembic/templates/pylons/README",
+        "alembic/templates/pylons/alembic.ini.mako",
+        "alembic/templates/pylons/env.py",
+        "alembic/templates/pylons/script.py.mako",
+        "docs/build/front.rst",
+        "docs/build/tutorial.rst",
+        "docs/build/unreleased/764.rst",
+        "docs/build/unreleased/987.rst"
+      ],
+      "guard_files": [
+        "alembic/command.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@e28ee4ed42",
+    "instruction": "Annotate batch_alter_table",
+    "parent": "0dd2cc8ddfb7a48b693c12f20d68964a78912e59",
+    "repo": "alembic",
+    "sha": "e28ee4ed42ac57f727a934a0916075168d87fcf3",
+    "start_in": "tools/write_pyi.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/util/compat.py"
+      ],
+      "files": [
+        "alembic/op.pyi",
+        "alembic/operations/base.py",
+        "alembic/util/compat.py",
+        "tools/write_pyi.py"
+      ],
+      "guard_files": [
+        "alembic/operations/base.py"
+      ],
+      "reuse": {}
+    }
+  },
+  {
+    "id": "alembic@cdad3802ba",
+    "instruction": "Drop python 3.4 support\nmysqlclient is no longer working in Python 3.4, and as pip is also\nemitting warnings for dropped support, in order to maintain CI\nwe need to drop Python 3.4.  Also include 3.7, 3.8 in classifiers.",
+    "parent": "4cdad6aec32b4b5573a2009cc356cb4b144bd359",
+    "repo": "alembic",
+    "sha": "cdad3802baed638b2b1d7ca19bb1be80f213e02d",
+    "start_in": "alembic/util/compat.py",
+    "stratum": "hidden",
+    "truth": {
+      "companions": [
+        "docs/build/front.rst",
+        "docs/build/unreleased/drop_py34.rst",
+        "setup.py"
+      ],
+      "files": [
+        "alembic/util/compat.py",
+        "docs/build/front.rst",
+        "docs/build/unreleased/drop_py34.rst",
+        "setup.py"
+      ],
+      "guard_files": [],
+      "reuse": {}
+    }
+  }
+]
