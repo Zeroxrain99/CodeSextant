@@ -395,6 +395,43 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   `simultaneous_seen` already assert exactly that. **Five instances now. When a test
   writes down a rule, check every assertion under it against that rule, not just the one
   that failed.**
+  **A sixth, in a different test, and the fix for it was wrong first.**
+  `test_interactive_contention` compared p99 under a rebuild against p99 while idle. p99
+  over sixty samples is *one observation* -- the slowest -- weighed against p99 over
+  fifteen, which is also one: a max against a max, which on a shared runner reports the
+  worst scheduling hiccup rather than anything the code did. It failed at 392 ms against
+  a 34 ms baseline while a healthy run here sits at a ratio of about **1.05**, so the 8x
+  allowance was never being approached and a single sample tripped it. Starvation is
+  sustained, so the statistic became the median. **Then the floor swallowed the
+  assertion**: 250 ms was derived for a p99 and carried across unchanged, and against a
+  healthy median of 23 ms it is eleven times too generous -- a starved run with a 160 ms
+  median passed. Caught only because the repaired test was checked against a *starved*
+  distribution, not just a healthy one. **When you change the statistic, re-derive every
+  constant tuned for the old one**, and verify a repaired test against the failure it is
+  supposed to catch.
+
+  **A seventh, and the third distinct assertion inside `test_real_contention`.** The
+  control-plane probes in its measurement loop were unprotected, so a `status` call that
+  outran its 1.5 s client budget raised straight out of the test -- on a runner whose
+  server logged `/status -> 200 (2551 ms)` while a reindex took 9.6 s. Patching one
+  assertion at a time had by then cost six CI runs on this file, so the fix is the
+  pattern rather than the line: **every timing claim in it is now a multiple of a
+  baseline measured on the same machine moments earlier**, the control plane gets the
+  same three outcomes the graph routes already had, and total starvation is caught by
+  requiring that not every probe overran. Measured to derive it, four local runs: health
+  2.1-2.8 ms quiet against 3.9-6.0 ms busy, status 6.4-7.6 against 12.4-17.9 --
+  **a healthy ratio near 2.5, not 1**, which is what makes a 4x multiple thin and the
+  floor load-bearing on a fast machine. Written down because the previous two fixes each
+  carried a constant to a baseline it was not derived for.
+
+- **A commit message claimed a file was updated when the edit had silently failed.**
+  `d90b23b` says "HANDOFF.md carries this as the sixth instance". It did not: the edit
+  was bundled into the same shell call as a two-minute background test run, its
+  assertion failed, and only the pytest tail was read. Both entries above were missing
+  until the next failure went looking for them. **Never put an unverified edit in the
+  same command as a long-running one and read only the end of the output** -- and when a
+  commit message says a file changed, the diff is what decides, not the intent.
+
   **The third one is the instructive case.** `test_real_contention` failed on a 504 --
   which is the daemon doing exactly what it promises, refusing a call it cannot serve
   inside the deadline. The test already knew this: it says so in a comment, for
