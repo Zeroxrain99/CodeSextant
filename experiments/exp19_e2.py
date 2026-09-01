@@ -310,13 +310,64 @@ _LOOKUP_MARKERS = (
 )
 
 
+def _lookups(text: str, slug: str, sha: str) -> list[str]:
+    """Calls that actually fetched something about *this* task's upstream.
+
+    Three refinements, each from a false positive rather than from imagination:
+
+    * A bare `github.com` match flagged a repository whose own `tox.ini` names it, so
+      only tool **inputs** are searched, never prose.
+    * A call has to name this task's repository. run_22 asked a repository API about
+      `astral-sh/ruff-pre-commit` to resolve a pre-commit hook's pinned SHA -- tooling,
+      nothing to do with the answer.
+    * A call has to have **returned** something. The same call came back
+      `Access denied: repository ... is not configured for this session`. An attempt
+      that obtained nothing taught the agent nothing, and voiding a trial for it would
+      throw away a clean run to look strict.
+
+    Naming the reference commit is decisive on its own: there is no innocent way to
+    know a sha that appears nowhere in the checkout, the prompt or the path.
+    """
+    import json as _json
+    found = []
+    if sha[:10] in text:
+        found.append(f"names the reference commit: {sha[:10]}")
+
+    fetchers = ("mcp__github__", "WebFetch", "WebSearch")
+    pending: dict[str, str] = {}
+    for line in text.splitlines():
+        try:
+            record = _json.loads(line)
+        except Exception:
+            continue
+        message = record.get("message") or {}
+        for block in (message.get("content") or []):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                name = str(block.get("name", ""))
+                if not any(name.startswith(f) or name == f for f in fetchers):
+                    continue
+                if slug in _json.dumps(block.get("input") or {}):
+                    pending[block.get("id")] = name
+            elif block.get("type") == "tool_result":
+                name = pending.pop(block.get("tool_use_id"), None)
+                if name and not block.get("is_error"):
+                    found.append(f"{name} returned data about {slug}")
+    for chunk in text.split('"name":"Bash"')[1:]:
+        command = chunk[:400]
+        if slug in command or "githubusercontent" in command:
+            found.append("shells out to the upstream repository")
+            break
+    return found
+
+
 def contaminated(run_id: str, transcript: str | None = None) -> list[str]:
     """Evidence that this trial looked the answer up instead of working it out.
 
     Two sources, because neither alone is enough. The git log catches a remote
     operation wherever it was run from -- the leak is not confined to the checkout, so
-    neither is the check. The transcript catches what the block does not: the upstream
-    URL, the reference sha, or a fetch by some other road.
+    neither is the check. The transcript catches what the block does not.
 
     A hit is a mechanical failure of the trial, in the same class as `prepare`
     refusing it. It is not a result, and it is not read as one.
@@ -325,27 +376,27 @@ def contaminated(run_id: str, transcript: str | None = None) -> list[str]:
     task = task_for(find(run_id)["task_id"])
     url = dict(corpus.PREVENTION)[task["repo"]]
     slug = url.split("github.com/")[-1].removesuffix(".git")
+    # **The git log is container-wide and append-only, so it has to be attributed
+    # before it can be read.** Unscoped, it flagged all twenty-three finished trials
+    # identically -- with the harness's own corpus clones, a `pip install` from a git
+    # URL, and pre-commit's temporary clones of its hook repositories. A signal that
+    # fires on every case is not a signal. Two conditions: the call has to come from
+    # inside this run's checkout, and it has to name *this task's* upstream.
+    marker = os.path.join(ROOT, "runs", run_id)
     if os.path.isfile(GIT_LOG):
         with open(GIT_LOG, encoding="utf-8", errors="replace") as handle:
             for line in handle:
-                parts = line.rstrip("\\n").split("\\t")
+                parts = line.rstrip("\n").split("\t")
                 if len(parts) != 3 or "://" not in parts[2]:
+                    continue
+                if not parts[1].startswith(marker) or slug not in parts[2]:
                     continue
                 if any(word in _REMOTE_SUBCOMMANDS for word in parts[2].split()):
                     found.append(f"remote git in {parts[1]}: {parts[2]}")
     if transcript and os.path.isfile(transcript):
         with open(transcript, encoding="utf-8", errors="replace") as handle:
             text = handle.read()
-        if task["sha"][:10] in text:
-            found.append(f"transcript names the reference commit: {task['sha'][:10]}")
-        for marker, why in _LOOKUP_MARKERS:
-            if marker in text:
-                found.append(f"transcript {why}")
-        for line in text.split('"name":"Bash"')[1:]:
-            command = line[:400]
-            if slug in command or "githubusercontent" in command:
-                found.append("transcript shells out to the upstream repository")
-                break
+        found.extend(f"transcript {why}" for why in _lookups(text, slug, task["sha"]))
     return sorted(set(found))
 
 
