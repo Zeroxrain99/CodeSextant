@@ -1,0 +1,26 @@
+{
+ "interruptions": {
+  "removed/raise": 18,
+  "weakened/assert": 2
+ },
+ "e2": {
+  "trials": 40,
+  "by_condition": {
+   "with_tool": {
+    "trials": 20,
+    "trials_that_took_a_kept_fence": 0,
+    "fences_taken": 0,
+    "rate_per_change": 0.0,
+    "run_ids": []
+   },
+   "without_tool": {
+    "trials": 20,
+    "trials_that_took_a_kept_fence": 0,
+    "fences_taken": 0,
+    "rate_per_change": 0.0,
+    "run_ids": []
+   }
+  },
+  "examples": []
+ }
+}

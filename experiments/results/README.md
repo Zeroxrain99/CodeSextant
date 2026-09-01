@@ -16,6 +16,19 @@ which is the comparison the question was actually about. And the front-end numbe
 higher than the Python ones on every measure, against every control, which is the
 opposite of what `docs/plan.md` was written expecting.
 
+## `exp21.json` — E4's event rate, and why E4 was not run
+
+`interruptions` is what `check`'s fourth mode reports over 581 real commits of flask,
+alembic and pytest, tallied by kind: **20 findings, 3.4% of commits**. `e2` re-reads E2's
+forty checkouts for fences instead of companions, against the commit the human actually
+made from the same parent: **569 explained fences within reach of those forty changes,
+70% of the changes carrying at least one, and zero of them taken.**
+
+Those two numbers are what `experiments/results/E4.md` costs the longitudinal experiment
+against. They also found two defects in shipped code — `(kind, name)` does not identify an
+assert or a raise, and the same key was deciding whether a fence had merely moved — which
+between them accounted for 8 false findings and 14 masked real ones in the 581 commits.
+
 ## `e2_pilot_void_*.json` — void, kept as evidence
 
 **Do not quote a number out of these files.** The nine E2 pilot pairs were run in

@@ -2743,6 +2743,29 @@ def _guard_key(guard) -> tuple[str, str]:
     return (guard.kind, guard.name)
 
 
+# Kinds whose rule states *what is enforced*, so a changed rule is a changed fence:
+# a threshold's number, an allowlist's members, a switch's variable, a constraint's
+# columns, an assertion's expression. The two left out are left out on measurements:
+#
+#   test   a test's rule is derived from its body and changes whenever the body does.
+#          exp20: 356 of 420 weakenings were tests being edited normally, 85%.
+#   raise  a raise's rule *is* its message, so rewording one reads as a weakening.
+#          Measured over 581 real commits in flask, alembic and pytest: 8 of the 8
+#          reported raise weakenings were artefacts, every one of them a file with
+#          several raises of the same exception name.
+#
+# Removing either kind is still reported. Only the weakening half is dropped.
+_WEAKENABLE = ("assert", "threshold", "allowlist", "env_switch", "constraint")
+
+# Kinds whose `name` identifies the guard, so `(kind, name)` can follow one across a
+# rename or a move. An assert's name is the empty string and a raise's is its exception
+# class -- neither is an identity, both are shared by every copy in the file, and using
+# them to decide "it moved, it did not go" suppressed *every* assert removal in a file
+# that still contained one other assert. Those two are followed by their rule and by
+# their reason instead, which is what actually travels with them.
+_NAMED = ("test", "threshold", "allowlist", "env_switch", "constraint")
+
+
 def _removed_guards(root: str, changed, *, base: str | None,
                     staged: bool) -> list[dict]:
     """Fences this change took away or loosened, quoted in the author's words.
@@ -2795,7 +2818,8 @@ def _removed_guards(root: str, changed, *, base: str | None,
                 text = ""
         after[rel] = text
         for guard in guards_module.extract(rel, text):
-            landed_keys.add(_guard_key(guard))
+            if guard.kind in _NAMED:
+                landed_keys.add(_guard_key(guard))
             landed_rules.add((guard.kind, guard.rule))
             if guard.reason:
                 landed_reasons.add((guard.kind, guard.reason))
@@ -2805,27 +2829,55 @@ def _removed_guards(root: str, changed, *, base: str | None,
         previous = diffscan.content_before(root, rel, base=base, staged=staged)
         if previous is None:
             continue                       # added by this change; nothing to lose
-        was = {_guard_key(g): g for g in guards_module.extract(rel, previous)}
-        now = {_guard_key(g): g for g in guards_module.extract(rel, after.get(rel, ""))}
-        for key, guard in was.items():
+        was = guards_module.extract(rel, previous)
+        now = guards_module.extract(rel, after.get(rel, ""))
+
+        # **Pair the two images before asking what went, because the name alone does
+        # not identify a fence.** `_guard_key` is `(kind, name)`, and an assert's name
+        # is the empty string while a file routinely raises the same exception in a
+        # dozen places -- so a lookup by key compares whichever copy happened to be
+        # last. Measured on 581 commits of flask, alembic and pytest: of fourteen
+        # reports, eight were that, in files going 2 raises to 7, 6 to 9 and 3 to 2.
+        # It survived the unit tests because both fixtures hold exactly one.
+        #
+        # So: a guard whose full rule still exists is the same guard, matched off one
+        # for one. Only what is left over can have gone or been loosened.
+        survivors: dict[tuple, list] = {}
+        for guard in now:
+            survivors.setdefault(_guard_key(guard), []).append(guard)
+        leftover = []
+        for guard in was:
+            same = [g for g in survivors.get(_guard_key(guard), [])
+                    if g.rule == guard.rule]
+            if same:
+                survivors[_guard_key(guard)].remove(same[0])
+            else:
+                leftover.append(guard)
+
+        for guard in leftover:
             if not guard.reason:
                 continue
-            if key not in now:
-                if (key in landed_keys
+            key = _guard_key(guard)
+            replacement = survivors.get(key) or []
+            if replacement:
+                # Same kind and name, different rule: the fence is still there and
+                # says something else.
+                other = replacement.pop(0)
+                if guard.kind not in _WEAKENABLE:
+                    continue
+                change, became = "weakened", other.rule
+            else:
+                if ((guard.kind in _NAMED and key in landed_keys)
                         or (guard.kind, guard.rule) in landed_rules
                         or (guard.kind, guard.reason) in landed_reasons):
                     continue               # it moved; it did not go
-                change = "removed"
-            elif now[key].rule != guard.rule and guard.kind != "test":
-                change = "weakened"
-            else:
-                continue
+                change, became = "removed", ""
             found.append({
                 "change": change, "kind": guard.kind,
                 "name": guard.name or "", "path": rel, "line": guard.line,
                 "rule": guard.rule, "reason": guard.reason,
                 "reason_source": guard.reason_source,
-                "now": now[key].rule if change == "weakened" else "",
+                "now": became,
             })
     # Removals before weakenings, and a stated docstring before a derived message:
     # the strongest claim that something deliberate just went is read first.
