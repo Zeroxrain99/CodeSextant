@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 
+import pytest
+
 INTERACTIVE_DEADLINE_MS = 15_000.0
 STATUS_DEADLINE_MS = 1_500.0
 HEALTH_P99_DEADLINE_MS = 1_000.0
@@ -60,17 +62,33 @@ def _timed_samples(
     invoke: Callable[[], dict],
     validate: Callable[[dict], None],
     count: int,
-) -> tuple[list[float], list[urllib.error.HTTPError]]:
-    """Latencies of the calls that were answered, and the refusals that were not.
+    still_serving: Callable[[], bool],
+) -> tuple[list[float], list[urllib.error.HTTPError], int]:
+    """Latencies of the calls that were answered, and the two ways one may not be.
 
-    Separating the two is the whole point. This test failed on a CI runner slow enough
-    that a reindex of 73 files took 27 seconds -- against 55 to 289 files per second
+    Separating them is the whole point. This test failed on a CI runner slow enough that
+    a reindex of 73 files took 27 seconds -- against 55 to 289 files per second
     everywhere else -- and the daemon did exactly what it promises: it refused the
     interactive calls it could not serve inside their deadline. Counting that refusal as
     a failure asserts that the runner is fast, which is not a property of this code.
+
+    **A third outcome, and this test asserted it away for four CI runs.** The refusal is
+    a 504 raised when the deadline fires, and `work_coordinator` documents that it
+    cannot always be delivered: "CPython cannot safely interrupt a thread inside Jedi,
+    tree-sitter, SQLite, or another native call. Those calls may return after the
+    request deadline." So on a slow enough machine the client's own deadline passes
+    first and it raises `TimeoutError` instead. That is the documented limit, not a
+    defect, and demanding a 504 there demands an interrupt CPython will not perform.
+
+    What the service *does* promise in that case, and what is asserted here instead, is
+    that it is still up and still serving -- so `still_serving` is called before the
+    overrun is accepted, and a `TimeoutError` from a daemon that has actually died still
+    fails the test. The bound that keeps this honest is in the caller: at least one
+    interactive call must have been answered, or the run measured nothing.
     """
     samples: list[float] = []
     refused: list[urllib.error.HTTPError] = []
+    overran = 0
     for _ in range(count):
         started = time.perf_counter()
         try:
@@ -80,9 +98,61 @@ def _timed_samples(
                 raise
             refused.append(exc)
             continue
+        except TimeoutError:
+            assert still_serving(), (
+                "the call timed out and the daemon stopped answering -- an overrun "
+                "inside an uninterruptible call leaves the service up, a crash does not")
+            overran += 1
+            continue
         samples.append((time.perf_counter() - started) * 1000)
         validate(result)
-    return samples, refused
+    return samples, refused, overran
+
+
+def test_the_sampler_separates_the_three_ways_a_call_can_end():
+    """The overrun branch never runs on a fast machine, so it is exercised directly.
+
+    A branch that only executes on a slow CI runner is a branch nobody has tested: the
+    first version of it would have been found by a Windows job forty minutes later, and
+    the four runs that got here were exactly that loop.
+    """
+    outcomes = iter([
+        {"ok": 1},
+        urllib.error.HTTPError("http://x/impact", 504, "deadline", {}, None),
+        TimeoutError("the service is still up"),
+        {"ok": 2},
+    ])
+
+    def invoke():
+        item = next(outcomes)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    samples, refused, overran = _timed_samples(
+        invoke, lambda result: None, 4, lambda: True)
+    assert len(samples) == 2
+    assert [exc.code for exc in refused] == [504]
+    assert overran == 1
+
+
+def test_a_timeout_from_a_dead_daemon_is_still_a_failure():
+    """The overrun is only excused because the service kept serving. If it stopped, the
+    same exception is the crash this test exists to catch, and must not be swallowed."""
+    def invoke():
+        raise TimeoutError("gone")
+
+    with pytest.raises(AssertionError, match="stopped answering"):
+        _timed_samples(invoke, lambda result: None, 1, lambda: False)
+
+
+def test_an_uncontracted_status_is_never_treated_as_a_refusal():
+    """503 and 504 are the documented back-pressure. A 500 is a defect and propagates."""
+    def invoke():
+        raise urllib.error.HTTPError("http://x/impact", 500, "boom", {}, None)
+
+    with pytest.raises(urllib.error.HTTPError):
+        _timed_samples(invoke, lambda result: None, 1, lambda: True)
 
 
 def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
@@ -234,6 +304,16 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     ]
     graph_samples: dict[str, list[float]] = {}
     graph_refusals: dict[str, list[urllib.error.HTTPError]] = {}
+    graph_overruns: dict[str, int] = {}
+
+    def still_serving() -> bool:
+        """Is the daemon up and answering after a call overran its deadline?
+
+        The branded probe, not a socket connect: what has to hold is that the service
+        kept serving through an uninterruptible call, and a port that accepts a
+        connection does not say that.
+        """
+        return daemon.http_ping(port=port, timeout=2.0) is not None
     health_samples: list[float] = []
     status_samples: list[float] = []
 
@@ -246,6 +326,7 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                         budget=3000, focus_symbols=["target"]),
                     validate_map,
                     4,
+                    still_serving,
                 ),
                 "references": pool.submit(
                     _timed_samples,
@@ -257,6 +338,7 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                     ),
                     validate_references,
                     4,
+                    still_serving,
                 ),
                 "impact": pool.submit(
                     _timed_samples,
@@ -268,6 +350,7 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                     ),
                     validate_impact,
                     4,
+                    still_serving,
                 ),
             }
 
@@ -308,7 +391,8 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                     assert status["indexed"] is True
 
             for route, future in futures.items():
-                graph_samples[route], graph_refusals[route] = future.result(timeout=90)
+                (graph_samples[route], graph_refusals[route],
+                 graph_overruns[route]) = future.result(timeout=90)
     finally:
         stop_reindex.set()
         rebuild.join(timeout=70)
@@ -348,7 +432,11 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
         }
         for route, samples in raw_metrics.items()
     }
-    print(json.dumps(reported_metrics, sort_keys=True))
+    # Overruns printed beside the latencies: a run where they are non-zero is a slow
+    # machine meeting a documented limit, and a reader looking at a CI log deserves to
+    # see that rather than infer it from a smaller sample count.
+    print(json.dumps({**reported_metrics, "overruns": graph_overruns},
+                     sort_keys=True))
 
     # The claim, stated so it holds at any speed: every interactive call either came
     # back inside its deadline or was refused under the contract. A machine slow enough
@@ -359,8 +447,10 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
             f"{route} answered outside its deadline rather than refusing")
     answered = sum(len(raw_metrics[route]) for route in ("map", "references", "impact"))
     assert answered, (
-        "every interactive call was refused, so this run measured admission control "
-        "and nothing else -- the runner was too slow for the test to say anything")
+        "every interactive call was refused or overran, so this run measured admission "
+        "control and nothing else -- the runner was too slow for the test to say "
+        f"anything (refusals {({r: len(v) for r, v in graph_refusals.items()})}, "
+        f"overruns {graph_overruns})")
     for route, refusals in graph_refusals.items():
         for refusal in refusals:
             assert refusal.code in _CONTRACTED_REFUSALS, (route, refusal)

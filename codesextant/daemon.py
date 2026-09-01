@@ -501,12 +501,23 @@ class _IdleShutdownController:
 class _ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
     """HTTP server that cannot share a listen socket with another PID.
 
-    ``HTTPServer`` sets ``allow_reuse_address = True``.  On Windows that means
-    four independently started processes can all LISTEN on 127.0.0.1:8790.
-    Disable reuse and request SO_EXCLUSIVEADDRUSE as a second guardrail.
+    ``HTTPServer`` sets ``allow_reuse_address = True``.  On Windows that flag means
+    something it does not mean anywhere else: four independently started processes can
+    all LISTEN on 127.0.0.1:8790.  There it stays off, with ``SO_EXCLUSIVEADDRUSE``
+    requested in ``server_bind`` as a second guardrail.
+
+    On POSIX it was off too, and that was a mistake made by reading a Windows fact as a
+    general one.  ``SO_REUSEADDR`` does not let two live listeners share an address --
+    only ``SO_REUSEPORT`` does, and that stays off everywhere.  All it permits is
+    binding over a socket left in TIME_WAIT by a process that has already exited.  So
+    switching it off bought no singleton safety at all, and it cost the thing that makes
+    `stop` usable: after a graceful shutdown the port stayed unbindable for about a
+    minute, and every command in that window failed with `spawn-timeout` while the CLI
+    told the user the daemon would come back on its own.  Measured: stop, then three
+    `ensure` attempts over the next three seconds, all `spawn-timeout`.
     """
 
-    allow_reuse_address = False
+    allow_reuse_address = os.name != "nt"
     allow_reuse_port = False
     daemon_threads = False
     block_on_close = True
@@ -675,7 +686,14 @@ class _ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
             self._idle_shutdown.close()
 
     def server_close(self):
-        self._idle_shutdown.close()
+        # `socketserver.__init__` calls this to clean up when `server_bind` raises,
+        # which is before `__init__` has set the attribute. Reaching through it
+        # unguarded replaced the real "Address already in use" with an AttributeError
+        # about an internal name, and that is what the failure looked like for as long
+        # as it took to run the daemon in the foreground by hand.
+        idle = getattr(self, "_idle_shutdown", None)
+        if idle is not None:
+            idle.close()
         return super().server_close()
 
     def server_bind(self):
@@ -2380,12 +2398,28 @@ def ensure_running(port: int | None = None, *, wait_sec: float = 6.0) -> dict:
         return {"action": "startup-lock-timeout", "port": port}
 
 
+def _stop_drain_budget_sec() -> float:
+    try:
+        return max(0.0, float(os.environ.get("CODESEXTANT_STOP_DRAIN_SEC", "10")))
+    except (TypeError, ValueError):
+        return 10.0
+
+
 def stop_running(port: int | None = None) -> dict:
     """Ask an authenticated current daemon to drain and stop itself.
 
     A PID returned over HTTP is never passed to an operating-system kill API.
     Legacy daemons fail closed and must be upgraded through an independently
     verified process-management path.
+
+    This is the only shutdown path, and saying so is the point. A second one was
+    written next to it -- a `/shutdown` route and a client method that duplicated
+    `/_shutdown` and this function -- by somebody who had this file open at the time.
+    It was worse in two specific ways: it called ``shutdown()`` instead of
+    ``initiate_shutdown()``, so the daemon kept accepting new requests while it was on
+    its way out, and it did not distinguish a rejected proof from an absent daemon.
+    Both existed here already. Anything a caller needs from a stop belongs in this
+    function.
     """
     port = port or _port()
     lg = get_logger()
@@ -2420,17 +2454,37 @@ def stop_running(port: int | None = None) -> dict:
             response.read()
         lg.info("stop: daemon accepted graceful drain (reported_pid=%s, port=%d)",
                 pid, port)
+    except urllib.error.HTTPError as exc:
+        # A refusal is not an absence. Folding this into the generic handler below
+        # reported "could not reach it" for a daemon that was reached, answered, and
+        # said no -- and the caller then told somebody their machine was clear while
+        # the process was still on it.
+        lg.warning("stop: daemon refused the shutdown request on port %d: HTTP %s",
+                   port, exc.code)
+        return {"action": "shutdown-refused", "pid": pid, "port": port,
+                "port_released": False, "status": exc.code,
+                "error": f"the daemon rejected the request proof (HTTP {exc.code})"}
     except Exception as exc:
         lg.warning("stop: graceful shutdown request failed on port %d: %s", port, exc)
         return {"action": "shutdown-request-failed", "pid": pid, "port": port,
                 "port_released": False, "error": str(exc)}
 
-    # confirm the port was released
-    for _ in range(15):
-        if http_ping(port=port) is None and not is_port_listening(port=port):
+    # Confirm the process is gone, not merely that it answered. Two questions, because
+    # they answer different things: the port says the listener is closed, the lifetime
+    # lock says the process itself has exited. Only the second one decides whether the
+    # next `ensure_running` can start a replacement -- the draining refusal is keyed on
+    # the lock -- so checking the port alone reported "stopped" while the very next
+    # command still met `daemon-draining`. Measured: stop, then ensure 0.2s later,
+    # refused.
+    deadline = time.monotonic() + _stop_drain_budget_sec()
+    while True:
+        if (http_ping(port=port) is None and not is_port_listening(port=port)
+                and _instance_owner_result(port) is None):
             lg.info("stop: daemon stopped, port %d released", port)
             return {"action": "stopped", "pid": pid, "port": port, "port_released": True}
-        time.sleep(0.2)
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
     return {"action": "draining", "pid": pid, "port": port,
             "port_released": False}
 

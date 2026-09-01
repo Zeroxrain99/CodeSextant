@@ -295,6 +295,45 @@ class CodesextantClient:
             "full": "1" if full else None, "budget": budget, "limit": limit},
             timeout=self._interactive_timeout())
 
+    def stop(self) -> dict:
+        """Ask the daemon to exit, and say which kind of "no" it was.
+
+        The transport, the drain confirmation and the refusal handling all live in
+        `daemon.stop_running`, which had them before this method existed. This
+        translates its result into the shape the CLI prints, and does nothing else --
+        the version that reimplemented all three is what taught this project that its
+        own author rebuilds wheels while looking straight at them.
+
+        Three outcomes, and the distinctions are the whole point. "There was nothing to
+        stop" is a success. "There is a daemon and it would not take my word for it" is
+        not, and an early version reported them identically because `PermissionError`
+        is a subclass of `OSError`. And "it is still draining" is neither: reporting it
+        as stopped would be a claim about the user's machine that is not yet true.
+
+        This deliberately never calls `ensure()`. Everything else in this client
+        self-heals a dead daemon by starting one; for a stop request that is exactly
+        backwards, because the absence of a daemon *is* the answer.
+        """
+        result = daemon.stop_running(port=self.port)
+        action = result.get("action")
+        if action == "stopped":
+            return {"stopped": True, "daemon_present": False, "drained": True,
+                    "pid": result.get("pid")}
+        if action == "draining":
+            return {"stopped": True, "daemon_present": True, "drained": False,
+                    "pid": result.get("pid"),
+                    "reason": "it is still finishing work that was already running"}
+        if action == "not-running":
+            return {"stopped": False, "daemon_present": False,
+                    "reason": "no daemon was running"}
+        if action == "shutdown-refused":
+            return {"stopped": False, "daemon_present": True, "reason": (
+                "a daemon is running but rejected the request proof, which usually "
+                "means it was started with a different CODESEXTANT_HOME "
+                f"({result.get('error')})")}
+        return {"stopped": False, "daemon_present": True,
+                "reason": result.get("error") or f"the daemon reported {action}"}
+
     def find_references(self, symbol: str, *, def_path: str | None = None,
                         src_root: str | None = None, project: str | None = None,
                         include_low_confidence: bool = True,

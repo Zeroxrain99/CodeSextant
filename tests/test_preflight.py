@@ -146,17 +146,71 @@ def test_a_genuinely_new_name_is_reported_as_new(repo):
     assert "find_duplicates" in note
 
 
-def test_one_shared_common_word_is_not_a_reuse_candidate(repo):
-    """release_version against release is a shared verb, not a duplicate implementation."""
+def test_one_shared_word_is_a_candidate_only_when_the_word_is_rare(repo):
+    """This test used to assert the opposite, and the measurement is why it changed.
+
+    The rule was: two names must share at least two words, so a one-word query could
+    only ever match exactly. `release_version` against `release` was the example, and
+    the reason -- one shared word is usually a common verb -- was written by eye.
+
+    Then `shutdown` scored 0.0 against `initiate_shutdown` and a second shutdown
+    endpoint was written in this repository beside the one that already existed, with
+    preflight reporting "nothing resembles it". exp16 replayed 408 shape-duplicates
+    across six repositories and priced the alternatives; allowing a single shared word,
+    gated on the word being rare and still required to clear the similarity threshold,
+    reaches **+0.014 more duplicates held out for +0.05 names per query** -- one extra
+    name every twenty queries. Small, but confirmed on both sets and very nearly free.
+
+    So the fence moved, on a number rather than on an argument. What it still refuses is
+    below: a word the repository uses everywhere, and an overlap too thin to mean
+    anything.
+    """
     _commit(repo, "seed", {
         "a.py": "def release():\n    return 1\n\n\ndef version():\n    return 2\n",
         "b.py": "def main():\n    return 1\n",
     })
     engine.index_project(str(repo), force=True)
 
-    result = engine.preflight(str(repo), "b.py", symbol="release_version")
+    names = sorted(entry["name"] for entry in engine.preflight(
+        str(repo), "b.py", symbol="release_version")["already_exists"])
+    # Both halves of the name, and that is the rule working rather than over-firing:
+    # each is a rare word carrying half of `release_version`, which is exactly the
+    # shape of `shutdown` against `initiate_shutdown`.
+    assert names == ["release", "version"], (
+        "a rare shared word carrying half the name is the case exp16 measured")
 
-    assert result["already_exists"] == [], "one shared word is not similarity"
+
+def test_a_word_the_project_uses_everywhere_is_still_not_evidence(repo):
+    """The half of the old rule that the measurement kept.
+
+    `get` naming ten things is a house verb, not a lead. This is what the rarity gate is
+    for: without it the same overlap that finds `shutdown` beside `initiate_shutdown`
+    would surface every `get_*` in the tree for a query called `get`.
+    """
+    files = {f"m{n}.py": f"def get_thing{n}():\n    return {n}\n" for n in range(10)}
+    files["get.py"] = "def get():\n    return 0\n"
+    _commit(repo, "seed", files)
+    engine.index_project(str(repo), force=True)
+
+    names = [entry["name"] for entry in engine.preflight(
+        str(repo), "new.py", symbol="get_value")["already_exists"]]
+    assert "get" not in names, "a word naming ten things has stopped being evidence"
+
+
+def test_a_thin_overlap_is_refused_however_rare_the_word(repo):
+    """The rarity gate opens the door; the threshold still decides who comes through.
+
+    One rare word out of five is not the same idea, and a gate that ignored the overlap
+    would let a short query drag in every long name that happens to contain it.
+    """
+    _commit(repo, "seed", {
+        "a.py": "def parse_and_validate_supplied_duration(text):\n    return text\n",
+    })
+    engine.index_project(str(repo), force=True)
+
+    names = [entry["name"] for entry in engine.preflight(
+        str(repo), "b.py", symbol="parse")["already_exists"]]
+    assert names == [], "one word of five is not a reuse candidate"
 
 
 def test_a_definition_in_the_file_being_edited_outranks_a_distant_one(repo):

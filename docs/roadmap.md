@@ -139,6 +139,7 @@ read with the same suspicion.
 | D2 · the caller gap, what is left of it | symbol-level ceiling is 0.153/0.439/0.350 and resolution reaches 0.094; module-level `dependents` took `check` to 0.326 held out | exp5 mapped the mechanism: **no single cause dominates**, and the two cheapest repairs (removing the resolution budget; printing the cost gate's leads) were measured and bought nothing |
 | D3 · score symbol-level co-change | mined, shipped, asserted, **never scored** | **done — exp11, and it corrected the reason the feature exists.** Asked alone the narrowed question is *worse* than the file-level one (−0.047 derivation, −0.004 held out) and silent in 52–78% of queries. But `_merge_cochange` ships the union, and the union beats the file tier by **+0.056 held out** — 409 more true companions of 7,315, for 1,377 extra predictions, three in ten of them real. Justified as a supplement, not as a replacement, and `mine_symbols`' docstring now says so |
 
+| D4 · the single-word query | `preflight --symbol shutdown` on `codesextant/daemon.py` answered **"nothing resembles it; it looks new"** while `initiate_shutdown` was indexed in that file — and a second shutdown endpoint was written there as a result. `_name_similarity` needed two shared words, so a one-word query could only ever match exactly | **done — exp16, and it overturned a decision made by eye.** A single shared word now counts when the word is rare in the tree *and* the ordinary overlap still clears the threshold: **+0.021 derivation, +0.014 held out, for +0.05 names per query.** Small and very nearly free, confirmed on both sets. Three alternatives were measured and refused, each costlier than the one before: the same relaxation scoped to the edited file (+0.110 held out for **+10.20 names/query**, 2.6× the whole section); the rarity gate without the overlap floor (+0.050 for +1.41, and it silently stops answering to `CODESEXTANT_PREFLIGHT_NAME_SIMILARITY`); and counting the word's frequency over production names only, which read **143 names/query** because a word used only in tests has a production frequency of zero and zero passes every ceiling — a defect wearing the costume of a result |
 ---
 
 ### Phase E — prevention: the only thing that answers "有用嗎"
@@ -151,7 +152,8 @@ fewer tokens fixing it. That is demand 1 stated exactly, and it is untouched.
 |---|---|---|
 | E1 · a task set nobody here wrote | real commits from repositories outside both existing sets, covering the failure modes rather than "make the test pass" | **done** — `experiments/exp12_prevention.py` and the frozen `experiments/prevention_tasks.json`. 120 tasks over a third corpus (flask, pytest, alembic) chosen and written down before a commit in any of it was read. Each gives the parent tree, the commit's message and one starting file; the rest is the task |
 | E1b · a scorer that is not vacuous | one rate per failure mode, and proof each mode can be failed | **done.** Three baselines: oracle 1.000 everywhere, null 0.000 everywhere, and **parent** — the right files with unchanged contents — which scores 1.000 on the file modes and 0.000 on reuse. That third one caught `rebuilt_the_wheel` being satisfiable by any plausible Python, which neither of the others could see |
-| E2 · the A/B | same model, same tasks, tool available against not | **open, and it needs agents.** Everything it depends on now exists and is checked in, so it is reproducible by somebody else — which G1 wanted regardless |
+| E1c · what the task set can actually show | stratify before spending agents on it | **done — exp15, and it stopped E2 from being run as designed.** Of 120 tasks, **103 (86%) are grep-reachable** — the companion contains a name from the starting file's changed symbols — 15 are convention (changelogs, docs), and **2 are hidden**. By companion: 386 of 405 reachable, **2 hidden**. An A/B on task success here would spend 240 agent runs measuring a difference that can only appear on two tasks, and would report "no difference" for a reason nobody could distinguish from "the tool is useless" |
+| E2 · the A/B | same model, same tasks, tool available against not | **open, and its endpoint has to change before it is worth running.** Success rate is the wrong measure on a set that is 86% grep-reachable: both arms will find the companion. What differs is **what it costs to find it** — the agent still has to know which symbols changed, grep each, and read the results, and that is the "浪費 token 修復" half of demand 1 stated exactly. So the primary endpoint is tokens and tool calls, with success rate as a guard that the cheaper arm did not get there by doing less. The alternative — build a task set selected for hidden companions — measures a failure mode whose *prevalence* exp15 has just priced at 2%, and a rule that fires on 2% of changes is not what this tool claims to be |
 | E3 · measure what was asked for | task success, **tokens spent**, whether a guard was tripped, whether something was rebuilt that existed, whether an unrelated thing broke | the three retrieval-shaped modes are scored; **tokens are not**, and cannot be until E2 runs |
 
 **This is the expensive one and the only one that closes demand 1.** Everything before
@@ -181,6 +183,15 @@ exists for TypeScript, which makes it the cheapest second language.
   the reason the registry was wanted. Everything here is derived from the repository.
 - **Merging `dependents` into `callers`, or `guards` into `check`.** Separate claims stay
   separately labelled; that invariant is in `HANDOFF.md` layer 3 with its reason.
+- **Shortening the three-hour idle timeout.** Asked because a user said their machine
+  was struggling, and measured before changing: an idle daemon holds **30–36 MiB RSS
+  and burned 0.02 s of CPU over 120 s** — 0.02% of one core — while a cold start costs
+  0.22 s plus a warm reindex. The lag had a different cause, found and fixed (the
+  watcher was putting a filesystem watch on every directory in the tree, 98.3% of them
+  build and dependency output). Trading 0.2 s of latency for 36 MiB is not supported by
+  any of those numbers. `codesextant stop` is the answer for somebody who wants it gone
+  now; the default stays until a measurement says otherwise.
+
 - **Any number quoted from the derivation set when a held-out number exists.** +0.778 on
   the repository that suggested a rule against +0.08 held out is why the held-out set
   exists.

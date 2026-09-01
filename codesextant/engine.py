@@ -57,6 +57,16 @@ else:
     symbols = LazyModule(f"{__package__}.symbols")
 
 # Directories skipped while scanning source files during indexing (target = Rust build output).
+# Directories nothing here reads. **Two consumers, one list, on purpose.** The indexer
+# skips these when it walks for source files, and `watcher` skips them when it decides
+# what to put a filesystem watch on. They were separate for a long time and only the
+# indexer had the list: the watcher asked watchdog for `recursive=True` over the whole
+# repository, so on a project shaped like a real front end -- 1,317 directories, 22 of
+# them source -- **98.3% of the filesystem watches were on files this tool never reads**.
+# On Linux that is inotify descriptors against a per-user cap; everywhere it is an event
+# storm every time a build or an install runs.
+#
+# Import this rather than copying it. A copy is how the two drifted apart the first time.
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
               ".mypy_cache", ".pytest_cache", "build", "dist", "target", ".tox"}
 
@@ -1498,6 +1508,82 @@ def _path_proximity(target: str, candidate: str) -> int:
     return shared
 
 
+def _rare_word_max() -> int:
+    """How many names a shared word may appear in before it stops being evidence.
+
+    **The sweep does not pick this number.** 2, 4, 8 and "no gate at all" all reach
+    exactly 0.422 on the held-out set; they differ only in output, and between 4 and 8
+    that difference is 0.05 names per query. So the choice rests on a design argument
+    rather than on the measurement, and saying which is which is the point.
+
+    Eight, to match :func:`_common_name_max`. That constant already answers "how many
+    definitions may share a *name* before the name stops being evidence", and having one
+    number for that and a different one for a *word* would be two notions of the same
+    idea, drifting apart on the next edit.
+
+    Being straight about the convenience: the case that prompted this rule sits at
+    exactly eight -- `shutdown` names eight things in this repository -- so eight
+    catches it and four does not. That is not why eight was chosen, and it is not
+    evidence for eight; one case never is. It is recorded here because a reader
+    comparing the two numbers deserves to know it, and because if the design argument
+    above is ever refuted this line is the reason to distrust the choice.
+    """
+    raw = os.environ.get("CODESEXTANT_PREFLIGHT_RARE_WORD_MAX", "").strip()
+    if not raw:
+        return _common_name_max()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _common_name_max()
+
+
+def _rare_word_similarity(symbol: str, other: str,
+                          word_names: dict[str, int]) -> float:
+    """Word overlap for a *single* shared word, but only when that word is rare here.
+
+    `_name_similarity` needs two shared words, so a one-word query can only ever match
+    exactly. That rule was deliberate and its reason is real -- one shared word is
+    usually a common verb, and `get` against every `get_*` in the tree is not a finding.
+    It also means `shutdown` scores 0.0 against `initiate_shutdown`, which is how a
+    second shutdown endpoint came to be written in this repository beside the one that
+    already existed, with `preflight` reporting "nothing resembles it; it looks new".
+
+    What separates the two cases is not how many words are shared but **how many things
+    the shared word names**. `shutdown` names a handful of functions in a tree; `get`
+    names ninety. So the gate is document frequency, and `word_names` carries it.
+
+    The gate only opens the door. The score returned is the ordinary Jaccard overlap and
+    still has to clear the caller's threshold, for two reasons -- the second is the one
+    that matters. `CODESEXTANT_PREFLIGHT_NAME_SIMILARITY` is a knob turned to get fewer
+    candidates, and a rule that ignored it would silently stop answering to it. And a
+    short rare word must not drag in a long unrelated name: `parse` against
+    `parse_and_validate_user_supplied_duration` shares one word of six, and the overlap
+    is what says that is not the same idea.
+
+    Measured with exp16 over 408 shape-duplicates in six repositories. Reach is of
+    duplicates whose existing twin has a *different* name -- the same-name ones are what
+    grep already finds, and counting them would flatter every matcher equally.
+    See `docs/roadmap.md` D4 for the table, including the two variants that were
+    measured and refused: any shared word inside the edited file (+0.110 held out for
+    **+10.20 names per query**, 2.6 times the whole section), and counting the word's
+    frequency over production names only, which read 143 names per query because a word
+    used only in tests has a production frequency of zero and a zero passes every
+    ceiling.
+    """
+    ceiling = _rare_word_max()
+    if not ceiling:
+        return 0.0
+    mine, theirs = set(_identifier_words(symbol)), set(_identifier_words(other))
+    shared = mine & theirs
+    if not shared:
+        return 0.0
+    # The *rarest* shared word decides. That two names both contain `get` says nothing
+    # either way when they also both contain `shutdown`.
+    if min(word_names.get(word, 0) for word in shared) > ceiling:
+        return 0.0
+    return len(shared) / len(mine | theirs)
+
+
 def _reuse_candidates(store, symbol: str, target: str,
                       limit: int) -> tuple[list[dict], int]:
     """Existing definitions that may already be what ``symbol`` is about to become.
@@ -1530,9 +1616,29 @@ def _reuse_candidates(store, symbol: str, target: str,
     query = (f"SELECT path,kind,name,line FROM symbols "
              f"WHERE kind IN ({','.join('?' for _ in kinds)}) "
              f"AND ({' OR '.join(clauses)})")
+    rows = store.conn.execute(query, params).fetchall()
+    # How many distinct names each query word appears in, counted from the rows already
+    # fetched rather than with a second query. The SQL prefilter is a substring LIKE, so
+    # these rows are a *superset* of the names containing each word -- `widget` comes
+    # back for `get` -- and re-splitting them into words here makes the count exact for
+    # nothing extra. Distinct names, not definitions: a helper defined in forty files is
+    # one idea, and counting it forty times would make every reused word look common in
+    # a large repository and rare in a small one.
+    word_names: dict[str, int] = {}
+    if tokens:
+        seen_names = set()
+        for row in rows:
+            if row["name"] in seen_names:
+                continue
+            seen_names.add(row["name"])
+            for word in set(_identifier_words(row["name"])) & tokens:
+                word_names[word] = word_names.get(word, 0) + 1
+
     scored: list[tuple[float, int, dict]] = []
-    for row in store.conn.execute(query, params).fetchall():
+    for row in rows:
         score = _name_similarity(symbol, row["name"])
+        if score < threshold:
+            score = _rare_word_similarity(symbol, row["name"], word_names)
         if score < threshold:
             continue
         same_file = os.path.normcase(row["path"]) == os.path.normcase(target)
