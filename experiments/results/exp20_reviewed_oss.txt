@@ -1,0 +1,98 @@
+
+=== requests  (183 commits touching Python)
+  commits removing a guard:               4  (2%)
+  commits removing a REASONED guard:      3  (2%)   <- the mode's ceiling
+  guards removed: 4, of which explained: 3  (75%)
+  guards weakened (rule changed, name kept): 109, of which explained: 31
+  renames/moves excluded (would have read as removals): 0
+  removed by kind:  {'test': 3, 'raise': 1}
+  weakened by kind: {'test': 100, 'raise': 6, 'assert': 3}
+  weakened+explained by kind: {'raise': 6, 'test': 23, 'assert': 2}
+  commits weakening a REASONED guard: 10 (5%)
+  reason came from: {'docstring': 2, 'message': 1}
+
+=== click  (211 commits touching Python)
+  commits removing a guard:              15  (7%)
+  commits removing a REASONED guard:      7  (3%)   <- the mode's ceiling
+  guards removed: 22, of which explained: 10  (45%)
+  guards weakened (rule changed, name kept): 36, of which explained: 11
+  renames/moves excluded (would have read as removals): 53
+  removed by kind:  {'test': 19, 'raise': 1, 'assert': 2}
+  weakened by kind: {'allowlist': 5, 'test': 28, 'raise': 2, 'assert': 1}
+  weakened+explained by kind: {'test': 9, 'raise': 2}
+  commits weakening a REASONED guard: 8 (4%)
+  reason came from: {'docstring': 8, 'message': 2}
+
+=== tqdm  (251 commits touching Python)
+  commits removing a guard:               5  (2%)
+  commits removing a REASONED guard:      4  (2%)   <- the mode's ceiling
+  guards removed: 6, of which explained: 4  (67%)
+  guards weakened (rule changed, name kept): 57, of which explained: 54
+  renames/moves excluded (would have read as removals): 12
+  removed by kind:  {'test': 4, 'raise': 2}
+  weakened by kind: {'test': 55, 'raise': 2}
+  weakened+explained by kind: {'test': 52, 'raise': 2}
+  commits weakening a REASONED guard: 34 (14%)
+  reason came from: {'docstring': 2, 'message': 2}
+
+=== flask  (166 commits touching Python)
+  commits removing a guard:              10  (6%)
+  commits removing a REASONED guard:      2  (1%)   <- the mode's ceiling
+  guards removed: 21, of which explained: 2  (10%)
+  guards weakened (rule changed, name kept): 46, of which explained: 4
+  renames/moves excluded (would have read as removals): 11
+  removed by kind:  {'test': 17, 'raise': 2, 'env_switch': 2}
+  weakened by kind: {'test': 42, 'raise': 3, 'assert': 1}
+  weakened+explained by kind: {'raise': 3, 'assert': 1}
+  commits weakening a REASONED guard: 3 (2%)
+  reason came from: {'comment': 1, 'message': 1}
+
+=== pytest  (253 commits touching Python)
+  commits removing a guard:               7  (3%)
+  commits removing a REASONED guard:      2  (1%)   <- the mode's ceiling
+  guards removed: 12, of which explained: 4  (33%)
+  guards weakened (rule changed, name kept): 61, of which explained: 16
+  renames/moves excluded (would have read as removals): 6
+  removed by kind:  {'assert': 1, 'test': 9, 'raise': 1, 'threshold': 1}
+  weakened by kind: {'test': 44, 'raise': 5, 'assert': 7, 'allowlist': 5}
+  weakened+explained by kind: {'test': 10, 'raise': 5, 'assert': 1}
+  commits weakening a REASONED guard: 15 (6%)
+  reason came from: {'message': 1, 'docstring': 3}
+
+=== alembic  (318 commits touching Python)
+  commits removing a guard:               6  (2%)
+  commits removing a REASONED guard:      3  (1%)   <- the mode's ceiling
+  guards removed: 10, of which explained: 3  (30%)
+  guards weakened (rule changed, name kept): 111, of which explained: 21
+  renames/moves excluded (would have read as removals): 26
+  removed by kind:  {'raise': 3, 'allowlist': 2, 'constraint': 4, 'test': 1}
+  weakened by kind: {'test': 87, 'assert': 7, 'constraint': 5, 'env_switch': 6, 'raise': 5, 'allowlist': 1}
+  weakened+explained by kind: {'raise': 5, 'test': 16}
+  commits weakening a REASONED guard: 7 (2%)
+  reason came from: {'message': 2, 'comment': 1}
+
+=== pooled over 6 repositories, 1382 commits
+  removes a guard:             47  (3.4%)
+  removes a REASONED guard:    21  (1.5%)
+  guards removed 75, explained 26 (35%)
+  renames/moves excluded: 108
+  guards weakened 420, explained 137
+  weakens a REASONED guard:    77  (5.6%)
+
+--- a reasoned guard a real commit deleted, in the author's words ---
+  requests@fd628095d7 tests/test_adapters.py:test test_request_url_trims_leading_path_separators
+      [docstring] See also https://github.com/psf/requests/issues/6643.
+  requests@555b870eb1 src/requests/__init__.py:raise Exception
+      [message] You need either charset_normalizer or chardet installed
+  requests@d1ca591c0f tests/test_requests.py:test test_proxies_shortcut
+      [docstring] Test that the set_http_proxy helper function works correctly
+  click@b7e5fd4cc7 tests/test_shell_completion.py:test test_fish_multiline_help_complete
+      [docstring] Test Fish completion with multi-line help text doesn't cause errors.
+  click@c3535905c7 tests/test_shell_completion.py:test test_fish_multiline_help_complete
+      [docstring] Test Fish completion with multi-line help text doesn't cause errors.
+  click@1aa2d53d63 tests/test_termui.py:test test_get_pager_file_reuses_existing_maybe_strip_ansi
+      [docstring] An already-wrapped pager stream should be yielded unchanged.
+  click@1aa2d53d63 tests/test_termui.py:test test_get_pager_file_keeps_text_stream_without_buffer
+      [docstring] A text stream with no ``.buffer`` should not be re-wrapped and have
+  click@1aa2d53d63 tests/test_termui.py:test test_get_pager_file_supports_multiple_write_sites
+      [docstring] Different helpers can write to the same pager stream.

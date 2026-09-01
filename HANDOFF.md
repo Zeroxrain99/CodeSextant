@@ -86,9 +86,44 @@ apply the rest, ask `check` what the change forgot. 351 cases, three repositorie
   comparison the correct one, and it changed the conclusion.
 
 **exp1 (co-change against baselines, prequential).** Precision 0.49–0.55 at matched
-budget, 1.4–2.1× the strongest control, intervals separating on 2 of 3 repositories.
-Recall ~0.10. On CodeSextant's own 67-commit history a plain frequency baseline beats
-it outright — it earns its place where change is spread across many hands.
+budget, 1.4–2.1× the strongest control. Recall ~0.10. On CodeSextant's own 67-commit
+history a plain frequency baseline beats it outright — it earns its place where change
+is spread across many hands.
+
+"Intervals separating on 2 of 3 repositories" used to stand here and was the wrong test.
+The bootstrap resamples one set of commits and scores *every* predictor on it, so the
+samples were paired all along and the pairing was thrown away at the last step; reading
+overlap between two marginal intervals as "no difference" is conservative in the wrong
+direction. The paired difference is now reported, and it says something sharper: **at a
+matched budget co-change separates on 3 of 3 Python repositories** (+0.054 to +0.126 F1
+against the better of `same_dir@k` and `frequency@k`, every interval excluding zero),
+while against controls given an *unbudgeted* 20-plus guesses it separates only on click.
+Both halves of that are worth keeping: it wins when the comparison is fair, and it does
+not win by volume.
+
+**exp1 on TypeScript and JavaScript — the belief it was written to confirm was wrong.**
+`docs/plan.md` opened with resolution being Python-only and therefore the front end being
+where the tool is weakest. Co-change cannot tell what language it is reading, so the
+front-end corpus (express, zod, held-out vite) measures that half directly, and it is not
+weaker there — it is **stronger on every measure and against every control**:
+
+| | precision | recall | F1 | vs best matched-budget control |
+|---|---|---|---|---|
+| Python (requests/click/tqdm) | 0.49–0.55 | 0.08–0.11 | 0.141–0.177 | +0.054 to +0.066 |
+| express | 0.736 | 0.220 | 0.339 | +0.085 |
+| zod | 0.622 | 0.111 | 0.188 | +0.137 |
+| **vite** (held out) | **0.809** | **0.387** | **0.524** | +0.058 |
+
+All twelve paired comparisons on the front-end corpus exclude zero; four of twelve on
+Python do not. vite is the strongest result in either corpus, and vite is a monorepo
+whose packages have to move together — which is the shape this was built for and the
+shape that made the question worth asking.
+
+**What this does not say.** It measures one of preflight's three pillars. Blast radius on
+TS/JS is unmeasured and is still name matching. And the numbers are file-level
+prequential retrieval, not task outcomes. What it does settle is that "the tool is weak
+on TypeScript" was a belief about the resolver being generalised to the whole tool, and
+the generalisation does not survive contact with a number.
 
 **exp2 (resolved references vs grep).** Resolution is 2.2–3.2× more precise than the
 name matches beside it on 2 of 4 repositories, no difference on a third, and **reversed
@@ -588,9 +623,9 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   gave the opposite sign; a sample of eleven was used to overturn a claim within the
   hour of writing that down. **A correction needs the sample size a finding needs.**
 
-- **Two instruments were broken and the pilot found both before it found a result.**
-  That is what a pilot is for and it is the cheapest six agent runs this project has
-  spent. The cost question was put to the agent, which reported **18** tool calls
+- **Three instruments were broken and the pilot found all three before it found a
+  result.** That is what a pilot is for -- and the third one, the leaked checkout below,
+  was found only after nine pairs had been paid for, because nothing asserted it. The cost question was put to the agent, which reported **18** tool calls
   against **31** the runner observed -- while the runner had been reporting tokens, tool
   uses and duration for free the whole time. And "the tool did not help" was
   indistinguishable from "the agent never opened it", two findings that call for
@@ -608,6 +643,69 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   of similar breadth. It prints, because the last mode that could be satisfied without
   doing the task survived by nobody looking. Read those two rates as "did it find them",
   never as "did it change the right set".
+
+- **A `git worktree` is not an isolated checkout, and the E2 pilot is void because of
+  it.** Nine pairs were run against `git worktree add --detach <parent>`. A worktree
+  shares the parent repository's object store: the checkout sat at the parent commit
+  while still carrying the entire future, so the reference commit was one `git show`
+  away, `git log --all` listed it, `origin/main` was present, and -- because the
+  instruction handed to the agent *is* the commit message -- `git log --all --grep=`
+  found the answer in a single step. It surfaced because one agent volunteered that it
+  had read `--stat` on the reference commit; grepping the transcripts for history
+  probes then found **8 of 19 trials** touching history. Two more leaks were in the
+  path and were mine: the checkout was named `<repo>_<sha>` inside a home named
+  `<repo>_<sha>_<condition>`, and `prompt_for` prints that path to the agent, so the
+  answer's sha was in the prompt. The trials are kept in
+  `experiments/results/e2_pilot_void_*.json`, labelled void, because the cost is the
+  only thing they still measure honestly.
+  The fix is `checkout_for`: bundle the parent ref out of a full mirror and clone the
+  bundle, so the descendants are not unreferenced but **absent** -- `git cat-file` cannot
+  get object info for the reference commit and `git fsck` reports nothing dangling --
+  while the ancestors co-change needs are all there (1404 for alembic, 4050 for flask).
+  `leaks()` asserts all of it before every trial, and `checkout_for` refuses a path
+  containing the sha. **A leak found after the run is the run thrown away; check
+  isolation before spending agents, not after.**
+
+- **E2 ran, and the answer is that it makes no measurable difference.** Twenty pairs,
+  forty trials, 3.61M tokens, zero contaminated. **Quality is an identity rather than a
+  null: in 20 of 20 pairs both arms edited exactly the same subset of the true companion
+  files.** Eleven pairs edited different file *sets*, but every difference lay outside
+  the truth, which is why all three modes read 0.000 with a zero-width interval -- the
+  first thing that looked like a scorer bug and was not. Tokens pooled **-5.4%
+  (-5,052 [-14,158, +2,711])**: interval includes zero, sign test 11 cheaper to 9
+  dearer, per-pair sd **19,537 -- 3.9x the mean it must resolve**. 80% power on that
+  effect needs 118 pairs; on 20%, nine. **A large effect would have shown here and did
+  not.** `hidden`, the stratum the tool exists for, has the point estimate on the wrong
+  sign. The tool was genuinely used: 71 invocations across all 20 arms. Write-up and
+  caveats in `experiments/results/E2.md`. **Retrieval numbers are not outcome numbers,
+  and this project had only ever measured retrieval.**
+
+- **Isolating the checkout is not isolating the trial.** The repositories under test are
+  public and the task instruction *is* the upstream commit message, so three of the
+  first eight trials fetched the answer over the network: one cloned the project and
+  diffed against the answer's blob, one called a repository API for the full patch and
+  curled the `.patch` URL, one searched upstream for the commit by its own instruction
+  text. Taking the answer off the disk did not take away the road to it. What closed it:
+  `git`, `curl` and `wget` refusing a code host container-wide; a paragraph in **both**
+  prompts, identical, so it cannot favour an arm; and `contaminated()` reading tool
+  calls rather than prose. Three false positives had to be fixed out of that check
+  before it was worth anything -- an unattributed container-wide git log flagged all 23
+  finished trials at once, a call naming an unrelated tooling repository, and a call
+  that came back `Access denied` and therefore taught the agent nothing. **A signal that
+  fires on every case is not a signal.**
+
+- **One agent per checkout, and the race has no failure mode.** A trial whose cost
+  reading never arrived was re-prepared and re-run while its first agent was still
+  working; that agent finished four minutes later and wrote its edits into the freshly
+  rebuilt tree, handing the second agent a task already done. Nothing failed --
+  `prepare` reported success and `leaks()` came back clean. Caught from file mtimes.
+  `prepare` now presumes a prepared-but-uncollected run to be live and refuses to
+  rebuild it without `--force`.
+
+- **The runner's own token figure moved 2.2% between two reports of the same agent**
+  (168,556 then 164,917; tool calls identical at 114 both times). Any effect near that
+  size is not resolvable by this instrument, which is most of why the E2 cost result is
+  reported as "not detectable" rather than as a saving.
 
 - **Dump features, not verdicts.** exp4 dumped per-case hit/miss, which answers only the
   question already asked. exp6 dumps a feature table per candidate file, so a new idea is
@@ -663,7 +761,10 @@ checked in: `experiments/exp12_prevention.py` and `experiments/prevention_tasks.
 120 real commits over a third corpus (flask, pytest, alembic) chosen before any of it was
 read, one rate per failure mode, and three baselines proving no mode is free. What is
 left is E2: the same model on the same tasks with the tool available and without, paired,
-with tokens recorded. **It needs agents, which is the only reason it is not done.**
+with tokens recorded. **It needs agents, which is the only reason it is not done** --
+and the nine pairs already spent bought instruments rather than evidence, because the
+checkouts leaked the answer; see the worktree trap. `checkout_for` and `leaks()` are the
+fix, and the next run starts from zero pairs.
 Everything cheaper is: every retrievable claim in the tool has a held-out number, and
 this is the only design that answers the question the tool exists for.
 

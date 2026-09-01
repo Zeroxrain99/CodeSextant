@@ -49,6 +49,39 @@ PREVENTION = (
 )
 
 
+# A fourth set, for the language question, named here before a single commit in any of
+# them was read. `docs/plan.md` §2 puts this first: resolution is Python-only, twelve
+# other languages degrade to name matching, and exp2 has never said a word about any of
+# them -- while the pain that started this is a TypeScript front end that drifted out of
+# step with its VS Code extension.
+#
+# What is being separated is the half of preflight that reads git (co-change, which
+# cannot tell what language it is looking at) from the half that resolves references
+# (jedi, which only speaks Python). Nobody has measured how much of the answer each half
+# carries, in any language.
+#
+# Chosen for three shapes, and for the third one especially:
+#
+#   express   plain JavaScript, a framework, a very long history, and the docs/tests/
+#             changelog companions that co-change is supposed to be good at.
+#   zod       one TypeScript package, dense internal type references. Where resolution
+#             ought to matter most, so the gap should be widest here.
+#   vite      a TypeScript monorepo with a plugin architecture and packages that have to
+#             stay in step with each other. The closest public analogue to the case this
+#             is for: two implementations of one product that must not drift apart.
+#
+# **Derivation: express and zod. Held out: vite.** Written down now, before the numbers,
+# so it cannot be chosen afterwards to suit them.
+FRONTEND = (
+    ("express", "https://github.com/expressjs/express.git"),
+    ("zod", "https://github.com/colinhacks/zod.git"),
+    ("vite", "https://github.com/vitejs/vite.git"),
+)
+
+FRONTEND_DERIVATION = ("express", "zod")
+FRONTEND_HELD_OUT = ("vite",)
+
+
 def corpus_root() -> str:
     return os.environ.get(
         "CODESEXTANT_CORPUS",

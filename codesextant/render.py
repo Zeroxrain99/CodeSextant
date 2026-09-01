@@ -277,6 +277,30 @@ def check_lines(result: dict, root: str | None = None) -> list[str]:
     """What the change already made looks like it forgot."""
     lines = [f"Check: {result.get('changed_count', 0)} file(s) changed"]
 
+    # First, because it is the only section about something that is no longer there.
+    # The other four say what the change might have forgotten to add; a fence with a
+    # stated reason that has just gone is a decision somebody is making right now,
+    # possibly without knowing it, and it reads before the guesses.
+    if result.get("removed_guards"):
+        gone = [e for e in result["removed_guards"] if e["change"] == "removed"]
+        weak = [e for e in result["removed_guards"] if e["change"] == "weakened"]
+        summary = " and ".join(
+            part for part in (f"{len(gone)} removed" if gone else "",
+                              f"{len(weak)} loosened" if weak else "") if part)
+        lines.append(f"\n  FENCES GONE      {summary} -- each had a reason written "
+                     "beside it")
+        for entry in result["removed_guards"]:
+            label = entry["name"] or f"({entry['kind']})"
+            verb = "removed" if entry["change"] == "removed" else "loosened"
+            lines.append(f"    {verb}  {entry['kind']} {label}  "
+                         f"{entry['path']}:{entry['line']}")
+            lines.append(f"      was: {entry['rule']}")
+            if entry.get("now"):
+                lines.append(f"      now: {entry['now']}")
+            # Verbatim, and attributed. A reader deciding whether to put the fence back
+            # needs the author's sentence, not a paraphrase of it.
+            lines.append(f"      [{entry['reason_source']}] {entry['reason']}")
+
     if result.get("rebuilt"):
         lines.append(f"\n  REBUILT          {len(result['rebuilt'])} changed unit(s) "
                      "repeat a shape already in the index")

@@ -1,0 +1,38 @@
+
+=== CodeSextant  (101 commits touching Python)
+  commits removing a guard:              10  (10%)
+  commits removing a REASONED guard:      9  (9%)   <- the mode's ceiling
+  guards removed: 33, of which explained: 16  (48%)
+  guards weakened (rule changed, name kept): 57, of which explained: 30
+  renames/moves excluded (would have read as removals): 9
+  removed by kind:  {'test': 15, 'env_switch': 6, 'allowlist': 3, 'threshold': 2, 'raise': 1, 'assert': 6}
+  weakened by kind: {'test': 33, 'env_switch': 1, 'raise': 23}
+  weakened+explained by kind: {'test': 7, 'raise': 23}
+  commits weakening a REASONED guard: 8 (8%)
+  reason came from: {'docstring': 8, 'comment': 2, 'message': 6}
+
+=== pooled over 1 repositories, 101 commits
+  removes a guard:             10  (9.9%)
+  removes a REASONED guard:     9  (8.9%)
+  guards removed 33, explained 16 (48%)
+  renames/moves excluded: 9
+  guards weakened 57, explained 30
+  weakens a REASONED guard:     8  (7.9%)
+
+--- a reasoned guard a real commit deleted, in the author's words ---
+  CodeSextant@66bfc1c382 tests/test_preflight.py:test test_one_shared_common_word_is_not_a_reuse_candidate
+      [docstring] release_version against release is a shared verb, not a duplicate implementation.
+  CodeSextant@24aef34b63 tests/test_watch_scope.py:test test_a_new_source_directory_is_picked_up
+      [docstring] The one thing `recursive=True` gave for free. Without replacing it, a package
+  CodeSextant@6271efcdc9 tests/test_daemon_reliability.py:test test_http_server_disables_windows_address_reuse
+      [docstring] HTTPServer sets allow_reuse_address=1 by default, which on Windows lets
+  CodeSextant@463e7686e4 tests/test_portability.py:test test_the_python_floor_is_the_one_the_matrix_tests
+      [docstring] One number, in one place, or the checker drifts from what CI proves.
+  CodeSextant@e52941c024 tests/test_preflight.py:test test_leads_and_confirmed_callers_are_never_reported_together
+      [docstring] Leads exist to fill an empty answer, not to pad a real one.
+  CodeSextant@5b78b5e3e2 tests/test_preflight.py:test test_storage_replaces_rules_wholesale
+      [docstring] Rules describe the history up to one commit; a half-updated mixture describes none.
+  CodeSextant@e30bf26909 tests/test_daemon_reliability.py:test test_ensure_uses_instance_lock_even_when_tcp_probe_misses
+      [docstring] A full accept backlog must not bypass the stronger lifetime-lock proof.
+  CodeSextant@e30bf26909 tests/test_daemon_reliability.py:test test_startup_lock_timeout_falls_back_to_instance_lock
+      [docstring] A client losing the startup-lock race must still reuse the live owner.

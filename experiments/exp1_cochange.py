@@ -192,10 +192,26 @@ def _bootstrap(per_commit: list[dict], *, seed: int, rounds: int = 1000) -> dict
                 else 0.0)
     out = {}
     for name, values in samples.items():
-        values.sort()
-        out[name] = {"f1_lo": values[int(rounds * 0.025)],
-                     "f1_hi": values[int(rounds * 0.975)],
-                     "f1_median": statistics.median(values)}
+        ordered = sorted(values)
+        out[name] = {"f1_lo": ordered[int(rounds * 0.025)],
+                     "f1_hi": ordered[int(rounds * 0.975)],
+                     "f1_median": statistics.median(ordered)}
+    # **The paired difference, because two marginal intervals are the wrong test.**
+    # Every round above resamples one set of commits and scores *all* the predictors on
+    # it, so the samples were already paired and the pairing was being thrown away at
+    # the last step. Reading overlap between two marginal CIs as "no difference" is the
+    # classic error: it is conservative in the wrong direction, and on a control that
+    # tracks the treatment commit-for-commit it can hide a difference that is present
+    # in every single round. What is reported here is the interval of
+    # `F1(cochange) - F1(control)` over the same rounds, which is the quantity the
+    # comparison is actually about.
+    for name in PREDICTORS:
+        if name == "cochange":
+            continue
+        deltas = sorted(a - b for a, b in zip(samples["cochange"], samples[name], strict=True))
+        out[name].update({"d_lo": deltas[int(rounds * 0.025)],
+                          "d_hi": deltas[int(rounds * 0.975)],
+                          "d_median": statistics.median(deltas)})
     return out
 
 
@@ -215,14 +231,24 @@ def main() -> int:
               f"({report['evaluated_commits']} commits evaluated of "
               f"{report['commits_read']} read, {report['warmup']} warm-up)")
         print(f"{'predictor':14} {'prec':>6} {'recall':>7} {'F1':>6} "
-              f"{'F1 95% CI':>16} {'speaks':>7} {'useful':>7} {'mean n':>7}")
+              f"{'F1 95% CI':>16} {'paired dF1 vs cochange':>24} "
+              f"{'speaks':>7} {'useful':>7} {'mean n':>7}")
         for name in PREDICTORS:
             row = report["results"][name]
             ci = report["bootstrap"].get(name, {})
             span = (f"[{ci.get('f1_lo', 0):.3f},{ci.get('f1_hi', 0):.3f}]"
                     if ci else "")
+            # The paired interval is the comparison; a star marks the ones that exclude
+            # zero, which is the only place "better" may be said out loud.
+            if "d_lo" in ci:
+                beats = " *" if ci["d_lo"] > 0 else ("  " if ci["d_hi"] > 0 else " !")
+                delta = (f"{ci['d_median']:+.3f} "
+                         f"[{ci['d_lo']:+.3f},{ci['d_hi']:+.3f}]{beats}")
+            else:
+                delta = ""
             print(f"{name:14} {row['precision']:6.3f} {row['recall']:7.3f} "
-                  f"{row['f1']:6.3f} {span:>16} {row['alert_rate']:7.3f} "
+                  f"{row['f1']:6.3f} {span:>16} {delta:>24} "
+                  f"{row['alert_rate']:7.3f} "
                   f"{row['useful_when_it_speaks']:7.3f} {row['mean_predictions']:7.1f}")
     return 0
 

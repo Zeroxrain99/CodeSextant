@@ -1,0 +1,242 @@
+[
+ {
+  "task_id": "flask@eb5dd9f5ef",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "run_id": "run_01"
+ },
+ {
+  "task_id": "alembic@d06857c136",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "run_id": "run_02"
+ },
+ {
+  "task_id": "alembic@cc16397b98",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "run_id": "run_03"
+ },
+ {
+  "task_id": "alembic@717202241e",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "run_id": "run_04"
+ },
+ {
+  "task_id": "flask@eb5dd9f5ef",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "run_id": "run_05"
+ },
+ {
+  "task_id": "pytest@771ab77e13",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "run_id": "run_06"
+ },
+ {
+  "task_id": "pytest@840b2d69f6",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "run_id": "run_07"
+ },
+ {
+  "task_id": "flask@3a5532b4ed",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "run_id": "run_08"
+ },
+ {
+  "task_id": "flask@6fb1101f70",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "run_id": "run_09"
+ },
+ {
+  "task_id": "alembic@cc16397b98",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "run_id": "run_10"
+ },
+ {
+  "task_id": "flask@3a5532b4ed",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "run_id": "run_11"
+ },
+ {
+  "task_id": "flask@99afbb277d",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "run_id": "run_12"
+ },
+ {
+  "task_id": "pytest@15ab2c7940",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "run_id": "run_13"
+ },
+ {
+  "task_id": "pytest@15ab2c7940",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "run_id": "run_14"
+ },
+ {
+  "task_id": "flask@da60039486",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "run_id": "run_15"
+ },
+ {
+  "task_id": "pytest@bd6877e587",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "run_id": "run_16"
+ },
+ {
+  "task_id": "pytest@bd6877e587",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "run_id": "run_17"
+ },
+ {
+  "task_id": "alembic@0f61c47aba",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "run_id": "run_18"
+ },
+ {
+  "task_id": "flask@165af0a090",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "run_id": "run_19"
+ },
+ {
+  "task_id": "flask@99afbb277d",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "run_id": "run_20"
+ },
+ {
+  "task_id": "pytest@e3facc0f81",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "run_id": "run_21"
+ },
+ {
+  "task_id": "flask@8285adf5a4",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "run_id": "run_22"
+ },
+ {
+  "task_id": "flask@6fb1101f70",
+  "stratum": "convention",
+  "condition": "with_tool",
+  "run_id": "run_23"
+ },
+ {
+  "task_id": "alembic@b19ac41f19",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "run_id": "run_24"
+ },
+ {
+  "task_id": "pytest@771ab77e13",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "run_id": "run_25"
+ },
+ {
+  "task_id": "pytest@840b2d69f6",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "run_id": "run_26"
+ },
+ {
+  "task_id": "alembic@b19ac41f19",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "run_id": "run_27"
+ },
+ {
+  "task_id": "alembic@717202241e",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "run_id": "run_28"
+ },
+ {
+  "task_id": "pytest@4da7c19177",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "run_id": "run_29"
+ },
+ {
+  "task_id": "pytest@4da7c19177",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "run_id": "run_30"
+ },
+ {
+  "task_id": "pytest@e3facc0f81",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "run_id": "run_31"
+ },
+ {
+  "task_id": "flask@8285adf5a4",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "run_id": "run_32"
+ },
+ {
+  "task_id": "pytest@4722f2472d",
+  "stratum": "hidden",
+  "condition": "without_tool",
+  "run_id": "run_33"
+ },
+ {
+  "task_id": "alembic@802e62fa40",
+  "stratum": "grep_reachable",
+  "condition": "with_tool",
+  "run_id": "run_34"
+ },
+ {
+  "task_id": "flask@165af0a090",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "run_id": "run_35"
+ },
+ {
+  "task_id": "alembic@d06857c136",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "run_id": "run_36"
+ },
+ {
+  "task_id": "pytest@4722f2472d",
+  "stratum": "hidden",
+  "condition": "with_tool",
+  "run_id": "run_37"
+ },
+ {
+  "task_id": "flask@da60039486",
+  "stratum": "convention",
+  "condition": "without_tool",
+  "run_id": "run_38"
+ },
+ {
+  "task_id": "alembic@802e62fa40",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "run_id": "run_39"
+ },
+ {
+  "task_id": "alembic@0f61c47aba",
+  "stratum": "grep_reachable",
+  "condition": "without_tool",
+  "run_id": "run_40"
+ }
+]

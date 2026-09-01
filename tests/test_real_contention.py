@@ -18,6 +18,22 @@ INTERACTIVE_DEADLINE_MS = 15_000.0
 STATUS_DEADLINE_MS = 1_500.0
 HEALTH_P99_DEADLINE_MS = 1_000.0
 
+# The daemon's own deadline for a rebuild, and the deadline of the client that asks for
+# one. **The second has to be strictly longer than the first, and it used to be half.**
+# `CODESEXTANT_REINDEX_TIMEOUT_SEC` was 60 while the rebuild client timed out at 30, so
+# on any runner where a rebuild took between 30 and 60 seconds the client gave up before
+# the daemon had reached its own deadline -- and the assertion waiting downstream demands
+# the daemon's contracted 503. That assertion was therefore unreachable exactly where it
+# mattered, and what arrived instead was a bare client `TimeoutError` carrying nothing
+# about the service at all. It failed on a Windows runner where one rebuild took 3.3
+# seconds and a later one did not come back.
+#
+# The same shape as `test_interactive_contention.FUTURE_WAIT_SEC`: an outer wait exists
+# to catch a wedge, never to race the deadline it is wrapping. Two deadlines in a race
+# are decided by the machine, and the one that wins carries the less information.
+REINDEX_DEADLINE_SEC = 60
+REINDEX_CLIENT_TIMEOUT_SEC = REINDEX_DEADLINE_SEC * 2
+
 
 def _percentile(samples: list[float], percentile: int) -> float:
     """Return a linearly interpolated percentile for a small latency sample."""
@@ -58,11 +74,15 @@ def _write_real_project(project: Path) -> Path:
 _CONTRACTED_REFUSALS = (503, 504)
 
 
+_KEEP_GOING_CAP = 50
+
+
 def _timed_samples(
     invoke: Callable[[], dict],
     validate: Callable[[dict], None],
     count: int,
     still_serving: Callable[[], bool],
+    keep_going: Callable[[], bool] | None = None,
 ) -> tuple[list[float], list[urllib.error.HTTPError], int]:
     """Latencies of the calls that were answered, and the two ways one may not be.
 
@@ -73,6 +93,15 @@ def _timed_samples(
     a failure asserts that the runner is fast, which is not a property of this code.
 
     **A third outcome, and this test asserted it away for four CI runs.** The refusal is
+    **`count` is a floor, not a schedule.** With `keep_going`, the caller holds the
+    route in flight for as long as it is measuring, and that is what makes concurrency
+    something this test creates rather than something it hopes to catch. A fixed count
+    cannot: `get_map` answers in ~150 ms and `impact` in ~900 ms on the same machine, so
+    four `get_map` calls are over before `impact` has finished its second, and on a
+    runner where that gap is wide enough the two are never in flight together at all --
+    not unluckily, structurally. `_KEEP_GOING_CAP` bounds the loop so a fast machine
+    stops rather than spinning.
+
     a 504 raised when the deadline fires, and `work_coordinator` documents that it
     cannot always be delivered: "CPython cannot safely interrupt a thread inside Jedi,
     tree-sitter, SQLite, or another native call. Those calls may return after the
@@ -89,7 +118,10 @@ def _timed_samples(
     samples: list[float] = []
     refused: list[urllib.error.HTTPError] = []
     overran = 0
-    for _ in range(count):
+    attempts = 0
+    while attempts < count or (keep_going is not None and keep_going()
+                               and attempts < count * _KEEP_GOING_CAP):
+        attempts += 1
         started = time.perf_counter()
         try:
             result = invoke()
@@ -107,6 +139,46 @@ def _timed_samples(
         samples.append((time.perf_counter() - started) * 1000)
         validate(result)
     return samples, refused, overran
+
+
+def test_the_sampler_keeps_going_while_the_caller_is_still_measuring():
+    """`count` is a floor and `keep_going` is the schedule, both checked here.
+
+    This is the branch the CI failure turned on. A fixed count let a fast route finish
+    before a slow one started, so the four-way concurrency the contention test asserts
+    could not occur on some runners however long it watched. Asserting the behaviour
+    here, in milliseconds, rather than only inside a two-minute daemon test.
+    """
+    calls = 0
+
+    def invoke() -> dict:
+        nonlocal calls
+        calls += 1
+        return {"ok": calls}
+
+    # Still measuring: the floor is not the ceiling.
+    permitted = [True] * 6
+    samples, _, _ = _timed_samples(
+        invoke, lambda result: None, 2, lambda: True,
+        keep_going=lambda: bool(permitted and permitted.pop()))
+    assert len(samples) == 8, len(samples)
+
+    # No longer measuring: it stops at the floor rather than spinning.
+    calls = 0
+    samples, _, _ = _timed_samples(
+        invoke, lambda result: None, 3, lambda: True, keep_going=lambda: False)
+    assert len(samples) == 3, len(samples)
+
+    # A caller that never stops is bounded anyway, so a fast machine cannot spin here.
+    calls = 0
+    samples, _, _ = _timed_samples(
+        invoke, lambda result: None, 2, lambda: True, keep_going=lambda: True)
+    assert len(samples) == 2 * _KEEP_GOING_CAP, len(samples)
+
+    # And the default is exactly what it was before `keep_going` existed.
+    calls = 0
+    samples, _, _ = _timed_samples(invoke, lambda result: None, 4, lambda: True)
+    assert len(samples) == 4, len(samples)
 
 
 def test_the_sampler_separates_the_three_ways_a_call_can_end():
@@ -146,6 +218,26 @@ def test_a_timeout_from_a_dead_daemon_is_still_a_failure():
         _timed_samples(invoke, lambda result: None, 1, lambda: False)
 
 
+def test_the_rebuild_client_outlives_the_daemons_own_reindex_deadline():
+    """The eighth failure in this family, reduced to the one line that caused it.
+
+    The big test below asserts that a refused rebuild carries the contract -- a 503 with
+    a Retry-After. For that assertion to be reachable the daemon has to get as far as
+    refusing, and it cannot if the client asking has already given up: the error that
+    arrives is then a bare client `TimeoutError` that says nothing about the service.
+
+    The client was timing out at **30 seconds against the daemon's own 60**, so on every
+    runner where a rebuild took between the two the contracted refusal was structurally
+    unobservable. Nothing about that is unlucky, which is why it belongs in an assertion
+    rather than in a retry.
+
+    A full deadline of headroom, not a nominal margin: the daemon is entitled to use all
+    of `REINDEX_DEADLINE_SEC` before it answers or refuses, so the client has to be still
+    waiting *after* that, on a machine that may be running everything at half speed.
+    """
+    assert REINDEX_CLIENT_TIMEOUT_SEC >= REINDEX_DEADLINE_SEC * 2
+
+
 def test_an_uncontracted_status_is_never_treated_as_a_refusal():
     """503 and 504 are the documented back-pressure. A 500 is a defect and propagates."""
     def invoke():
@@ -169,7 +261,8 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     monkeypatch.setenv("CODESEXTANT_WATCH_ENABLED", "1")
     monkeypatch.setenv("CODESEXTANT_IDLE_TIMEOUT_SEC", "0")
     monkeypatch.setenv("CODESEXTANT_INTERACTIVE_TIMEOUT_SEC", "15")
-    monkeypatch.setenv("CODESEXTANT_REINDEX_TIMEOUT_SEC", "60")
+    monkeypatch.setenv("CODESEXTANT_REINDEX_TIMEOUT_SEC",
+                       str(REINDEX_DEADLINE_SEC))
     monkeypatch.delenv("CODESEXTANT_SQLITE_UNSAFE_WAL", raising=False)
     monkeypatch.delenv("CODESEXTANT_SQLITE_WAL", raising=False)
     monkeypatch.delenv("CODESEXTANT_SQLITE_BUSY_TIMEOUT_MS", raising=False)
@@ -274,10 +367,24 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     reindex_started = threading.Event()
     reindex_results: list[dict] = []
     reindex_errors: list[BaseException] = []
+    # Whether the daemon was still answering at the moment each error was raised. It has
+    # to be asked *then*: the wind-down below closes the server, so by the time the
+    # assertions run the only honest answer is "no", for every run.
+    reindex_error_live: list[bool] = []
+
+    def still_serving() -> bool:
+        """Is the daemon up and answering after a call overran its deadline?
+
+        The branded probe, not a socket connect: what has to hold is that the service
+        kept serving through an uninterruptible call, and a port that accepts a
+        connection does not say that.
+        """
+        return daemon.http_ping(port=port, timeout=2.0) is not None
 
     def repeat_reindex() -> None:
         rebuild_client = client.CodesextantClient(
-            project=str(project), port=port, timeout=30)
+            project=str(project), port=port,
+            timeout=REINDEX_CLIENT_TIMEOUT_SEC)
         try:
             while (not abort_reindex.is_set()
                    and (not stop_reindex.is_set() or len(reindex_results) < 2)):
@@ -285,6 +392,7 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                 reindex_results.append(rebuild_client.reindex(force=True))
         except BaseException as exc:  # noqa: BLE001 - surfaced in the test thread
             reindex_errors.append(exc)
+            reindex_error_live.append(still_serving())
 
     rebuild = threading.Thread(target=repeat_reindex, name="real-reindex")
     rebuild.start()
@@ -323,18 +431,48 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     graph_refusals: dict[str, list[urllib.error.HTTPError]] = {}
     graph_overruns: dict[str, int] = {}
 
-    def still_serving() -> bool:
-        """Is the daemon up and answering after a call overran its deadline?
-
-        The branded probe, not a socket connect: what has to hold is that the service
-        kept serving through an uninterruptible call, and a port that accepts a
-        connection does not say that.
-        """
-        return daemon.http_ping(port=port, timeout=2.0) is not None
     health_samples: list[float] = []
     status_samples: list[float] = []
     health_overruns = 0
     status_overruns = 0
+
+    # Two events, because the failure had two halves. `measuring` holds the three
+    # interactive routes in flight while there is something to contend with -- without
+    # it a route that answers in 150 ms is finished before one that answers in 900 ms
+    # has started its second call. `watching` runs a dedicated poller for the whole
+    # lifetime of that work, because the coincidence has to be *looked for* densely as
+    # well as *created*: the twelve health probes it used to ride cost 0.1 ms each and
+    # were all over inside 400 ms of a three-second workload.
+    measuring = threading.Event()
+    measuring.set()
+    watching = threading.Event()
+    watching.set()
+
+    simultaneous_routes = {"/reindex", "/get_map", "/find_references", "/impact"}
+    concurrency_watch = {"looks": 0, "four_way": 0, "seen": set()}
+
+    def watch_for_concurrency() -> None:
+        """Poll `/health` for as long as the contended work runs.
+
+        Its own client and its own thread: it must not consume the twelve latency
+        samples below, and it must not be bounded by them.
+        """
+        watcher = client.CodesextantClient(
+            project=str(project), port=port, timeout=5)
+        while watching.is_set():
+            try:
+                labels = {job.get("label") for job
+                          in watcher.health()["heavy_work"].get("active_jobs", [])}
+            except (TimeoutError, urllib.error.HTTPError, OSError):
+                continue                       # a refused probe is not an observation
+            concurrency_watch["looks"] += 1
+            concurrency_watch["seen"] |= labels & simultaneous_routes
+            if simultaneous_routes <= labels:
+                concurrency_watch["four_way"] += 1
+            time.sleep(0.02)
+
+    watcher_thread = threading.Thread(target=watch_for_concurrency, daemon=True)
+    watcher_thread.start()
 
     try:
         with ThreadPoolExecutor(max_workers=3) as pool:
@@ -346,6 +484,7 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                     validate_map,
                     4,
                     still_serving,
+                    measuring.is_set,
                 ),
                 "references": pool.submit(
                     _timed_samples,
@@ -358,6 +497,7 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                     validate_references,
                     4,
                     still_serving,
+                    measuring.is_set,
                 ),
                 "impact": pool.submit(
                     _timed_samples,
@@ -370,24 +510,9 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                     validate_impact,
                     4,
                     still_serving,
+                    measuring.is_set,
                 ),
             }
-
-            # Watching for the four-way coincidence used to happen here, in its own
-            # five-second window. That window is a machine-speed assertion wearing a
-            # different hat: the slower the runner, the more each poll costs and the
-            # fewer chances fit inside it -- so the machine that most needs time to line
-            # four jobs up is the one given the fewest looks. It failed on macOS while
-            # everything else in the run was correct.
-            #
-            # The check now rides the measurement loop below, which already fetches
-            # `/health` twelve times and already carries `active_jobs` in the response.
-            # No extra calls, and the observation window becomes however long the
-            # measurement takes -- which grows on a slow machine rather than shrinking.
-
-            simultaneous_routes = {
-                "/reindex", "/get_map", "/find_references", "/impact"}
-            simultaneous_seen = 0
 
             for _ in range(12):
                 # The same three outcomes the graph routes get, for the same reason: a
@@ -405,10 +530,6 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                     health_samples.append((time.perf_counter() - started) * 1000)
                     assert health["service"] == "codesextant"
                     assert "heavy_work" in health
-                    if simultaneous_routes <= {
-                            job.get("label")
-                            for job in health["heavy_work"].get("active_jobs", [])}:
-                        simultaneous_seen += 1
 
                 started = time.perf_counter()
                 try:
@@ -425,16 +546,31 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                 else:
                     assert status["indexed"] is True
 
+            # The measurement is over, so the routes may wind down. Clearing this
+            # before `result()` is what bounds the wait: while it is set they keep
+            # issuing calls, and `result(timeout=90)` would be waiting on a loop that
+            # has no reason to end.
+            measuring.clear()
             for route, future in futures.items():
                 (graph_samples[route], graph_refusals[route],
                  graph_overruns[route]) = future.result(timeout=90)
     finally:
+        watching.clear()
+        watcher_thread.join(timeout=10)
         stop_reindex.set()
-        rebuild.join(timeout=70)
+        rebuild.join(timeout=REINDEX_DEADLINE_SEC + 10)
         if rebuild.is_alive():
             abort_reindex.set()
             rebuild.join(timeout=5)
+        # **Closing the server is what ends a call the daemon itself could not**, and it
+        # has to happen before the aliveness check rather than after it. `abort_reindex`
+        # ends the loop, never the request inside it, so a rebuild stuck in an
+        # uninterruptible native call outlives every join above -- and now that the
+        # client waits twice the daemon's deadline rather than half of it, that wait is
+        # long enough to matter. Shutting the listener down is the only thing that makes
+        # its client return.
         close_server()
+        rebuild.join(timeout=10)
 
     assert not rebuild.is_alive()
     # A reindex refused with documented back-pressure is the admission control working,
@@ -442,7 +578,25 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     # hold the reserve, so a slow runner will reach the queue-full condition. What is
     # not allowed is a refusal without the contract -- a 500, or a 503 that omits the
     # Retry-After a caller is supposed to obey.
-    for error in reindex_errors:
+    # `strict` because the two lists are appended in the same `except` block: if
+    # they ever differ in length something has gone wrong in the rebuild thread,
+    # and silently truncating would hide it behind a passing test.
+    for error, was_live in zip(reindex_errors, reindex_error_live, strict=True):
+        if isinstance(error, TimeoutError):
+            # Not a refusal the daemon delivered: the client's own deadline, which
+            # `work_coordinator` documents it cannot always beat -- "CPython cannot
+            # safely interrupt a thread inside Jedi, tree-sitter, SQLite, or another
+            # native call. Those calls may return after the request deadline."
+            # `_timed_samples` accepts exactly this outcome on the three interactive
+            # routes, under exactly this guard, and the rebuild path never got it.
+            #
+            # What the service still owes in that case is that it is *up*: a timeout
+            # from a daemon that has died is a failure and stays one. That is the whole
+            # difference between accepting an outcome and asserting one away.
+            assert was_live, (
+                "the rebuild timed out and the daemon stopped answering -- an overrun "
+                "inside an uninterruptible call leaves the service up, a crash does not")
+            continue
         assert isinstance(error, urllib.error.HTTPError), error
         assert error.code == 503, error
         assert error.headers.get("Retry-After"), "back-pressure must say when to return"
@@ -463,7 +617,7 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     #
     # What this test exists to show is that real rebuild work does not starve the signed
     # graph and control routes, and that is asserted where it belongs: `active_seen` and
-    # `simultaneous_seen` above prove a rebuild was admitted and ran *concurrently* with
+    # `concurrency_watch` above prove a rebuild was admitted and ran *concurrently* with
     # all three interactive routes, and neither depends on how many rebuilds finished.
     assert reindex_results or reindex_errors, (
         "the rebuild thread neither completed a reindex nor was refused, so nothing "
@@ -471,10 +625,19 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     assert all(result["indexed"] == 73 for result in reindex_results)
     assert storage.symbol_snapshot_path(
         storage.db_path_for(str(project))).is_file()
-    assert simultaneous_seen, (
-        "the reindex and three same-project interactive routes never ran concurrently "
-        "during the measurement, so the latencies below were not taken under the "
-        "contention this test exists to create")
+    # Fifth distinct assertion in this file to fail on CI, on a fifth runner, and the
+    # first that was impossible rather than unlucky. Each interactive route ran a fixed
+    # four calls: `get_map` at ~150 ms was finished before `impact` at ~900 ms had
+    # started its second, so on a runner where that spread is wide enough the four-way
+    # coincidence cannot occur however long it is watched. Widening the window -- which
+    # is what the previous repair did -- cannot fix a coincidence that never happens.
+    # The routes are now held in flight for the whole measurement, so the concurrency
+    # is created by the test rather than waited for.
+    assert concurrency_watch["four_way"], (
+        "the reindex and three same-project interactive routes never ran concurrently, "
+        "so the latencies below were not taken under the contention this test exists "
+        f"to create (looks {concurrency_watch['looks']}, routes ever active "
+        f"{sorted(concurrency_watch['seen'])})")
     assert len(health_samples) + health_overruns == 12
     assert len(status_samples) + status_overruns == 12
     assert health_samples, "every health probe outran its deadline"
@@ -498,10 +661,15 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     # machine meeting a documented limit, and a reader looking at a CI log deserves to
     # see that rather than infer it from a smaller sample count.
     print(json.dumps({**reported_metrics, "overruns": graph_overruns,
-                      # Kept as a count rather than a flag: 8 to 11 rounds of 12 see it
-                      # on a healthy machine, so a run reporting 1 is a warning even
-                      # though it passes, and a run reporting 0 is the failure below.
-                      "rounds_with_four_way_concurrency": simultaneous_seen,
+                      # No expected value: the last one here was "8 to 11 of 12 on a
+                      # healthy machine", measured on this machine, which is the
+                      # mistake two commits above this one. `concurrency_looks` is
+                      # printed beside it so a zero can be read -- few looks is a
+                      # different diagnosis from many looks and no coincidence -- and
+                      # `routes_ever_active` names which of the four was missing.
+                      "four_way_concurrency": concurrency_watch["four_way"],
+                      "concurrency_looks": concurrency_watch["looks"],
+                      "routes_ever_active": sorted(concurrency_watch["seen"]),
                       "control_plane_overruns": {"health": health_overruns,
                                                  "status": status_overruns},
                       "quiet_health_median_ms": round(_percentile(quiet_health, 50), 3),
