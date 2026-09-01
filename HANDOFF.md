@@ -424,6 +424,20 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   floor load-bearing on a fast machine. Written down because the previous two fixes each
   carried a constant to a baseline it was not derived for.
 
+  **An eighth, the fourth assertion in this same file, and the lesson is the file
+  rather than the line.** `simultaneous_seen` watched for a four-way concurrency
+  coincidence inside a fixed five-second window. That window is a machine-speed
+  assertion in another hat: the slower the runner, the more each poll costs and the
+  fewer looks fit inside it, so the machine that most needs time to line four jobs up
+  gets the fewest chances. It now rides the twelve-round measurement loop, which already
+  fetches `/health` and already carries `active_jobs` -- no extra calls, and the window
+  becomes however long the measurement takes, which *grows* on a slow machine. Verified
+  to still have teeth rather than assumed: 8 to 11 rounds of 12 observe it here, never
+  12, and the count is printed so a run reporting 1 reads as a warning before it becomes
+  a failure. **Four distinct assertions in one file, each on a different runner, none
+  repeating.** After the second, the thing to fix is the file's whole approach to time,
+  not whichever line fired.
+
 - **A commit message claimed a file was updated when the edit had silently failed.**
   `d90b23b` says "HANDOFF.md carries this as the sixth instance". It did not: the edit
   was bundled into the same shell call as a two-minute background test run, its

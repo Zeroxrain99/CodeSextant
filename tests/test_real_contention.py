@@ -373,23 +373,21 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                 ),
             }
 
+            # Watching for the four-way coincidence used to happen here, in its own
+            # five-second window. That window is a machine-speed assertion wearing a
+            # different hat: the slower the runner, the more each poll costs and the
+            # fewer chances fit inside it -- so the machine that most needs time to line
+            # four jobs up is the one given the fewest looks. It failed on macOS while
+            # everything else in the run was correct.
+            #
+            # The check now rides the measurement loop below, which already fetches
+            # `/health` twelve times and already carries `active_jobs` in the response.
+            # No extra calls, and the observation window becomes however long the
+            # measurement takes -- which grows on a slow machine rather than shrinking.
+
             simultaneous_routes = {
                 "/reindex", "/get_map", "/find_references", "/impact"}
-            simultaneous_seen = False
-            overlap_deadline = time.monotonic() + 5
-            while time.monotonic() < overlap_deadline:
-                health = health_client.health()
-                active_routes = {
-                    job.get("label")
-                    for job in health["heavy_work"].get("active_jobs", [])
-                }
-                if simultaneous_routes <= active_routes:
-                    simultaneous_seen = True
-                    break
-                time.sleep(0.01)
-            assert simultaneous_seen, (
-                "the reindex and three same-project interactive routes never "
-                "ran concurrently")
+            simultaneous_seen = 0
 
             for _ in range(12):
                 # The same three outcomes the graph routes get, for the same reason: a
@@ -407,6 +405,10 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
                     health_samples.append((time.perf_counter() - started) * 1000)
                     assert health["service"] == "codesextant"
                     assert "heavy_work" in health
+                    if simultaneous_routes <= {
+                            job.get("label")
+                            for job in health["heavy_work"].get("active_jobs", [])}:
+                        simultaneous_seen += 1
 
                 started = time.perf_counter()
                 try:
@@ -469,6 +471,10 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     assert all(result["indexed"] == 73 for result in reindex_results)
     assert storage.symbol_snapshot_path(
         storage.db_path_for(str(project))).is_file()
+    assert simultaneous_seen, (
+        "the reindex and three same-project interactive routes never ran concurrently "
+        "during the measurement, so the latencies below were not taken under the "
+        "contention this test exists to create")
     assert len(health_samples) + health_overruns == 12
     assert len(status_samples) + status_overruns == 12
     assert health_samples, "every health probe outran its deadline"
@@ -492,6 +498,10 @@ def test_real_queries_and_control_plane_meet_deadlines_during_repeated_reindex(
     # machine meeting a documented limit, and a reader looking at a CI log deserves to
     # see that rather than infer it from a smaller sample count.
     print(json.dumps({**reported_metrics, "overruns": graph_overruns,
+                      # Kept as a count rather than a flag: 8 to 11 rounds of 12 see it
+                      # on a healthy machine, so a run reporting 1 is a warning even
+                      # though it passes, and a run reporting 0 is the failure below.
+                      "rounds_with_four_way_concurrency": simultaneous_seen,
                       "control_plane_overruns": {"health": health_overruns,
                                                  "status": status_overruns},
                       "quiet_health_median_ms": round(_percentile(quiet_health, 50), 3),
