@@ -169,3 +169,86 @@ decade behind the technique it implements, that the gap has a named remedy, and 
 remedy's effect on *this* corpus is measurable for zero agent cost. That measurement is
 step 2 of the list above, and it is the one that decides whether step 3 is ever worth
 running.
+
+---
+
+## 8. Why the tool scores below the agent, and four fixes the data refused
+
+E5 moved `preflight` from naming 4 of E2's 60 companions to 10. Replaying the *actual*
+invocations the agents made -- with the symbols they passed, which two earlier passes of
+this measurement got wrong -- puts it at **12 of 60 (20%)** against the agents' **40 of 60
+(67%)**. This section is the root-cause hunt for that gap, and its result is that none of
+the obvious repairs survives its own control.
+
+| companion kind | n | agent | co-change | blast radius | either |
+|---|---|---|---|---|---|
+| CI / deps config | 26 | 14 | 1 | 1 | 2 |
+| release note | 13 | 6 | 3 | 0 | 3 |
+| test | 11 | 10 | 3 | 2 | 4 |
+| source code | 7 | 7 | 2 | 2 | 3 |
+| prose docs | 3 | 3 | 0 | 0 | 0 |
+| **total** | **60** | **40** | **9** | **5** | **12** |
+
+**The agent's advantage is spread evenly across every class.** It is not one mechanism
+failing; it is a different question being answered.
+
+### One real defect, found on the way
+
+**The reference graph is empty.** Measured in the E2 indexes: alembic, 91 files and 2,614
+symbols, **0 reference edges**; flask, 75 files and 1,642 symbols, **8**; pytest, 278 files
+and 7,281 symbols, **3**. `index_project` records files and symbols and does not build the
+reference graph -- edges appear only when `_ensure_blast_radius` resolves one symbol on
+request. So "改 A 壞 B", the flagship claim, is answered from a graph with single-digit
+edges, and `blast_radius` reports `dependent_count` of 0 or 1 in nearly every call because
+there is nothing there to report.
+
+It is working as designed rather than broken, and the design is why the one symbol with
+real fan-out was refused: `Flask` was `declined` because 47 files name it, above an inline
+limit of 25. **The limit exists because the graph is not built, and it declines exactly the
+high-fan-out case where 改 A 壞 B is a real risk.**
+
+### Four candidate fixes, and what killed each
+
+**1. "The agent reads the issue number out of the instruction."** Eight companions are
+issue-numbered changelog fragments; the instruction prints the matching number for **3 of
+8**, and in one case prints a *different* number (13448 against a companion named 13420).
+Mostly rejected.
+
+**2. "Index the import graph, in both directions."** 11 of the 18 code companions are
+reachable by a reference in one direction or the other -- and 10 of those run
+*seed → companion*, which is the direction `blast_radius` never reports: when the edit
+starts in a test, the thing that must move with it is the module it tests, a dependency
+rather than a dependent. That looked decisive. Measured before building: a bidirectional
+import graph names **6 of 60 (10%)**, *below* the 20% already achieved, and its
+who-imports-me half scores **0 of 60 while listing up to 48 files per query**. Rejected.
+
+**3. "Predict at directory granularity instead of file granularity."** The release-note
+class is 22% of the answer and 9 of its 13 files do not exist at the parent, so no
+file-level predictor can ever name them -- but their *directory* can be named. Directory
+co-change from the seed's directory hits **37 of 60 (62%)**, which is nearly the agent's
+67%. Then the matched control: naming simply the five most-changed directories in the
+repository, ignoring the seed entirely, hits **36 of 60 (60%)**, and *any* directory in
+these repositories covers 59 of 60. **The 62% is the base rate.** Rejected.
+
+**4. "The agent's edge shrinks on repositories too large to grep."** Unaided agent recall
+by repository: alembic 162 files 58%, flask 236 files 64%, pytest 650 files **81%**. Recall
+rises with size here. Three repositories and heavily confounded by convention regularity,
+so this is weak evidence -- but it is evidence against, not for. Not supported.
+
+### What is actually left
+
+**`preflight` asks "what usually moves with this file". The agent asks "what does this
+change require".** The second question is strictly more informative and the tool never sees
+the input that makes it askable: the instruction. The agent knows a pytest bugfix needs a
+changelog entry, that these five workflow files move together, that this test covers that
+module -- not by retrieval, by having understood the change and read the repository.
+
+No index converts the first question into the second, which is what four measurements above
+say from four directions. That makes the gap architectural rather than a defect, and it
+bounds what any amount of retrieval engineering can recover here.
+
+**The consequence for scope, stated as a cost rather than a conclusion:** on this task set
+`blast_radius` contributes 5 companions of 60 while its module-dependents tier alone will
+list up to 48 files for one query. That is attention spent for almost nothing, and it is
+the part of the design that measurement supports least. Whether it pays elsewhere is exp2's
+question and not this one's -- but nothing here argues for building more of it.
