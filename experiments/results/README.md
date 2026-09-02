@@ -1,5 +1,7 @@
 # Recorded runs
 
+**Read [`docs/audit.md`](../../docs/audit.md) before quoting E2.** It re-reads E2's own checkouts and finds that `preflight` named 5 of the 60 companion files those tasks turned on, against 40 the agents found on their own -- so the null was determined before the first agent ran, and the reason recorded at the time was wrong even though the conclusion was not.
+
 Raw per-trial output, checked in so a number in `docs/roadmap.md` can be traced to the
 trials that produced it rather than believed. Roadmap G1 asks for a benchmark somebody
 else can reproduce; a result whose inputs live only in a transcript is not one.
