@@ -18,6 +18,18 @@ which is the comparison the question was actually about. And the front-end numbe
 higher than the Python ones on every measure, against every control, which is the
 opposite of what `docs/plan.md` was written expecting.
 
+## `exp1_ranked_*.txt` and `E5.md` — the ranked answer, and the held-out repository that declined to confirm it
+
+`exp1_ranked_derivation.txt` is exp1's protocol re-run with four new arms on the five
+derivation repositories; `exp1_ranked_heldout_vite.txt` is the single confirmation run on
+vite, executed once, after the arm was chosen.
+
+**The arm chosen on the derivation set won on all five and lost on the held-out one** —
+paired ΔF1 +0.008 [+0.002, +0.014] against the shipped threshold, so the threshold is
+better on vite by 1.5% of its F1. Recall rises on all six and the co-change section stops
+being silent (speak rate 0.47-0.81 → 0.84-0.94), which is the claim that survives. Read
+`E5.md` before quoting either.
+
 ## `exp21.json` — E4's event rate, and why E4 was not run
 
 `interruptions` is what `check`'s fourth mode reports over 581 real commits of flask,

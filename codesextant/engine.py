@@ -2046,6 +2046,26 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
                 relative, min_support=cochange.min_support(),
                 min_confidence=cochange.min_confidence())
             if relative else [])
+        # **The thresholded rule answers about half the time, and the other half used to
+        # be a sentence saying so.** exp1 measures `speaks` at 0.46-0.59 across the
+        # Python corpus, and E2's own re-read found the co-change section silent in 9 of
+        # 20 tasks -- which is the documented behaviour of the ROSE-style rule this
+        # implements, reported in the literature as answering about a quarter of the
+        # time. `cochange.rank_companions` is the TARMAQ-style answer for that half:
+        # ranked rather than thresholded, so weak evidence arrives as weak evidence
+        # instead of as nothing.
+        #
+        # Fallback rather than replacement, and that is a measured choice rather than a
+        # cautious one. On the derivation corpus ranking beat the threshold outright on
+        # requests, click, tqdm and zod -- paired dF1 -0.08 to -0.10, every interval
+        # excluding zero -- and **lost on express**, the one repository where the
+        # threshold already speaks 81% of the time at precision 0.74. Keeping the strong
+        # answer where it exists and ranking only where it does not is what both
+        # observations support.
+        ranked = (
+            cochange.rank_companions(
+                store.cochange_pairs_for(relative), exclude={relative})
+            if relative and not companions and cochange.ranked_enabled() else [])
         symbol_companions = (
             store.symbol_cochange_for(relative, symbol)
             if symbol and relative and symbol_stats.get("available") else [])
@@ -2094,8 +2114,13 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
         notes.append("Pass symbol= to check whether the thing you are adding already exists.")
     if not cochange_stats.get("available"):
         notes.append("Co-change is unavailable: " + str(cochange_stats.get("reason", "unknown")))
-    elif not companions:
+    elif not companions and not ranked:
         notes.append("History shows nothing that reliably changes with this file.")
+    elif ranked:
+        notes.append(
+            "No companion here clears the reliability threshold, so these are ranked by "
+            "how much history is behind them rather than filtered. Weaker evidence than "
+            "a normal co-change answer -- read them as candidates, not as obligations.")
     notes.extend(_blast_radius_notes(symbol, dependents, leads, total_edges, resolution))
 
     result = {
@@ -2107,7 +2132,11 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
         # same companion: both are true, but "changing this function" is the question
         # the caller actually asked, and showing the coarser claim beside it only
         # invites reading the weaker number.
-        "co_change": _merge_cochange(symbol_companions, companions, symbol),
+        "co_change": _merge_cochange(symbol_companions, companions or ranked, symbol),
+        # Whether the co-change list came from the threshold or from the ranking. A
+        # caller that treats a ranked list as a thresholded one is reading a candidate
+        # as an obligation, and nothing else in the payload distinguishes them.
+        "co_change_ranked": bool(ranked and not companions),
         "blast_radius": {
             "dependent_files": dependents,
             "dependent_count": len(dependents),

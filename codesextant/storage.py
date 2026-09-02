@@ -804,6 +804,25 @@ class ProjectStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def cochange_pairs_for(self, path: str, *, limit: int = 200) -> list[dict]:
+        """Every companion of one path, strongest evidence first and nothing filtered.
+
+        `cochange_rules_for` applies the ROSE thresholds and is what `preflight` has
+        always called. This is the candidate pool for the ranked answer instead, and the
+        ordering matters: taking the pool by *confidence* would fill it with companions
+        seen once, which is the bias the ranking exists to correct. Support first hands
+        the ranker the companions there is most to say about.
+        """
+        rows = self.conn.execute(
+            "SELECT p.companion AS companion, p.support AS support, "
+            "       c.changes AS changes "
+            "FROM cochange_pair p JOIN cochange_count c ON c.path = p.path "
+            "WHERE p.path = ? AND c.changes > 0 "
+            "ORDER BY support DESC, companion LIMIT ?",
+            (path, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def _mark_derived(self, path: str, kind: str, content_hash: str) -> None:
         """Record that ``kind`` is materialized for this file at this content hash."""
         self.conn.execute(

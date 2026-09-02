@@ -31,6 +31,7 @@ commits.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import subprocess
@@ -73,6 +74,104 @@ def min_support() -> int:
 def min_confidence() -> float:
     """How often B must follow A before the pair is worth interrupting someone over."""
     return _env_float("CODESEXTANT_COCHANGE_MIN_CONFIDENCE", 0.5)
+
+
+def rank_limit() -> int:
+    """How many ranked companions a query may return when nothing is thresholded."""
+    return _env_int("CODESEXTANT_COCHANGE_RANK_LIMIT", 5)
+
+
+def _wilson_lower(successes: int, trials: int, z: float = 1.96) -> float:
+    """The lower bound of a 95% interval on support/changes.
+
+    **This is the piece that replaces the confidence threshold, and it is why the
+    threshold can go.** Ranking by raw confidence puts a file seen once, alongside the
+    query once, at 1.00 -- above a companion that followed it nineteen times out of
+    twenty. That is what `min_support` was defending against, and a hard floor pays for
+    the defence by answering nothing at all when no pair clears it: measured at 45% of
+    E2's tasks and at `speaks` 0.46-0.59 in exp1, which is the documented behaviour of
+    the ROSE-style rule this file implemented.
+
+    A Wilson lower bound makes the same correction continuously: one-of-one scores
+    **0.21** against nineteen-of-twenty at **0.76** and three-of-six at 0.19, so thin
+    evidence sorts below thick evidence instead of above it -- and, unlike a floor, it
+    still sorts. Nothing is silenced; a weak answer is returned as a weak answer. `min_support` and `min_confidence` still exist and still apply
+    wherever a caller wants a thresholded list; this is for the ranked one.
+    """
+    if trials <= 0 or successes <= 0:
+        return 0.0
+    phat = successes / trials
+    z2 = z * z
+    centre = phat + z2 / (2 * trials)
+    margin = z * math.sqrt(phat * (1 - phat) / trials + z2 / (4 * trials * trials))
+    return max(0.0, (centre - margin) / (1 + z2 / trials))
+
+
+def rank_companions(rows, *, limit: int | None = None,
+                    exclude=()) -> list[dict]:
+    """Companions ranked rather than thresholded, aggregated over the query.
+
+    ``rows`` are ``{companion, support, changes}`` records, and may come from several
+    query files at once -- everything the change has touched so far, not just one seed.
+    A companion named by more than one of them is aggregated rather than counted once:
+    two independent rules pointing at the same file are more evidence than one, which is
+    the result in Rolfsnes et al., *Improving Change Recommendation using Aggregated
+    Association Rules* (MSR 2016), extended in *Empirical Software Engineering* (2018).
+    Aggregation is noisy-OR, so evidence accumulates and the score stays a probability.
+
+    **What this is and is not.** TARMAQ (Rolfsnes, Di Alesio, Behjati, Moonen, Binkley,
+    SANER 2016) filters the *transactions* to those whose intersection with the query is
+    largest, then builds rules `Q' -> x` with `|Q'| = k`. This is that algorithm with `k`
+    pinned to 1, because what this project stores is per-file and per-pair counts rather
+    than the transactions themselves -- and that is not an oversight: counts add, so a
+    new commit costs a commit instead of a re-derivation, and "不能每一次使用都要重建一次
+    索引" is a requirement rather than a preference. At `k = 1` the two agree, which is
+    every `preflight` query, since those name one file. Above it this trades TARMAQ's
+    transaction filtering for MSR-2016 aggregation over single-file rules.
+    """
+    limit = rank_limit() if limit is None else limit
+    excluded = set(exclude)
+    scores: dict[str, float] = {}
+    best: dict[str, dict] = {}
+    for row in rows:
+        companion = row["companion"]
+        if companion in excluded:
+            continue
+        score = _wilson_lower(int(row["support"]), int(row["changes"]))
+        if score <= 0.0:
+            continue
+        # Noisy-OR: P(at least one rule is right), assuming the rules are independent.
+        # They are not, so this over-counts agreement between two rules that fire for
+        # the same reason -- it is a ranking, and the ordering is what is being claimed.
+        scores[companion] = 1.0 - (1.0 - scores.get(companion, 0.0)) * (1.0 - score)
+        if companion not in best or row["support"] > best[companion]["support"]:
+            best[companion] = row
+    ordered = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    out = []
+    for companion, score in ordered[:limit]:
+        row = dict(best[companion])
+        row["score"] = round(score, 4)
+        # The same key a thresholded rule carries, so a ranked row is a drop-in for one
+        # everywhere downstream. Caught by the renderer test rather than by reading:
+        # `_merge_cochange` reads `confidence` and these rows did not have it.
+        changes = int(row.get("changes") or 0)
+        row["confidence"] = round(int(row["support"]) / changes, 4) if changes else 0.0
+        out.append(row)
+    return out
+
+
+def ranked_enabled() -> bool:
+    """Whether a query with no thresholded answer falls back to the ranked one.
+
+    A separate switch from `enabled()` and from `rank_limit()`, deliberately. Turning the
+    ranking off by setting the limit to zero cannot work -- `_env_int` returns the default
+    for anything not positive, which is the right contract for `max_commits` and would be
+    a trap here -- and `CODESEXTANT_COCHANGE_DISABLED` takes away the thresholded answer
+    too. Somebody who wants only the high-precision half should be able to say exactly
+    that.
+    """
+    return os.environ.get("CODESEXTANT_COCHANGE_RANKED_DISABLED", "").lower() not in (
+        "1", "true", "yes", "on")
 
 
 def enabled() -> bool:
