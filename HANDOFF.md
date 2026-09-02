@@ -3,6 +3,16 @@
 Three layers. Read layer 1 to start working, layer 2 before making a claim about what
 the tool is worth, layer 3 before changing anything load-bearing.
 
+> ## The project is paused, and this is the sentence that matters
+>
+> **The software works and its retrieval numbers are real. The claim that it changes what
+> an agent does was tested and did not hold.** So development stopped rather than
+> continuing on a guess. Nothing is being taken away: it installs, indexes, answers, and
+> 833 tests pass on four Python versions across Linux, macOS and Windows.
+>
+> If you are deciding whether to pick this up, read Layer 2 §0 first. It is four
+> paragraphs and it will save you the other seven hundred lines.
+
 ---
 
 # Layer 1 — three minutes
@@ -16,12 +26,13 @@ the machine.
 
 | | |
 |---|---|
-| branch | `claude/codesextant-handoff-us93o7`, 34 commits ahead of master. Last commit touching `codesextant/` is `a382e99`; anything after it is this document. |
-| version | 0.28.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
-| tests | `python -m pytest -q` → 739 passed, 6 skipped |
+| state | **paused.** `master` carries everything; no work is in flight. |
+| version | 0.30.0 (`codesextant/__init__.py` and `pyproject.toml`, bound by a test) |
+| tests | `python -m pytest -q` → **833 passed, 6 skipped**, ~2 minutes |
 | lint | `python -m ruff check codesextant tests experiments` → **clean**, and a CI job enforces it. The baseline used to be "12 pre-existing", written here and checked by nobody; a number you have to remember is a guard with a memory requirement. |
-| experiments | `experiments/README.md` — protocol, results, and what they do not establish |
-| **plan** | **`docs/roadmap.md`** — the two demands this serves, what "done" means for each, and the ordered steps. Read it before choosing what to work on, and update its status line in the same commit as the work. |
+| **the verdict** | **`docs/audit.md`** — what E2 actually measured, why its null was decided before the first agent ran, four candidate repairs each killed by its own control, and the reframe that says which endpoints are the right ones. **Read this before believing anything else in this file.** |
+| results | `experiments/results/` — `E2.md` (the agent A/B), `E4.md` (designed, costed, refused), `E5.md` (the ROSE→TARMAQ fix and the held-out repository that declined to confirm it) |
+| plan | `docs/plan.md` and `docs/roadmap.md` — the two demands this serves. Both carry correction notices where the audit changed the reason behind a conclusion; the notices are deliberate and are not to be tidied away. |
 
 **The two things that matter most.**
 
@@ -55,6 +66,60 @@ fence* your change is about to meet, what it checks, and what would satisfy it. 
 Every number below comes from a command in `experiments/`. None of it is an
 impression. Where something is unmeasured this says so, because the expensive mistake
 in this project has been asserting things that turned out to be artefacts.
+
+## §0 — What it is worth, which is the question the rest of this layer does not answer
+
+Everything after this section measures **retrieval**: given a query, is the right thing
+returned. Those numbers are real, held out, and hard-won. **They are not the question.**
+The question is whether an agent using this does better work or does it cheaper, and that
+was measured separately and came back null.
+
+**E2 — the agent A/B.** 20 tasks, 40 agent trials, 3.6M tokens, zero contaminated,
+pre-registered by seed before the first agent ran. Same task, one arm told the tool is
+installed and one arm not.
+
+| | with tool | without | difference | 95% interval |
+|---|---|---|---|---|
+| tokens | 87,758 | 92,810 | −5.4% | includes zero |
+| tool calls | 47.5 | 49.3 | −3.5% | includes zero |
+| wall clock | 560 s | 638 s | −12.2% | includes zero |
+
+Quality was an *identity*, not a null: **in 20 of 20 pairs both arms edited exactly the
+same subset of the true companion files.** The tool was used — 71 invocations, every one
+of the 20 arms.
+
+**Why that null was decided in advance, which is the part worth carrying forward.**
+Replaying those sessions against what the commits actually touched: **`preflight` named 12
+of 60 companion files; the agent working without it found 40.** 43% of the answer was CI
+and dependency configuration, which the model does not index at all (it named 1 of 26);
+22% was release notes, 9 of which did not exist at the parent commit. exp1 had already
+measured co-change recall at 0.08–0.11 on Python, and E2's quality endpoint *was* recall.
+Nobody put those two numbers side by side before spending the tokens.
+
+**E4 was designed, costed against that data, and not run.** The follow-up experiment —
+does the tool stop an agent deleting a guard it does not understand — needs ~10M tokens
+under assumptions favourable to the tool, and 69M under realistic ones, because the event
+occurs in at most 7.5% of changes and was observed 0 times in 40. `experiments/results/E4.md`
+carries the arithmetic. Unrunnable is not the same as null, and the file says which it is.
+
+**The reframe, from the owner, which is the correct frame.** *CodeSextant is the car; the
+LLM is the driver.* The driver can walk to the destination. The car is for arriving with
+less fuel. So asking whether the index names the files as well as an agent finds them is
+asking the car to drive itself while the driver walks alongside — and every number in
+`docs/audit.md` §8 answers that wrong question. **The two endpoints are fuel** (tokens,
+tool calls, wall clock for the same destination, because less spent looking is less
+context consumed) **and instruments** (this reaches code B, there is a test over there,
+that guard will block you). E2 measured fuel at a task size where the mechanism cannot
+operate — median two companion files. **The instruments endpoint has never been measured
+at all.**
+
+**And the one measured result pointing somewhere this work never went.** The half of the
+tool that reads git history cannot tell what language it is looking at, and on a held-out
+TypeScript monorepo it reaches F1 **0.524** at precision 0.809, against 0.14–0.19 on every
+Python repository, with 12 of 12 paired comparisons excluding zero. **Every agent
+experiment above was run on Python.**
+
+---
 
 ## The three problems this exists for
 
@@ -226,8 +291,12 @@ is wrong, and nothing predicts which a new repository is.
 
 ## What is not established
 
-- **Prevention.** Everything here measures retrieval. Whether an author who saw the
-  answer made a better change needs agents doing tasks with and without the tool.
+- ~~**Prevention.**~~ **Measured, and it is the headline of this layer — see §0.** E2 ran
+  the agents with and against the tool and found no detectable difference in tokens, tool
+  calls, wall clock or quality, on tasks whose median is two companion files. What remains
+  unestablished is narrower and stated where it belongs: whether the *fuel* saving appears
+  at a task size where the mechanism can operate, and whether the *instruments* — the
+  guard, test and convention warnings — ever save anybody. Neither has been tested.
 - **Whether DEPENDENTS helps a reader.** It names 0.6 more files per run for +0.046
   recall, so roughly one added file in thirteen is the forgotten one. Whether that
   reads as a hint or as noise is a question about people, and belongs to the prevention
@@ -712,6 +781,56 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
   scored by `--score` on an old dump in one second instead of an hour. Four candidates
   were rejected this way for the cost of one run.
 
+- **Eleven CI failures in one test family, each on a different assertion, and every one
+  the same defect.** `test_real_contention.py` and `test_interactive_contention.py`
+  failed on Windows and macOS runners eleven times across this project's life. Not once
+  was the cause a race in the daemon. Every single time the test was **asserting the
+  speed of the machine rather than the behaviour of the code**: a fixed millisecond
+  bound, an exact sample count, a p99 over fifteen observations against a p99 over sixty,
+  a 503 refusal delivered as a Windows RST, a client deadline racing the daemon's own,
+  and finally a contracted 504 raised out of a worker instead of counted. Twice the file
+  stated the right rule in a comment and broke it on the next line.
+
+  What ships now: `_CONTRACTED_REFUSALS = (503, 504)` in both files, ratios against an
+  uncontended baseline rather than absolute bounds, and floors chosen by sweeping healthy
+  and starved distributions rather than by taste. **If this family fails again, the first
+  hypothesis is not a race — it is that another assertion in it is measuring the runner.**
+
+- **Replaying a recorded run means replaying it, not reconstructing it.** Measuring what
+  `preflight` told E2's agents went wrong three times in one session, each time producing
+  a confidently wrong headline number: once with `resolve="never"`, which silently turns
+  the blast radius off; once calling `preflight` with no `--symbol` when 17 of the 23
+  real invocations had passed one; and once testing reference reachability in a single
+  direction when half the pairs run the other way. The recorded invocations were on disk
+  the whole time. **Replay the exact call. A reconstruction is a new experiment wearing
+  the old one's name.**
+
+- **Capping a list and capping its count are not the same change.** Shortening the lead
+  tier to three was right and measured. Doing it inside the resolver also shortened
+  `name_match_count` from twelve to three — so a reader shown three of twelve was told
+  "three", which is the precise failure the whole change existed to prevent. Caught by a
+  test asserting the count survives. **Presentation caps belong where the answer is
+  assembled, never where the evidence is gathered.**
+
+- **A held-out set that declines to confirm is the answer, not an obstacle.** The
+  TARMAQ-style ranked fallback won on all five derivation repositories with every
+  interval excluding zero, and vite — held back precisely for this — preferred the old
+  threshold by 0.008 F1. A three-candidate variant ties on vite and also wins on all
+  five. **It was not selected.** Reading the held-out result and then picking the arm
+  that survives it is fitting to the held-out set, and it would leave the change with no
+  honest confirmation at all. What shipped is recorded as a judgement rather than a
+  finding, with an environment variable that restores the previous behaviour exactly.
+
+- **A tool that names a fifth of the answer is worse than no tool if its output reads as
+  complete.** This is the failure mode that outranks every accuracy number in this file.
+  The reader stops looking, and the forty files they would have found unaided become the
+  twelve the tool named. Four things made it easy and all four are fixed: counts are
+  "shown of found" everywhere, the token budget names what it dropped, the thinnest tier
+  no longer gets the most lines, and every answer opens with what the model does not look
+  at — specific, because "results may be incomplete" is unactionable while "configuration
+  and CI wiring are not indexed" is not. **Any new section added to `preflight` or
+  `check` inherits this obligation.**
+
 ## Where the code lives
 
 | file | what it owns |
@@ -725,7 +844,7 @@ on the answer. A caller told nothing weighs a cold answer as if it were warm.
 | `gates.py` | what runs against every push: CI jobs, pre-commit hooks, lint rules, the language floor. Deliberately none of this tool's ranking machinery |
 | `storage.py` | SQLite schema, derived-state markers, co-change counters |
 | `references.py` | name sweeps, jedi resolution, and the module-import scan behind DEPENDENTS |
-| `experiments/` | thirteen experiments, three corpora, the frozen prevention task set, the results and the caveats |
+| `experiments/` | twenty-one experiments, four corpora (three Python, one front-end), the stratified prevention task set, E2's forty checkouts, and the results with their caveats |
 
 ## Reproducing the experiments
 
