@@ -47,7 +47,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from codesextant import cochange, storage  # noqa: E402
 from experiments import corpus  # noqa: E402
 
-PREDICTORS = ("cochange", "same_dir", "frequency", "same_dir@k", "frequency@k", "none")
+# `cochange` is the ROSE-style thresholded rule this project shipped. `ranked@N` is the
+# same counts read the way TARMAQ reads them -- ranked, never silent, cut at N -- and is
+# the treatment the audit in `docs/audit.md` asks about. Each `ranked@N` gets a
+# matched-budget control at the same N, because a predictor that names more files finds
+# more companions for reasons that have nothing to do with what it knows.
+# `hybrid@N` keeps the thresholded rule wherever it fires and falls back to the ranked
+# list only where it does not; `topup@N` always starts from the thresholded rule and
+# fills the rest of the budget from the ranking. Both exist because `ranked@N` beat
+# `cochange` on four derivation repositories and lost on express -- the one where the
+# threshold already speaks 81% of the time at precision 0.74. Choosing between them on
+# the derivation set is allowed; vite is held out and is not looked at until the choice
+# is made.
+PREDICTORS = ("cochange", "ranked@3", "ranked@5", "ranked@10",
+              "hybrid@3", "hybrid@5", "topup@3", "topup@5",
+              "same_dir", "frequency", "same_dir@k", "frequency@k",
+              "frequency@3", "frequency@5", "frequency@10", "none")
 
 
 class Tally:
@@ -138,8 +153,27 @@ def evaluate(repo_path: str, *, warmup_fraction: float = 0.3,
                         local = sorted(neighbours,
                                        key=lambda p: (-changed_total[p], p))
 
+                        ranked = [row["companion"] for row in
+                                  cochange.rank_companions(
+                                      store.cochange_pairs_for(path),
+                                      limit=10, exclude={path})]
+
                         predictions = {
                             "cochange": treatment,
+                            "ranked@3": set(ranked[:3]),
+                            "ranked@5": set(ranked[:5]),
+                            "ranked@10": set(ranked[:10]),
+                            "hybrid@3": treatment or set(ranked[:3]),
+                            "hybrid@5": treatment or set(ranked[:5]),
+                            "topup@3": treatment | set(
+                                [c for c in ranked if c not in treatment]
+                                [:max(0, 3 - len(treatment))]),
+                            "topup@5": treatment | set(
+                                [c for c in ranked if c not in treatment]
+                                [:max(0, 5 - len(treatment))]),
+                            "frequency@3": set(frequent[:3]),
+                            "frequency@5": set(frequent[:5]),
+                            "frequency@10": set(frequent[:10]),
                             "same_dir": neighbours,
                             "frequency": set(frequent[:20]),
                             "same_dir@k": set(local[:budget]),

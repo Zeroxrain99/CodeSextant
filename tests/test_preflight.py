@@ -84,12 +84,46 @@ def test_a_sweeping_commit_does_not_couple_everything_to_everything(repo):
 
 
 def test_a_single_shared_commit_is_a_coincidence_not_a_rule(repo):
+    """It is still not a rule, and it is no longer silence either.
+
+    **What this test protects has not changed; what it accepts has.** One shared commit
+    must never be presented as a companion the caller owes something to. It used to be
+    enforced by returning nothing at all, and that cure had a cost measured across the
+    whole corpus: the thresholded rule answers 46-59% of the time (exp1), it was silent
+    in 9 of E2's 20 tasks, and the literature reports the same about the ROSE-style rule
+    this implemented -- it answers about a quarter of the time.
+
+    So the coincidence now appears in a *ranked* list, which the payload marks and the
+    note explains, ranked by a Wilson lower bound that puts one-of-one at 0.21 against
+    nineteen-of-twenty at 0.76. Weak evidence arrives labelled as weak evidence rather
+    than as an empty answer. The claim being made is strictly weaker, and the two
+    assertions below are what say so.
+    """
     _commit(repo, "once", {"x.py": "X = 1\n", "y.py": "Y = 1\n"})
     engine.index_project(str(repo), force=True)
 
     result = engine.preflight(str(repo), "x.py")
 
+    assert result["co_change_ranked"] is True, "a coincidence must not read as a rule"
+    assert any("ranked by" in n and "not as obligations" in n for n in result["notes"])
+    assert [c["path"] for c in result["co_change"]] == ["y.py"]
+    assert result["co_change"][0]["support"] == 1
+
+
+def test_nothing_in_history_is_still_nothing(repo):
+    """The ranked fallback ranks what history has; it does not invent candidates.
+
+    Written because the change above removed the only test that could have caught a
+    fallback that answers *always* -- which would be the worst version of this: a list
+    that is never empty is a list that never means anything.
+    """
+    _commit(repo, "alone", {"solo.py": "S = 1\n"})
+    engine.index_project(str(repo), force=True)
+
+    result = engine.preflight(str(repo), "solo.py")
+
     assert result["co_change"] == []
+    assert result["co_change_ranked"] is False
     assert any("nothing that reliably changes" in n for n in result["notes"])
 
 
@@ -706,6 +740,19 @@ def test_thresholds_apply_without_re_reading_history(repo, monkeypatch):
         raise AssertionError("changing a threshold must not re-read history")
 
     monkeypatch.setattr(cochange, "read_commits", refuse)
+
+    # **The threshold still applies; what changed is what happens below it.** Raising
+    # min_support to 99 still takes every one of these companions out of the thresholded
+    # answer without re-reading history, which is what this test exists for. They then
+    # come back through the ranking, marked as ranked -- so the assertion is that the
+    # rule went, not that the file vanished.
+    raised = engine.preflight(str(repo), "mod.py")
+    assert raised["co_change_ranked"] is True
+    assert [c["path"] for c in raised["co_change"]] == ["pair.py"]
+
+    # And with the ranking off as well, the answer is empty again: the threshold is
+    # doing the work, not the fallback.
+    monkeypatch.setenv("CODESEXTANT_COCHANGE_RANKED_DISABLED", "1")
     assert engine.preflight(str(repo), "mod.py")["co_change"] == []
 
 

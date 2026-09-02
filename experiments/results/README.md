@@ -1,5 +1,7 @@
 # Recorded runs
 
+**Read [`docs/audit.md`](../../docs/audit.md) before quoting E2.** It re-reads E2's own checkouts and finds that `preflight` named 5 of the 60 companion files those tasks turned on, against 40 the agents found on their own -- so the null was determined before the first agent ran, and the reason recorded at the time was wrong even though the conclusion was not.
+
 Raw per-trial output, checked in so a number in `docs/roadmap.md` can be traced to the
 trials that produced it rather than believed. Roadmap G1 asks for a benchmark somebody
 else can reproduce; a result whose inputs live only in a transcript is not one.
@@ -15,6 +17,18 @@ reading: on express the marginal intervals for co-change and `frequency@k` overl
 which is the comparison the question was actually about. And the front-end numbers are
 higher than the Python ones on every measure, against every control, which is the
 opposite of what `docs/plan.md` was written expecting.
+
+## `exp1_ranked_*.txt` and `E5.md` — the ranked answer, and the held-out repository that declined to confirm it
+
+`exp1_ranked_derivation.txt` is exp1's protocol re-run with four new arms on the five
+derivation repositories; `exp1_ranked_heldout_vite.txt` is the single confirmation run on
+vite, executed once, after the arm was chosen.
+
+**The arm chosen on the derivation set won on all five and lost on the held-out one** —
+paired ΔF1 +0.008 [+0.002, +0.014] against the shipped threshold, so the threshold is
+better on vite by 1.5% of its F1. Recall rises on all six and the co-change section stops
+being silent (speak rate 0.47-0.81 → 0.84-0.94), which is the claim that survives. Read
+`E5.md` before quoting either.
 
 ## `exp21.json` — E4's event rate, and why E4 was not run
 
