@@ -1001,7 +1001,11 @@ def test_a_caller_the_resolver_cannot_see_is_still_reported(repo):
     # two as one set.
     text = "\n".join(render.preflight_lines(
         engine.preflight(str(repo), "core.py", symbol="load_settings"), str(repo)))
-    assert "1 file(s) with resolved references; 1 more name it" in text
+    # "1 more name it" became "1 of 1 that name it": every count in this answer is now
+    # shown-of-found, because the lead list is capped at three and a bare count next to
+    # a capped list reads as the whole of it. The claim under test is unchanged -- the
+    # caller the resolver could not see is still reported, and still as a lead.
+    assert "1 file(s) with resolved references; 1 of 1 that name it" in text
     assert "    app.py" in text and "    ?  dyn.py" in text
 
 
@@ -1076,7 +1080,15 @@ def test_the_budget_spends_the_lead_list_before_the_explanations(repo, monkeypat
     monkeypatch.setenv("CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES", "1")
     full = engine.preflight(str(repo), "core.py", symbol="load_settings",
                             token_budget=10_000)
-    assert len(_blast(full)["name_match_files"]) == 12, "12 leads before any trimming"
+
+    # **The list is capped and the count is not.** Twelve files name the symbol; three
+    # are printed. Measured on E2's real invocations, this tier printed 72 lines for 4
+    # companions against co-change's five-lines-an-answer for 9, and a tier twenty
+    # times thinner does not get twenty-seven lines -- the answer stops being read, and
+    # an unread answer is worse than none. What must survive is the *number*, because
+    # that is what tells a reader there are nine more and where to get them.
+    assert len(_blast(full)["name_match_files"]) == engine._LEADS_SHOWN
+    assert _blast(full)["name_match_count"] == 12, "the count is the whole point"
 
     trimmed = engine.preflight(str(repo), "core.py", symbol="load_settings",
                                token_budget=300)
@@ -1244,3 +1256,69 @@ def test_the_weakest_tier_is_the_first_one_the_budget_takes(repo):
     tight = engine.preflight(str(repo), "pkg/parser.py", symbol="parse", token_budget=60)
     assert tight["blast_radius"]["module_dependents"] == []
     assert tight["truncated_by_budget"] is True
+
+
+# What stops an answer from being read as the answer.
+
+def test_the_co_change_headline_carries_its_denominator(repo):
+    """Five files "that usually change with this one" reads as the set. Five *of
+    sixty-five* reads as a ranking, which is what it is.
+
+    The audit measured what the missing denominator costs: preflight names 12 of the 60
+    companion files a real change touches, where the developer changed 40. A reader who
+    takes the list for the answer does worse than one who never called it, and the
+    headline is the only line that is reliably read.
+    """
+    for n in range(6):
+        _commit(repo, f"work {n}", {
+            "mod.py": f"M = {n}\n", f"pair{n}.py": f"P = {n}\n",
+            "always.py": f"A = {n}\n"})
+    engine.index_project(str(repo), force=True)
+
+    result = engine.preflight(str(repo), "mod.py")
+
+    assert result["co_change_pool"] >= len(result["co_change"])
+    assert result["co_change_pool"] == 7, "six pair files and always.py"
+    rendered = "\n".join(render.preflight_lines(result, str(repo)))
+    assert f"of {result['co_change_pool']} file(s) history has seen change" in rendered
+
+
+def test_what_the_budget_removed_is_named_in_the_answer(repo, monkeypatch):
+    """`truncated_by_budget` was computed and never rendered, so a list the budget had
+    cut to three looked exactly like a list that had three in it. Of every way this tool
+    can mislead, that is the one a caller can do least about."""
+    files = {"core.py": "def load_settings():\n    return 1\n"}
+    for n in range(12):
+        files[f"user{n}.py"] = ("from core import load_settings\n\n\n"
+                                f"def use{n}():\n    return load_settings()\n")
+    _commit(repo, "seed", files)
+    engine.index_project(str(repo), force=True)
+    monkeypatch.setenv("CODESEXTANT_PREFLIGHT_RESOLVE_MAX_FILES", "1")
+
+    trimmed = engine.preflight(str(repo), "core.py", symbol="load_settings",
+                               token_budget=300)
+
+    assert trimmed["dropped_by_budget"], "the answer must record what it lost"
+    rendered = "\n".join(render.preflight_lines(trimmed, str(repo)))
+    assert "the token budget cut" in rendered
+    assert "not all of it" in rendered
+
+
+def test_every_answer_says_what_it_does_not_look_at(repo):
+    """A general "results may be incomplete" is unactionable; naming the blind spots is
+    not. Configuration and CI wiring were 26 of the 60 companions in the audit and this
+    named 1 of them, and a file that does not exist yet cannot be named at all."""
+    _commit(repo, "seed", {"only.py": "X = 1\n"})
+    engine.index_project(str(repo), force=True)
+
+    rendered = "\n".join(
+        render.preflight_lines(engine.preflight(str(repo), "only.py"), str(repo)))
+    # The block is wrapped, so the claims are matched against the unwrapped text.
+    flat = " ".join(rendered.split())
+
+    assert "SCOPE" in rendered
+    assert "Config, CI and build wiring are not indexed" in flat
+    assert "does not exist yet cannot be named" in flat
+    assert "not the list of what must change" in flat
+    # Second, so it frames the list rather than trailing it as a footnote.
+    assert rendered.index("SCOPE") < rendered.index("Note:")

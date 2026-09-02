@@ -9,6 +9,32 @@ Use the installed `codesextant` package as an opportunistic navigation accelerat
 text search. It is never a prerequisite for modifying code. It runs locally, and all agents on
 the machine share one active daemon and one persistent index per project.
 
+## What these answers are, before you read one
+
+Measured, by replaying real agent sessions against what twenty real commits in flask,
+pytest and alembic actually touched: **preflight named 12 of those 60 companion files.
+The agent working without it found 40.** Of the 26 that were configuration or CI wiring
+it named 1, and 9 of the files did not exist at the parent commit at all, so nothing that
+indexes an existing tree could ever have named them.
+
+So, plainly:
+
+- **A CodeSextant answer is where to start looking, never the set of things to change.**
+- **Running preflight is not the same as having checked.** It has seen history and
+  resolved Python references. It has not seen your intent, your configuration, your build
+  wiring, or a file that does not exist yet.
+- **A short `check` answer is not a short list of problems.** Every section is a
+  heuristic and every one of them can be silent when it should not be.
+
+Every count in the output is printed as *shown of found* — "5 of 65 files history has seen
+change with this one", "3 of 47 that name it" — because a list of five with no denominator
+reads as the five. When the token budget drops entries, the answer says which kind and how
+many. Read those numbers: they are the difference between a ranking and an answer.
+
+**The failure this section exists to prevent is worse than not using the tool at all.** An
+agent that reads the output as the answer stops looking — and the forty files it would
+have found on its own become the twelve the tool named.
+
 ## First: are the CodeSextant tools already in your tool list?
 
 Look for `preflight`, `check`, `code_map`, `find_references`, `impact`, `symbols`,
@@ -180,7 +206,12 @@ index, and never use `force=True` unless the user requests a full rebuild.
 
 **Before you report a task as done, call `cs.check()` (or the `check` tool).** It takes no
 arguments and reads your diff, which is why it is the one step that does not depend on
-having remembered anything at the right moment. Four sections:
+having remembered anything at the right moment.
+
+**Calling it is not the check; reading it is.** It is five heuristics over history and
+resolved Python references, so a clean answer means those five found nothing, not that
+there is nothing. It says so itself now, on every answer and not only the empty ones.
+Five sections:
 
 - `removed_guards` — **read this one first.** A fence you deleted or loosened that had
   a reason written beside it, quoted in the author's words. The other three ask what
@@ -199,6 +230,12 @@ having remembered anything at the right moment. Four sections:
 
 Each finding carries its evidence. Act on the high-confidence ones; the section that
 finds nothing says so, and says that finding nothing is not a clean bill of health.
+
+And the thing worth repeating once at the end, because it is the way this tool does the
+most damage: **it is a car, not a driver.** It carries the mechanical work -- the history
+nobody remembers, the references nobody traced -- so that your budget goes on deciding
+what to change. It does not decide, it does not know what you meant, and it has never
+seen most of what a real change touches. Arriving faster is the whole of what it offers.
 
 Then recheck references and impact for changed public symbols. Report confidence labels
 and any unresolved low-confidence edges instead of presenting them as confirmed

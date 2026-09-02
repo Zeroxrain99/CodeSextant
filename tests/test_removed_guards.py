@@ -276,3 +276,47 @@ def test_tightening_an_assert_is_still_reported(tmp_path, monkeypatch):
     reported = _reported(root)
     assert [(e["change"], e["kind"]) for e in reported] == [("weakened", "assert")]
     assert reported[0]["now"] == "requires amount <= balance * 10"
+
+
+# --------------------------------------------- what stops an answer being read as the answer
+
+def test_check_says_what_it_did_not_look_at_even_when_it_found_something(fenced):
+    """The empty answer already said "not a clean bill of health". The answer that finds
+    two things did not, and that is the more dangerous one.
+
+    "It found two things" reads as "there are two things". `docs/audit.md` measured what
+    that costs on the preflight side -- the tool names 12 of 60 companions where the
+    developer changes 40 -- and the same shape applies here: five heuristics over history
+    and resolved Python references, blind to configuration and CI wiring, any of which
+    can be silent when it should not be. A reader who stops at a short answer ships what
+    the heuristics missed, which is worse than not having called it.
+    """
+    from codesextant import render
+
+    (fenced / "src" / "limits.py").write_text('''
+import os
+
+MAX_INFLIGHT = 5000
+
+DEBUG = os.environ.get("APP_DEBUG")
+
+
+def submit(n):
+    if n < 0:
+        raise ValueError("negative batch size")
+    return n
+''', encoding="utf-8")
+    (fenced / "tests" / "test_limits.py").unlink()
+
+    result = engine.check(str(fenced))
+    assert result["removed_guards"], "precondition: this answer is not empty"
+
+    rendered = "\n".join(render.check_lines(result, str(fenced)))
+    flat = " ".join(rendered.split())
+
+    assert "SCOPE" in rendered
+    assert "Config, CI and build wiring are not indexed" in flat
+    assert "a short answer here is not a short list of problems" in flat
+    # Above the findings, not under them: a caveat printed below a list is read as a
+    # footnote to it, and the same words above are read as the frame it sits in.
+    assert rendered.index("SCOPE") < rendered.index("FENCES GONE")

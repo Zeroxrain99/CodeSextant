@@ -1981,8 +1981,14 @@ def _module_dependents_for(abs_path: str, relative: str | None, named,
                      if os.path.normcase(os.path.abspath(os.path.join(abs_path, path)))
                      not in already),
                     key=lambda path: (-found[path], path))
-    return [{"path": path, "imports": found[path]}
-            for path in ranked[:_DEPENDENTS_SHOWN]]
+    # The first entry carries how many there were, for the same reason every other
+    # list in this answer now does: a reader shown two of nineteen and told "two" has
+    # been handed a number that looks like the whole of it.
+    shown = [{"path": path, "imports": found[path]}
+             for path in ranked[:_DEPENDENTS_SHOWN]]
+    for entry in shown:
+        entry["of"] = len(ranked)
+    return shown
 
 
 def _read_blast_radius(store, abs_target: str, symbol: str | None) -> tuple[list[str], int]:
@@ -2066,6 +2072,9 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
             cochange.rank_companions(
                 store.cochange_pairs_for(relative), exclude={relative})
             if relative and not companions and cochange.ranked_enabled() else [])
+        # The denominator for whatever the two lines aboveselected. Printed beside the
+        # answer so a list of five never reads as "these are the five".
+        companion_pool = store.cochange_companion_count(relative) if relative else 0
         symbol_companions = (
             store.symbol_cochange_for(relative, symbol)
             if symbol and relative and symbol_stats.get("available") else [])
@@ -2137,6 +2146,11 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
         # caller that treats a ranked list as a thresholded one is reading a candidate
         # as an obligation, and nothing else in the payload distinguishes them.
         "co_change_ranked": bool(ranked and not companions),
+        # How many distinct files history has ever seen change with this one. The
+        # answer above is the strongest few of these, and without the denominator a
+        # reader cannot tell five-of-six from five-of-forty-seven -- which is the
+        # difference between a complete answer and a starting point.
+        "co_change_pool": companion_pool,
         "blast_radius": {
             "dependent_files": dependents,
             "dependent_count": len(dependents),
@@ -2145,7 +2159,19 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
             # files whose text names the symbol, which is a lead, not a caller. Merging
             # the two would be the exact inflation of confidence this tool exists to
             # avoid, so the split is structural and the renderer marks them apart.
-            "name_match_files": leads,
+            # **Space by density, and the density here was measured.** Replaying E2's
+            # real invocations: resolved references printed 8 lines for 1 companion,
+            # these leads printed **72 for 4**, and module importers 15 for 0 --
+            # against co-change at five lines an answer for 9. A tier twenty times
+            # thinner does not get twenty-seven lines while the thicker one gets five,
+            # because at that length the answer stops being read, and an unread answer
+            # is the failure this tool exists to avoid.
+            #
+            # The cap is on the *list* and never on the count beside it. Capping both
+            # is the bug this whole change is about -- a reader shown three of twelve
+            # who is told "three" has been handed something that looks complete. The
+            # note already says to run find_references for the resolved answer.
+            "name_match_files": leads[:_LEADS_SHOWN],
             "name_match_count": len(leads),
             # A third tier and a third kind of claim: not "calls this symbol" and not
             # "names this symbol", but "imports this module". Its own key so the
@@ -2162,6 +2188,12 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
     # Every key the caller receives must exist before anything is measured, or the
     # reported figure describes a payload that was never sent.
     result["truncated_by_budget"] = False
+    # **What was cut, not just that something was.** `truncated_by_budget` was computed
+    # here and never rendered, so a list the budget had shortened looked exactly like a
+    # complete one -- which is the difference between "these are the files" and "these
+    # are the strongest three of seven". A reader who cannot tell those apart stops
+    # looking, and stopping early is the failure this tool exists to prevent.
+    result["dropped_by_budget"] = {}
     result["approx_tokens"] = _json_tokens(result)
     # Trim the longest lists rather than the explanations: a caller told nothing about
     # why a section is short cannot tell it from a section that was genuinely empty.
@@ -2175,18 +2207,26 @@ def preflight(path: str, target: str, *, symbol: str | None = None,
             # Trimmed before either symbol-level tier: "imports this module" is the
             # weakest of the three claims, so it is the cheapest one to lose.
             blast["module_dependents"].pop()
+            dropped = "importers of this module"
         elif len(blast["name_match_files"]) > 3:
             blast["name_match_files"].pop()
+            dropped = "files naming the symbol"
         elif len(blast["dependent_files"]) > 3:
             blast["dependent_files"].pop()
+            dropped = "files with resolved references"
         elif len(result["co_change"]) > 3:
             result["co_change"].pop()
+            dropped = "co-change companions"
         elif result["already_exists"]:
             result["already_exists"].pop()
+            dropped = "similar existing definitions"
         elif blast["name_match_files"]:
             blast["name_match_files"].pop()
+            dropped = "files naming the symbol"
         else:
             break  # the envelope alone exceeds the budget; say so rather than lie
+        result["dropped_by_budget"][dropped] = (
+            result["dropped_by_budget"].get(dropped, 0) + 1)
         result["truncated_by_budget"] = True
         result["approx_tokens"] = _json_tokens(result)
     return result
@@ -2299,6 +2339,12 @@ def _structural_matches(store, unit: dict, abs_file: str, root: str,
 # definitions. Measured over 351 held-out-file cases in six repositories, a cutoff of
 # 20 costs no recall at all against no cutoff (0.362 either way) while printing less;
 # a cutoff of 10 costs 0.012.
+# How many unresolved name matches a preflight answer prints. Every one of them is a
+# file that contains the symbol's *spelling* and may have nothing to do with it, which
+# is why they are marked `?` -- and why 0.056 companions per printed line does not buy
+# more room than this.
+_LEADS_SHOWN = 3
+
 _DEPENDENTS_SHOWN = 2
 _DEPENDENTS_MAX = 20
 
