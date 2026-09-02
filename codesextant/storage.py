@@ -823,6 +823,18 @@ class ProjectStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def cochange_companion_count(self, path: str) -> int:
+        """How many distinct files have ever changed with this one.
+
+        The denominator. `preflight` prints the strongest few, and a reader shown five
+        files with no idea whether that is five of six or five of forty-seven has been
+        handed something that looks like an answer. It is one `COUNT(*)` on an indexed
+        column, so it costs nothing to stop looking like one.
+        """
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM cochange_pair WHERE path = ?", (path,)).fetchone()
+        return int(row["n"]) if row else 0
+
     def _mark_derived(self, path: str, kind: str, content_hash: str) -> None:
         """Record that ``kind`` is materialized for this file at this content hash."""
         self.conn.execute(

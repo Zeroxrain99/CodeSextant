@@ -318,3 +318,54 @@ nobody ever asked whether it warned about a fence the change actually met.
 the tool to the agent at the agent's own job, on tasks small enough for the agent to do
 it by grep, and every conclusion drawn from it above — including the four rejected fixes
 — answers a question that was never the point.
+
+---
+
+## 10. Making the answer impossible to mistake for the answer
+
+The measurements above describe a tool that names about a fifth of what a change touches.
+**A tool like that is worse than no tool if its output reads as complete**, because the
+reader stops looking: the forty files they would have found unaided become the twelve the
+tool named. Nothing in §1-§9 addresses that, and it is the one failure mode where being
+half-right is worse than being useless.
+
+Four things were wrong, and each is now measured rather than argued.
+
+**Counts were "shown", never "shown of found".** `CO-CHANGE 5 file(s) usually change with
+this one` reads as the set. It is now `5 of 65 file(s) history has seen change with this
+one, strongest first`, and the same for the two blast-radius tiers -- `3 of 47 that name
+it`, `2 of 19 that import the module`. Same data; only one of the two lets a reader stop.
+
+**`truncated_by_budget` was computed and never rendered.** A list the budget had cut to
+three looked exactly like a list with three in it. The answer now records *what* it lost,
+by kind, and says so: *"the token budget cut 20 files naming the symbol from this answer.
+What is shown is the strongest of each, not all of it."*
+
+**The lead list buried everything that carried signal.** Replaying E2's real invocations
+and counting hits per printed line:
+
+| blast-radius tier | lines printed | companions named | per line |
+|---|---|---|---|
+| resolved references | 8 | 1 | 0.125 |
+| `?` name-match leads | **72** | 4 | 0.056 |
+| `?` module importers | 15 | **0** | 0.000 |
+| co-change, for scale | ≤5 per answer | 9 | — |
+
+Ninety-five lines for five companions, and twenty-seven of them in a single answer, above
+five co-change lines that carried nearly twice as many. Leads are capped at three with the
+true count in the headline. **The cap is on the list and never on the count** -- capping
+both was a real bug found while writing this, and it is the exact failure the section is
+about. One rendered answer went from 60 lines to 33.
+
+**Nothing said what the model does not look at.** Every answer now opens with its scope,
+second so it frames the list rather than trailing it as a footnote, and it is specific
+because "results may be incomplete" is unactionable while "configuration and CI wiring are
+not indexed" is not. It carries the number: *named 12 of 60 companion files where the
+developer changed 40 -- so it is where to start looking, not the list of what must change.*
+`check` gets its own, because the answer that finds two things is more dangerous than the
+empty one that already said it was not a clean bill of health.
+
+The shipped skill leads with the same numbers, and closes with the sentence the whole
+reframe comes down to: **it is a car, not a driver.** It carries the mechanical work so the
+budget goes on deciding. It does not decide, it has not seen your intent, and it has never
+seen most of what a real change touches.

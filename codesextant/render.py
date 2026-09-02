@@ -12,6 +12,7 @@ cannot describe the same result differently.
 from __future__ import annotations
 
 import os
+import textwrap
 
 # Lists are capped so a single answer cannot crowd out an agent's context. The
 # renderer always says how many entries it withheld: a silent cut reads as
@@ -38,7 +39,8 @@ def _elided(lines: list[str], total: int, noun: str, indent: str = "  ") -> None
 def preflight_lines(result: dict, root: str | None = None) -> list[str]:
     """The three pillars: what already exists, what changes with it, who breaks."""
     lines = [f"Preflight {short(result['target'], root)}"
-             + (f"  symbol={result['symbol']}" if result.get("symbol") else "")]
+             + (f"  symbol={result['symbol']}" if result.get("symbol") else ""),
+             *scope_lines()]
 
     if result.get("already_exists"):
         lines.append(f"\n  ALREADY EXISTS   {len(result['already_exists'])} similar definition(s)")
@@ -51,7 +53,16 @@ def preflight_lines(result: dict, root: str | None = None) -> list[str]:
 
     if result.get("co_change"):
         scoped = sum(1 for e in result["co_change"] if e["scope"] == "symbol")
-        headline = f"{len(result['co_change'])} file(s) usually change with this one"
+        # **The denominator belongs in the headline.** "5 files usually change with this
+        # one" reads as the set; "5 of 47 that history has seen change with it" reads
+        # as a ranking, which is what it is. Same data, and only one of them lets a
+        # reader stop looking.
+        shown = len(result["co_change"])
+        pool = result.get("co_change_pool") or 0
+        headline = (
+            f"{shown} of {pool} file(s) history has seen change with this one, "
+            "strongest first"
+            if pool > shown else f"{shown} file(s) usually change with this one")
         if scoped:
             headline += (f"; {scoped} keyed to {result['symbol']} rather than the whole file")
         lines.append(f"\n  CO-CHANGE        {headline}")
@@ -73,10 +84,15 @@ def preflight_lines(result: dict, root: str | None = None) -> list[str]:
     if blast.get("dependent_files") or leads or importers:
         headline = (f"{blast['dependent_count']} file(s) with resolved references"
                     if blast.get("dependent_files") else "nothing resolved")
+        # Every count here is "shown of found", never just "shown". These two tiers are
+        # the thinnest in the answer -- measured at 0.056 and 0.000 companions per
+        # printed line against co-change's density -- so what they mostly owe a reader
+        # is an honest denominator and a pointer, not a long list.
         if leads:
-            headline += f"; {blast['name_match_count']} more name it"
+            headline += f"; {len(leads)} of {blast['name_match_count']} that name it"
         if importers:
-            headline += f"; {len(importers)} import the module"
+            total = importers[0].get("of") or len(importers)
+            headline += f"; {len(importers)} of {total} that import the module"
         lines.append(f"\n  BLAST RADIUS     {headline}{spent}")
         for dependent in blast.get("dependent_files") or []:
             lines.append(f"    {short(dependent, root)}")
@@ -90,9 +106,62 @@ def preflight_lines(result: dict, root: str | None = None) -> list[str]:
         for importer in importers:
             lines.append(f"    ?  {importer['path']}   (imports this module)")
 
+    lines.extend(budget_lines(result))
     for note in result.get("notes") or []:
         lines.append(f"\n  Note: {note}")
     return lines
+
+
+# **What this answer is, printed where it is read rather than in a manual.** The failure
+# this exists to prevent is the one that makes a tool worse than no tool: a list that
+# looks like the answer, so the reader stops looking and ships the thing it left out.
+#
+# Every clause is measured. `docs/audit.md` replayed E2's real invocations against the
+# files those twenty commits actually touched: this named 12 of 60 where the developer
+# changed 40, and of the 26 that were configuration or CI wiring it named 1. Naming the
+# blind spots beats a general disclaimer, because a reader can act on "config is not
+# indexed" and cannot act on "results may be incomplete".
+_SCOPE = (
+    "git history and resolved Python references. Config, CI and build wiring are not "
+    "indexed, and a file that does not exist yet cannot be named. Measured on 20 real "
+    "changes in flask/pytest/alembic this named 12 of 60 companion files where the "
+    "developer changed 40 -- so it is where to start looking, not the list of what "
+    "must change.")
+
+
+_CHECK_SCOPE = (
+    "your diff against git history and resolved Python references. Config, CI and "
+    "build wiring are not indexed. Five heuristics, every one of which can be silent "
+    "when it should not be -- so a short answer here is not a short list of problems, "
+    "and an empty one is not a clean bill of health.")
+
+
+def scope_lines(text: str | None = None) -> list[str]:
+    """The scope statement, wrapped, as the second thing in every answer.
+
+    Second rather than last on purpose: a caveat printed under a list is read as a
+    footnote to it, and the same words printed above are read as the frame it belongs
+    in. Nothing below this line means more than this line allows.
+    """
+    body = textwrap.wrap(text or _SCOPE, width=76)
+    return [f"\n  SCOPE            {body[0]}"] + [f"                   {rest}"
+                                                  for rest in body[1:]]
+
+
+def budget_lines(result: dict) -> list[str]:
+    """What the token budget removed, by kind, or nothing when it removed nothing.
+
+    `truncated_by_budget` was computed and never rendered, so a list the budget had cut
+    to three looked exactly like a list that had three in it. That is the same failure
+    as the missing denominator and it is the one a caller can do least about, because
+    nothing in the answer hints that anything is missing.
+    """
+    dropped = result.get("dropped_by_budget") or {}
+    if not dropped:
+        return []
+    parts = ", ".join(f"{count} {kind}" for kind, count in sorted(dropped.items()))
+    return [f"\n  Note: the token budget cut {parts} from this answer. What is shown "
+            f"is the strongest of each, not all of it."]
 
 
 def map_lines(result: dict, root: str | None = None) -> list[str]:
@@ -275,7 +344,8 @@ def guards_lines(result: dict, root: str | None = None) -> list[str]:
 
 def check_lines(result: dict, root: str | None = None) -> list[str]:
     """What the change already made looks like it forgot."""
-    lines = [f"Check: {result.get('changed_count', 0)} file(s) changed"]
+    lines = [f"Check: {result.get('changed_count', 0)} file(s) changed",
+             *scope_lines(_CHECK_SCOPE)]
 
     # First, because it is the only section about something that is no longer there.
     # The other four say what the change might have forgotten to add; a fence with a
@@ -339,6 +409,7 @@ def check_lines(result: dict, root: str | None = None) -> list[str]:
                        if entry.get("imports", 0) > 1 else "")
             lines.append(f"    ?  {entry['path']}{imports}")
 
+    lines.extend(budget_lines(result))
     for note in result.get("notes") or []:
         lines.append(f"\n  Note: {note}")
     return lines
