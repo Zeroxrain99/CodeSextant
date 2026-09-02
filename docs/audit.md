@@ -169,3 +169,152 @@ decade behind the technique it implements, that the gap has a named remedy, and 
 remedy's effect on *this* corpus is measurable for zero agent cost. That measurement is
 step 2 of the list above, and it is the one that decides whether step 3 is ever worth
 running.
+
+---
+
+## 8. Why the tool scores below the agent, and four fixes the data refused
+
+> **This section measures the wrong thing, and the correction is §9.** It asks whether
+> the tool can name the companion files as well as an agent can find them. That is the
+> car being asked to drive itself while the driver walks. Nobody wants that: the driver
+> can walk, and the car is for arriving with less fuel. The numbers below are correct and
+> the question they answer is not the one this project exists for. Kept as recorded,
+> because replacing it would hide that the target moved.
+
+E5 moved `preflight` from naming 4 of E2's 60 companions to 10. Replaying the *actual*
+invocations the agents made -- with the symbols they passed, which two earlier passes of
+this measurement got wrong -- puts it at **12 of 60 (20%)** against the agents' **40 of 60
+(67%)**. This section is the root-cause hunt for that gap, and its result is that none of
+the obvious repairs survives its own control.
+
+| companion kind | n | agent | co-change | blast radius | either |
+|---|---|---|---|---|---|
+| CI / deps config | 26 | 14 | 1 | 1 | 2 |
+| release note | 13 | 6 | 3 | 0 | 3 |
+| test | 11 | 10 | 3 | 2 | 4 |
+| source code | 7 | 7 | 2 | 2 | 3 |
+| prose docs | 3 | 3 | 0 | 0 | 0 |
+| **total** | **60** | **40** | **9** | **5** | **12** |
+
+**The agent's advantage is spread evenly across every class.** It is not one mechanism
+failing; it is a different question being answered.
+
+### One real defect, found on the way
+
+**The reference graph is empty.** Measured in the E2 indexes: alembic, 91 files and 2,614
+symbols, **0 reference edges**; flask, 75 files and 1,642 symbols, **8**; pytest, 278 files
+and 7,281 symbols, **3**. `index_project` records files and symbols and does not build the
+reference graph -- edges appear only when `_ensure_blast_radius` resolves one symbol on
+request. So "改 A 壞 B", the flagship claim, is answered from a graph with single-digit
+edges, and `blast_radius` reports `dependent_count` of 0 or 1 in nearly every call because
+there is nothing there to report.
+
+It is working as designed rather than broken, and the design is why the one symbol with
+real fan-out was refused: `Flask` was `declined` because 47 files name it, above an inline
+limit of 25. **The limit exists because the graph is not built, and it declines exactly the
+high-fan-out case where 改 A 壞 B is a real risk.**
+
+### Four candidate fixes, and what killed each
+
+**1. "The agent reads the issue number out of the instruction."** Eight companions are
+issue-numbered changelog fragments; the instruction prints the matching number for **3 of
+8**, and in one case prints a *different* number (13448 against a companion named 13420).
+Mostly rejected.
+
+**2. "Index the import graph, in both directions."** 11 of the 18 code companions are
+reachable by a reference in one direction or the other -- and 10 of those run
+*seed → companion*, which is the direction `blast_radius` never reports: when the edit
+starts in a test, the thing that must move with it is the module it tests, a dependency
+rather than a dependent. That looked decisive. Measured before building: a bidirectional
+import graph names **6 of 60 (10%)**, *below* the 20% already achieved, and its
+who-imports-me half scores **0 of 60 while listing up to 48 files per query**. Rejected.
+
+**3. "Predict at directory granularity instead of file granularity."** The release-note
+class is 22% of the answer and 9 of its 13 files do not exist at the parent, so no
+file-level predictor can ever name them -- but their *directory* can be named. Directory
+co-change from the seed's directory hits **37 of 60 (62%)**, which is nearly the agent's
+67%. Then the matched control: naming simply the five most-changed directories in the
+repository, ignoring the seed entirely, hits **36 of 60 (60%)**, and *any* directory in
+these repositories covers 59 of 60. **The 62% is the base rate.** Rejected.
+
+**4. "The agent's edge shrinks on repositories too large to grep."** Unaided agent recall
+by repository: alembic 162 files 58%, flask 236 files 64%, pytest 650 files **81%**. Recall
+rises with size here. Three repositories and heavily confounded by convention regularity,
+so this is weak evidence -- but it is evidence against, not for. Not supported.
+
+### What is actually left
+
+**`preflight` asks "what usually moves with this file". The agent asks "what does this
+change require".** The second question is strictly more informative and the tool never sees
+the input that makes it askable: the instruction. The agent knows a pytest bugfix needs a
+changelog entry, that these five workflow files move together, that this test covers that
+module -- not by retrieval, by having understood the change and read the repository.
+
+No index converts the first question into the second, which is what four measurements above
+say from four directions. That makes the gap architectural rather than a defect, and it
+bounds what any amount of retrieval engineering can recover here.
+
+**The consequence for scope, stated as a cost rather than a conclusion:** on this task set
+`blast_radius` contributes 5 companions of 60 while its module-dependents tier alone will
+list up to 48 files for one query. That is attention spent for almost nothing, and it is
+the part of the design that measurement supports least. Whether it pays elsewhere is exp2's
+question and not this one's -- but nothing here argues for building more of it.
+
+
+---
+
+## 9. The correction: this is a car, and the driver can already walk
+
+> CodeSextant 就像是車子,你開著他到目的地,而 LLM 是駕駛。今天駕駛沒有車子也能走到
+> 目的地,但有車子會更便利、更快速、更省力。
+
+**That reframes every measurement above, and §8 is the clearest example of getting it
+wrong.** "Does the index name the files as well as the agent finds them" is a question
+about replacing the driver. The tool is mechanical: it should do the finding, the
+tracing and the remembering so the agent spends its budget on deciding. The endpoints
+that follow are two, and neither is recall:
+
+1. **Fuel.** Tokens, tool calls and wall clock for the same destination. Less spent
+   looking is less context consumed, and less context consumed is a lower chance of the
+   session rotting out from under the work.
+2. **The instruments.** The things the driver would otherwise miss: this change reaches
+   code B, there is a test over there, that guard will block you, this convention fails
+   the build.
+
+**E2 measured the first one, and all three of its effort readings point the same way:**
+
+| | with tool | without | difference | 95% interval |
+|---|---|---|---|---|
+| tokens | 87,758 | 92,810 | **−5.4%** | includes zero |
+| tool calls | 47.5 | 49.3 | **−3.5%** | includes zero |
+| wall clock | 560 s | 638 s | **−12.2%** | includes zero |
+
+Three measures, one direction, none of them detectable. And the reason is in the task
+size rather than in the tool: **E2's median task has two companion files.** A car saves
+nothing on a two-hundred-metre walk, and the endpoint this project registered was
+measured on twenty of them.
+
+**The model makes a prediction, and E2's own data cannot test it.** If the saving comes
+from work the agent no longer has to do, it should grow with how much there is to find:
+
+| task size | pairs | token difference | |
+|---|---|---|---|
+| ≤ 2 companions | 13 | **−10.1%** | 8 of 13 cheaper |
+| ≥ 4 companions | 5 | +0.8% | 2 of 5 cheaper |
+
+The slope runs the wrong way, +1,357 tokens per additional companion. **It is also
+worthless as a test**: three of the five large tasks are the chores §4 identified —
+"update dev dependencies" twice and a Python-version bump — where "large" means nine
+workflow files rather than nine coupled modules, and where the tool has nothing to
+contribute by construction. Five pairs, three of them contaminated. Not evidence in
+either direction.
+
+**So the honest position on what has been tested.** The effort endpoint is the right one
+and it was measured at a scale where the mechanism cannot operate. The instruments
+endpoint has never been measured at all: `guards` was invoked 25 times across E2 and
+nobody ever asked whether it warned about a fence the change actually met.
+
+**And what stops being worth doing.** Recall against the commit's file set. It compares
+the tool to the agent at the agent's own job, on tasks small enough for the agent to do
+it by grep, and every conclusion drawn from it above — including the four rejected fixes
+— answers a question that was never the point.

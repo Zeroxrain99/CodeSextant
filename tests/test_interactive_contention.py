@@ -15,6 +15,7 @@ import json
 import statistics
 import threading
 import time
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
 # The deadline under test: the client's own timeout, and the value
@@ -29,6 +30,19 @@ INTERACTIVE_DEADLINE_SEC = 2
 # message, from a run whose server-side times were all under 900 ms. Two timeouts of
 # equal length race, and the one that wins is the one carrying no information.
 FUTURE_WAIT_SEC = INTERACTIVE_DEADLINE_SEC * 5
+
+# Refusals the daemon is *supposed* to make when it cannot serve in time: 504 is the
+# request deadline firing, 503 is the admission queue full. **This file's own docstring
+# has said so since the last repair -- "a 504 from the admission deadline, which is the
+# daemon behaving correctly on a machine too slow to serve the request in time" -- and
+# the code then let that 504 raise out of the worker and fail the run.** It did, on a
+# Windows runner whose served latencies climbed from 17 ms to 185, 723 and 530 before
+# two calls were refused, on a commit that changed nothing but a Markdown file.
+#
+# `test_real_contention._CONTRACTED_REFUSALS` is the same constant for the same reason.
+# The claim being made here does not need every call answered; it needs the answered
+# ones to be no slower under a rebuild than without one.
+_CONTRACTED_REFUSALS = (503, 504)
 
 
 def _percentile(samples: list[float], percentile: int) -> float:
@@ -99,10 +113,20 @@ def test_map_references_and_impact_meet_deadline_during_reindex(
     rebuild.start()
 
     samples: list[float] = []
+    refused: list[int] = []
 
     def timed(call, expected: str) -> None:
         started = time.perf_counter()
-        result = call()
+        try:
+            result = call()
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _CONTRACTED_REFUSALS:
+                raise
+            # Not a latency sample and not a failure: the daemon declining work it
+            # could not finish inside the deadline. Counted, so a run that refused
+            # everything cannot pass by having measured nothing.
+            refused.append(exc.code)
+            return
         samples.append((time.perf_counter() - started) * 1000)
         assert result["route"] == expected
 
@@ -139,13 +163,16 @@ def test_map_references_and_impact_meet_deadline_during_reindex(
         # which loosens the ratio below, in the direction that hides a regression.
         sweep(2)
         samples.clear()
+        refused.clear()
 
         # What these calls cost on this machine with nothing competing. Without it the
         # numbers below say how fast the runner is, not whether the rebuild starved
         # anything -- which is the only claim the code makes.
         sweep(5)
         baseline = list(samples)
+        quiet_refusals = len(refused)
         samples.clear()
+        refused.clear()
 
         assert entered.wait(timeout=2)
         sweep(20)
@@ -156,10 +183,37 @@ def test_map_references_and_impact_meet_deadline_during_reindex(
         server.server_close()
         server_thread.join(timeout=2)
 
+    busy_refusals = len(refused)
+
     assert not rebuild.is_alive()
     assert rebuild_errors == []
-    assert len(baseline) == 15
-    assert len(samples) == 60
+    # Every call is accounted for as either a sample or a refusal, so nothing is lost
+    # silently -- which is the failure mode a bare floor would have.
+    assert len(baseline) + quiet_refusals == 15
+    assert len(samples) + busy_refusals == 60
+
+    # **The uncontended phase says whether this machine can serve these routes at all.**
+    # If it cannot, every number below describes the runner and not this code, and the
+    # honest outcome is to say that rather than to compare two noise distributions.
+    assert len(baseline) >= 8, (
+        f"{quiet_refusals} of 15 interactive calls were refused with nothing competing, "
+        "so this runner cannot serve them even uncontended and the comparison below "
+        "would be measuring the machine")
+
+    # And the relative claim, in the same shape as the latency one below: a rebuild may
+    # cost some refusals on a loaded runner, but not several times what the same routes
+    # cost with nothing competing. **Unlike the 100 ms floor below, the 0.5 here was not
+    # swept against starved and healthy distributions** -- it is set where refusing half
+    # the calls is starvation on any reading, and it is the looser of the two guards.
+    quiet_rate = quiet_refusals / 15
+    busy_rate = busy_refusals / 60
+    assert busy_rate <= max(quiet_rate * 4, 0.5), (
+        f"{busy_refusals} of 60 interactive calls were refused during a rebuild "
+        f"against {quiet_refusals} of 15 with nothing competing, which is the rebuild "
+        "taking the routes rather than sharing them")
+    assert len(samples) >= 30, (
+        f"only {len(samples)} of 60 calls were answered during the rebuild, too few "
+        "to say anything about the distribution below")
     median = _percentile(samples, 50)
     p95 = _percentile(samples, 95)
     p99 = _percentile(samples, 99)
