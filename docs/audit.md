@@ -174,6 +174,13 @@ running.
 
 ## 8. Why the tool scores below the agent, and four fixes the data refused
 
+> **This section measures the wrong thing, and the correction is §9.** It asks whether
+> the tool can name the companion files as well as an agent can find them. That is the
+> car being asked to drive itself while the driver walks. Nobody wants that: the driver
+> can walk, and the car is for arriving with less fuel. The numbers below are correct and
+> the question they answer is not the one this project exists for. Kept as recorded,
+> because replacing it would hide that the target moved.
+
 E5 moved `preflight` from naming 4 of E2's 60 companions to 10. Replaying the *actual*
 invocations the agents made -- with the symbols they passed, which two earlier passes of
 this measurement got wrong -- puts it at **12 of 60 (20%)** against the agents' **40 of 60
@@ -252,3 +259,62 @@ bounds what any amount of retrieval engineering can recover here.
 list up to 48 files for one query. That is attention spent for almost nothing, and it is
 the part of the design that measurement supports least. Whether it pays elsewhere is exp2's
 question and not this one's -- but nothing here argues for building more of it.
+
+
+---
+
+## 9. The correction: this is a car, and the driver can already walk
+
+> CodeSextant 就像是車子,你開著他到目的地,而 LLM 是駕駛。今天駕駛沒有車子也能走到
+> 目的地,但有車子會更便利、更快速、更省力。
+
+**That reframes every measurement above, and §8 is the clearest example of getting it
+wrong.** "Does the index name the files as well as the agent finds them" is a question
+about replacing the driver. The tool is mechanical: it should do the finding, the
+tracing and the remembering so the agent spends its budget on deciding. The endpoints
+that follow are two, and neither is recall:
+
+1. **Fuel.** Tokens, tool calls and wall clock for the same destination. Less spent
+   looking is less context consumed, and less context consumed is a lower chance of the
+   session rotting out from under the work.
+2. **The instruments.** The things the driver would otherwise miss: this change reaches
+   code B, there is a test over there, that guard will block you, this convention fails
+   the build.
+
+**E2 measured the first one, and all three of its effort readings point the same way:**
+
+| | with tool | without | difference | 95% interval |
+|---|---|---|---|---|
+| tokens | 87,758 | 92,810 | **−5.4%** | includes zero |
+| tool calls | 47.5 | 49.3 | **−3.5%** | includes zero |
+| wall clock | 560 s | 638 s | **−12.2%** | includes zero |
+
+Three measures, one direction, none of them detectable. And the reason is in the task
+size rather than in the tool: **E2's median task has two companion files.** A car saves
+nothing on a two-hundred-metre walk, and the endpoint this project registered was
+measured on twenty of them.
+
+**The model makes a prediction, and E2's own data cannot test it.** If the saving comes
+from work the agent no longer has to do, it should grow with how much there is to find:
+
+| task size | pairs | token difference | |
+|---|---|---|---|
+| ≤ 2 companions | 13 | **−10.1%** | 8 of 13 cheaper |
+| ≥ 4 companions | 5 | +0.8% | 2 of 5 cheaper |
+
+The slope runs the wrong way, +1,357 tokens per additional companion. **It is also
+worthless as a test**: three of the five large tasks are the chores §4 identified —
+"update dev dependencies" twice and a Python-version bump — where "large" means nine
+workflow files rather than nine coupled modules, and where the tool has nothing to
+contribute by construction. Five pairs, three of them contaminated. Not evidence in
+either direction.
+
+**So the honest position on what has been tested.** The effort endpoint is the right one
+and it was measured at a scale where the mechanism cannot operate. The instruments
+endpoint has never been measured at all: `guards` was invoked 25 times across E2 and
+nobody ever asked whether it warned about a fence the change actually met.
+
+**And what stops being worth doing.** Recall against the commit's file set. It compares
+the tool to the agent at the agent's own job, on tasks small enough for the agent to do
+it by grep, and every conclusion drawn from it above — including the four rejected fixes
+— answers a question that was never the point.
